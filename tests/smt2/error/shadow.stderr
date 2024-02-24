@@ -1,0 +1,4 @@
+the identifier `f` shadows a global constant at 2:14
+(declare-fun f (Bool) Bool)
+             ^
+

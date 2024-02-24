@@ -1,0 +1,4 @@
+the identifier `f` isn't bound a global constant at 1:10
+(assert (f true))
+         ^
+

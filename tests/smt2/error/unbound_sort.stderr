@@ -1,0 +1,4 @@
+the sort `S1` isn't bound a global constant at 1:19
+(declare-fun f () S1)
+                  ^
+

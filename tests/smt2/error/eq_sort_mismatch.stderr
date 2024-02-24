@@ -1,0 +1,4 @@
+the left side of the equality has sort S1 but the right side has sort Bool at 3:21
+(assert (= (f true) false))
+                    ^
+
