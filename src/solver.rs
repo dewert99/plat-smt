@@ -1,23 +1,18 @@
 use crate::egraph::Children;
 use crate::euf::EUF;
-use crate::junction::{Conjunction, Junction};
+use crate::junction::*;
 use crate::sort::{BaseSort, Sort};
 use crate::util::display_debug;
 use batsat::{lbool, Lit, SolverInterface, Theory, Var};
 use egg::{Id, Symbol};
 use log::debug;
+use std::borrow::BorrowMut;
 use std::fmt::{Debug, Display, Formatter};
 use std::ops::Not;
 
-// pub fn gen_sym(name: &str) -> Symbol {
-//     static COUNT: AtomicUsize = AtomicUsize::new(0);
-//
-//     let count = COUNT.fetch_add(1, Ordering::Relaxed);
-//
-//     let name = format!("gensym${name}${count}");
-//     Symbol::new(name)
-// }
-
+/// The main solver structure including the sat solver and egraph.
+///
+/// It allows constructing and asserting expressions [`Exp`] within the solver
 pub struct Solver {
     euf: EUF,
     sat: batsat::BasicSolver,
@@ -40,7 +35,7 @@ impl Default for Solver {
 }
 
 #[derive(Copy, Clone)]
-pub struct UExp {
+struct UExp {
     id: Id,
     sort: Sort,
 }
@@ -53,6 +48,14 @@ impl Debug for UExp {
 
 display_debug!(UExp);
 
+/// A boolean sorted expression within a [`Solver`]
+///
+/// It can be upcast to a dynamically sorted [`Exp`] using [`into`](Into::into), and downcast using
+/// [`Exp::as_bool`].
+///
+/// It also implements [`BitAnd`], [`BitOr`], and [`BitNot`], but its [`BitAnd`], [`BitOr`]
+/// implementations produces [`Conjunction`]s and [`Disjunction`]s respectively.
+/// [`Solver::collapse_bool`] can be used to collapse these types back into [`BoolExp`]s
 #[derive(Copy, Clone, Eq, PartialEq)]
 pub enum BoolExp {
     Const(bool),
@@ -72,6 +75,7 @@ impl From<UExp> for Exp {
 }
 
 impl Exp {
+    /// Try to downcast into a [`BoolExp`]
     pub fn as_bool(self) -> Option<BoolExp> {
         match self.0 {
             EExp::Bool(b) => Some(b),
@@ -113,6 +117,7 @@ enum EExp {
     Uninterpreted(UExp),
 }
 
+/// A dynamically sorted expression within a [`Solver`]
 #[derive(Copy, Clone)]
 pub struct Exp(EExp);
 
@@ -181,6 +186,8 @@ impl Solver {
         self.euf.reserve(fresh);
         fresh
     }
+
+    /// Generate a fresh boolean variable
     pub fn fresh_bool(&mut self) -> BoolExp {
         BoolExp::Unknown(Lit::new(self.fresh(), true))
     }
@@ -205,20 +212,21 @@ impl Solver {
         self.sat.add_clause_reuse(exps);
         res
     }
-    pub fn collapse_bool<const IS_AND: bool>(&mut self, j: Junction<IS_AND>) -> BoolExp {
-        match j.0 {
+
+    /// Collapse a [`Conjunction`] or [`Disjunction`] into a [`BoolExp`]
+    ///
+    /// To reuse memory you can pass mutable reference instead of an owned value
+    /// Doing this will leave `j` in an unspecified state, so it should be
+    /// [`clear`](Junction::clear)ed before it is used again
+    pub fn collapse_bool<const IS_AND: bool>(
+        &mut self,
+        mut j: impl BorrowMut<Junction<IS_AND>>,
+    ) -> BoolExp {
+        match &mut j.borrow_mut().0 {
             None => BoolExp::Const(!IS_AND),
             Some(x) if x.is_empty() => BoolExp::Const(IS_AND),
-            Some(mut x) => BoolExp::Unknown(self.andor_reuse(&mut x, IS_AND)),
+            Some(x) => BoolExp::Unknown(self.andor_reuse(x, IS_AND)),
         }
-    }
-
-    pub fn and_reuse(&mut self, exps: &mut Vec<BLit>) -> BLit {
-        self.andor_reuse(exps, true)
-    }
-
-    pub fn or_reuse(&mut self, exps: &mut Vec<BLit>) -> BLit {
-        self.andor_reuse(exps, false)
     }
 
     pub fn eq(&mut self, id1: Id, id2: Id) -> BoolExp {

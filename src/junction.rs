@@ -54,8 +54,15 @@ impl<const IS_AND: bool> FromIterator<BoolExp> for Junction<IS_AND> {
 }
 
 impl<const IS_AND: bool> Junction<IS_AND> {
-    fn push(&mut self, b: BoolExp) {
+    pub fn push(&mut self, b: BoolExp) {
         self.extend([b])
+    }
+
+    pub fn clear(&mut self) {
+        match &mut self.0 {
+            None => self.0 = Some(vec![]),
+            Some(x) => x.clear(),
+        }
     }
 }
 
