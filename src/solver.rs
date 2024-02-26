@@ -6,7 +6,7 @@ use crate::util::display_debug;
 use batsat::{lbool, Lit, SolverInterface, Theory, Var};
 use egg::{Id, Symbol};
 use log::debug;
-use std::fmt::{Debug, Formatter};
+use std::fmt::{Debug, Display, Formatter};
 use std::ops::Not;
 
 // pub fn gen_sym(name: &str) -> Symbol {
@@ -47,13 +47,13 @@ pub struct UExp {
 
 impl Debug for UExp {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{:?}${:?}", self.sort, self.id)
+        write!(f, "{}${:?}", self.sort, self.id)
     }
 }
 
 display_debug!(UExp);
 
-#[derive(Copy, Clone)]
+#[derive(Copy, Clone, Eq, PartialEq)]
 pub enum BoolExp {
     Const(bool),
     Unknown(BLit),
@@ -127,15 +127,15 @@ impl Debug for Exp {
 
 display_debug!(Exp);
 
-pub trait Canonize {
+pub trait ExpLike: Into<Exp> + Copy + Debug + Display {
     fn canonize(self, solver: &Solver) -> Self;
 }
 
-impl Canonize for BoolExp {
+impl ExpLike for BoolExp {
     fn canonize(self, solver: &Solver) -> Self {
         match self {
             BoolExp::Unknown(x) => {
-                let val = solver.sat.value_lit(x);
+                let val = solver.sat.value_lvl_0(x);
                 if val == lbool::TRUE {
                     BoolExp::TRUE
                 } else if val == lbool::FALSE {
@@ -149,7 +149,7 @@ impl Canonize for BoolExp {
     }
 }
 
-impl Canonize for UExp {
+impl ExpLike for UExp {
     fn canonize(self, solver: &Solver) -> Self {
         UExp {
             id: solver.euf.find(self.id),
@@ -158,7 +158,7 @@ impl Canonize for UExp {
     }
 }
 
-impl Canonize for Exp {
+impl ExpLike for Exp {
     fn canonize(self, solver: &Solver) -> Self {
         match self.0 {
             EExp::Bool(b) => b.canonize(solver).into(),
@@ -191,6 +191,9 @@ impl Solver {
             "{res:?} is defined as {} {exps:?}",
             if is_and { "and" } else { "or" }
         );
+        if let [exp] = &**exps {
+            return *exp;
+        }
         for lit in &mut *exps {
             self.clause_adder.clear();
             self.clause_adder.push(*lit ^ !is_and);
@@ -223,6 +226,42 @@ impl Solver {
             .add_eq_node(id1, id2, || Lit::new(self.sat.new_var_default(), true))
     }
 
+    pub fn ite(&mut self, i: BoolExp, t: Exp, e: Exp) -> Result<Exp, (Sort, Sort)> {
+        let tsort = self.sort(t);
+        let esort = self.sort(e);
+        if tsort != esort {
+            return Err((tsort, esort));
+        }
+        let res = match i {
+            BoolExp::TRUE => t,
+            BoolExp::FALSE => e,
+            BoolExp::Unknown(u) => {
+                let tid = self.id_sort(t).0;
+                let eid = self.id_sort(e).0;
+                let sym = Symbol::new(format!("if|{u:?}|id{tid}|id{eid}"));
+                let fresh = self.sorted_fn(sym, Children::from_iter([]), tsort);
+                let fresh_id = self.id_sort(fresh).0;
+                let eqt = self.eq(fresh_id, tid);
+                let BoolExp::Unknown(eqt) = eqt else {
+                    unreachable!()
+                };
+                let eqe = self.eq(fresh_id, eid);
+                let BoolExp::Unknown(eqe) = eqe else {
+                    unreachable!()
+                };
+                self.clause_adder.clear();
+                self.clause_adder.extend([!u, eqt]);
+                self.sat.add_clause_reuse(&mut self.clause_adder);
+                self.clause_adder.clear();
+                self.clause_adder.extend([u, eqe]);
+                self.sat.add_clause_reuse(&mut self.clause_adder);
+                fresh
+            }
+        };
+        debug!("{res} is bound to (ite {i} {t} {e})");
+        Ok(res)
+    }
+
     pub fn bool_fn(&mut self, fn_name: Symbol, children: Children) -> BoolExp {
         self.euf
             .add_bool_node(fn_name, children, || {
@@ -240,6 +279,7 @@ impl Solver {
         }
     }
     pub fn assert(&mut self, b: BoolExp) {
+        debug!("assert {b}");
         self.clause_adder.clear();
         match b {
             BoolExp::Const(true) => {}
@@ -277,11 +317,20 @@ impl Solver {
             EExp::Uninterpreted(u) => (u.id, u.sort),
         }
     }
+
+    pub fn sort(&self, term: Exp) -> Sort {
+        match term.0 {
+            EExp::Bool(_) => self.bool_sort,
+            EExp::Uninterpreted(u) => u.sort,
+        }
+    }
     pub fn bool_sort(&self) -> Sort {
         self.bool_sort
     }
 
-    pub fn canonize<T: Canonize>(&self, t: T) -> T {
-        t.canonize(self)
+    pub fn canonize<T: ExpLike>(&self, t: T) -> T {
+        let res = t.canonize(self);
+        debug!("{t} canonized to {res}");
+        res
     }
 }

@@ -10,7 +10,7 @@ that accepts a subset of SMT2LIB syntax for the logic `QF_UF`
 - [x] `check-sat`
 - [x] `check-sat-assuming`
 - [x] `let`
-- [ ] `if`
+- [x] `if`
 - [ ] `get-value`
 - [ ] `get-model`
 - [ ] `get-unsat-core`

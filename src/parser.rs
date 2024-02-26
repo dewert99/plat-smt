@@ -21,15 +21,19 @@ enum Error {
     },
     #[error("the left side of the equality has sort {left} but the right side has sort {right}")]
     EqSortMismatch { left: Sort, right: Sort },
+    #[error(
+        "the left side of the ite expression has sort {left} but the right side has sort {right}"
+    )]
+    IteSortMismatch { left: Sort, right: Sort },
     #[error("the function `{f}` expects {expected} arguments but got {actual}")]
     ArgumentMismatch {
         f: &'static str,
         actual: usize,
         expected: usize,
     },
-    #[error("the identifier `{0}` isn't bound a global constant")]
+    #[error("unknown identifier `{0}`")]
     Unbound(Symbol),
-    #[error("the sort `{0}` isn't bound a global constant")]
+    #[error("unknown sort `{0}`")]
     UnboundSort(Symbol),
     #[error("the identifier `{0}` shadows a global constant")]
     Shadow(Symbol),
@@ -90,6 +94,8 @@ struct Syms {
     eq: Symbol,
     not: Symbol,
     let_: Symbol,
+    ite: Symbol,
+    if_: Symbol,
 }
 
 impl Default for Syms {
@@ -100,6 +106,8 @@ impl Default for Syms {
             eq: Symbol::new("="),
             not: Symbol::new("not"),
             let_: Symbol::new("let"),
+            ite: Symbol::new("ite"),
+            if_: Symbol::new("if"),
         }
     }
 }
@@ -323,8 +331,19 @@ impl<W: Write> Parser<W> {
                     *bound = self.bound.insert(*name, bound.unwrap())
                 }
                 let exp = self.parse_exp(body)?;
+                rest.finish()?;
                 self.undo_bindings(old_len);
                 Ok(exp)
+            }
+            ite if ite == self.syms.ite || ite == self.syms.if_ => {
+                let mut rest = CountingParser::new(rest, ite.as_str(), 3);
+                let i = self.parse_bool(rest.next_full()?)?;
+                let t = self.parse_exp(rest.next()?)?;
+                let e = self.parse_exp(rest.next()?)?;
+                Ok(self
+                    .core
+                    .ite(i, t, e)
+                    .map_err(|(left, right)| IteSortMismatch { left, right })?)
             }
             f => {
                 // Uninterpreted function
