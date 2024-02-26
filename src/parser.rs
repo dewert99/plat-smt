@@ -47,10 +47,25 @@ enum Error {
 
 type Result<T> = core::result::Result<T, Error>;
 
-#[derive(Hash, Eq, PartialEq)]
+#[derive(Copy, Clone)]
 struct FnSort {
-    args: Box<[Sort]>,
+    args: Intern<[Sort]>,
     ret: Sort,
+}
+
+impl FnSort {
+    fn mismatch(&self, name: Symbol, actual: usize) -> Error {
+        ArgumentMismatch {
+            f: name.as_str(),
+            expected: self.args.len(),
+            actual,
+        }
+    }
+}
+#[derive(Copy, Clone)]
+enum Bound {
+    Fn(FnSort),
+    Const(Exp),
 }
 
 // macro_rules! name {
@@ -85,8 +100,7 @@ impl Default for Syms {
 
 #[derive(Default)]
 struct Parser<W: Write> {
-    let_bound_vars: HashMap<Symbol, Exp>,
-    decls: HashMap<Symbol, Intern<FnSort>>,
+    bound: HashMap<Symbol, Bound>,
     declared_sorts: HashMap<Symbol, u32>,
     core: Solver,
     syms: Syms,
@@ -153,8 +167,7 @@ impl<'a, 'b> CountingParser<'a, 'b> {
 impl<W: Write> Parser<W> {
     fn new(writer: W) -> Self {
         let mut res = Parser {
-            let_bound_vars: Default::default(),
-            decls: Default::default(),
+            bound: Default::default(),
             declared_sorts: Default::default(),
             core: Default::default(),
             syms: Default::default(),
@@ -163,10 +176,10 @@ impl<W: Write> Parser<W> {
         res.declared_sorts.insert(res.core.bool_sort().name, 0);
         let true_sym = Symbol::new("true");
         let false_sym = Symbol::new("false");
-        res.let_bound_vars
-            .insert(true_sym, BoolExp::Const(true).into());
-        res.let_bound_vars
-            .insert(false_sym, BoolExp::Const(false).into());
+        res.bound
+            .insert(true_sym, Bound::Const(BoolExp::TRUE.into()));
+        res.bound
+            .insert(false_sym, Bound::Const(BoolExp::FALSE.into()));
         res
     }
 
@@ -174,9 +187,10 @@ impl<W: Write> Parser<W> {
         match token {
             SexpToken::Symbol(s) => {
                 let sym = Symbol::new(s);
-                match self.let_bound_vars.get(&sym) {
+                match self.bound.get(&sym) {
                     None => Err(Unbound(sym)),
-                    Some(x) => Ok(*x),
+                    Some(Bound::Fn(f)) => Err(f.mismatch(sym, 0)),
+                    Some(Bound::Const(x)) => Ok(self.core.canonize(*x)),
                 }
             }
             SexpToken::String(_) => Err(Unsupported("strings")),
@@ -262,28 +276,34 @@ impl<W: Write> Parser<W> {
             }
             f => {
                 // Uninterpreted function
-                let sig = *self.decls.get(&f).ok_or(Unbound(f))?;
-                let arg_iter = sig.args.iter().copied().enumerate();
-                let children = rest
-                    .zip_map(arg_iter, |token, (i, expect)| {
-                        self.parse_id(f, i, expect, token?)
-                    })
-                    .collect::<Result<Children>>()?;
-                if rest.next().is_some() {
-                    return Err(ArgumentMismatch {
-                        f: f.into(),
-                        expected: sig.args.len(),
-                        actual: sig.args.len() + 1,
-                    });
+                let sig = *self.bound.get(&f).ok_or(Unbound(f))?;
+                match sig {
+                    Bound::Fn(sig) => {
+                        let arg_iter = sig.args.iter().copied().enumerate();
+                        let children = rest
+                            .zip_map(arg_iter, |token, (i, expect)| {
+                                self.parse_id(f, i, expect, token?)
+                            })
+                            .collect::<Result<Children>>()?;
+                        if rest.next().is_some() {
+                            return Err(sig.mismatch(f, sig.args.len() + 1));
+                        }
+                        if children.len() < sig.args.len() {
+                            return Err(sig.mismatch(f, children.len()));
+                        }
+                        Ok(self.core.sorted_fn(f, children, sig.ret))
+                    }
+                    Bound::Const(c) => {
+                        if rest.next().is_some() {
+                            return Err(ArgumentMismatch {
+                                f: f.as_str(),
+                                actual: 1,
+                                expected: 0,
+                            });
+                        }
+                        Ok(self.core.canonize(c))
+                    }
                 }
-                if children.len() < sig.args.len() {
-                    return Err(ArgumentMismatch {
-                        f: f.into(),
-                        expected: sig.args.len(),
-                        actual: children.len(),
-                    });
-                }
-                Ok(self.core.sorted_fn(f, children, sig.ret))
             }
         }
     }
@@ -341,7 +361,7 @@ impl<W: Write> Parser<W> {
                     return Err(InvalidCommand);
                 };
                 let name = Symbol::new(name);
-                if self.decls.contains_key(&name) {
+                if self.bound.contains_key(&name) {
                     return Err(Shadow(name));
                 }
                 let SexpToken::List(mut l) = rest.next()? else {
@@ -353,12 +373,26 @@ impl<W: Write> Parser<W> {
                 drop(l);
                 let ret = self.parse_sort(rest.next()?)?;
                 if args.is_empty() {
-                    self.let_bound_vars.insert(
-                        name,
-                        self.core.sorted_fn(name, Children::from_iter([]), ret),
-                    );
+                    self.declare_const(name, ret);
+                } else {
+                    let fn_sort = FnSort {
+                        args: Intern::from(args),
+                        ret,
+                    };
+                    self.bound.insert(name, Bound::Fn(fn_sort));
                 }
-                self.decls.insert(name, Intern::new(FnSort { args, ret }));
+            }
+            "declare-const" => {
+                let mut rest = CountingParser::new(rest, "declare-const", 2);
+                let SexpToken::Symbol(name) = rest.next()? else {
+                    return Err(InvalidCommand);
+                };
+                let name = Symbol::new(name);
+                if self.bound.contains_key(&name) {
+                    return Err(Shadow(name));
+                }
+                let ret = self.parse_sort(rest.next()?)?;
+                self.declare_const(name, ret);
             }
             "assert" => {
                 let mut rest = CountingParser::new(rest, "assert", 1);
@@ -389,6 +423,15 @@ impl<W: Write> Parser<W> {
             _ => return Err(InvalidCommand),
         }
         Ok(())
+    }
+
+    fn declare_const(&mut self, name: Symbol, ret: Sort) {
+        let exp = if ret == self.core.bool_sort() {
+            self.core.fresh_bool().into()
+        } else {
+            self.core.sorted_fn(name, Children::from_iter([]), ret)
+        };
+        self.bound.insert(name, Bound::Const(exp));
     }
 
     fn parse_command_token(&mut self, t: SexpToken) -> Result<()> {

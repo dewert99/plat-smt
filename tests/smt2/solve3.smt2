@@ -1,0 +1,8 @@
+(declare-sort S1)
+(declare-const a S1)
+(declare-fun b () S1)
+(declare-const x Bool)
+(assert x)
+(assert (= a b))
+(check-sat)
+(check-sat-assuming ((not (and x (= (a) (b))))))

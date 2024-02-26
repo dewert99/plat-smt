@@ -127,6 +127,46 @@ impl Debug for Exp {
 
 display_debug!(Exp);
 
+pub trait Canonize {
+    fn canonize(self, solver: &Solver) -> Self;
+}
+
+impl Canonize for BoolExp {
+    fn canonize(self, solver: &Solver) -> Self {
+        match self {
+            BoolExp::Unknown(x) => {
+                let val = solver.sat.value_lit(x);
+                if val == lbool::TRUE {
+                    BoolExp::TRUE
+                } else if val == lbool::FALSE {
+                    BoolExp::FALSE
+                } else {
+                    self
+                }
+            }
+            _ => self,
+        }
+    }
+}
+
+impl Canonize for UExp {
+    fn canonize(self, solver: &Solver) -> Self {
+        UExp {
+            id: solver.euf.find(self.id),
+            sort: self.sort,
+        }
+    }
+}
+
+impl Canonize for Exp {
+    fn canonize(self, solver: &Solver) -> Self {
+        match self.0 {
+            EExp::Bool(b) => b.canonize(solver).into(),
+            EExp::Uninterpreted(u) => u.canonize(solver).into(),
+        }
+    }
+}
+
 pub type BLit = Lit;
 
 #[derive(Debug)]
@@ -140,6 +180,9 @@ impl Solver {
         let fresh = self.sat.new_var_default();
         self.euf.reserve(fresh);
         fresh
+    }
+    pub fn fresh_bool(&mut self) -> BoolExp {
+        BoolExp::Unknown(Lit::new(self.fresh(), true))
     }
     fn andor_reuse(&mut self, exps: &mut Vec<BLit>, is_and: bool) -> BLit {
         let fresh = self.fresh();
@@ -236,5 +279,9 @@ impl Solver {
     }
     pub fn bool_sort(&self) -> Sort {
         self.bool_sort
+    }
+
+    pub fn canonize<T: Canonize>(&self, t: T) -> T {
+        t.canonize(self)
     }
 }

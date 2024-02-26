@@ -206,6 +206,9 @@ impl<'a, 'b: 'a> MergeContext<'a, 'b> {
 }
 
 impl EUF {
+    pub(crate) fn find(&self, id: Id) -> Id {
+        self.egraph.find(id)
+    }
     fn tf_conflict(&mut self, acts: &mut TheoryArg) {
         self.explanation.clear();
         let fid = self.id_for_bool(false);
@@ -224,8 +227,8 @@ impl EUF {
             history: &mut self.bool_class_history,
             conflict: &mut conflict,
         };
-        /// TODO Ideally rebuilding should early return if it discovers a conflict
-        /// but this would require implementing an early returning rebuild in `egg`
+        // TODO Ideally rebuilding should early return if it discovers a conflict
+        // but this would require implementing an early returning rebuild in `egg`
         self.egraph.rebuild(ctx.merge_fn());
         if conflict {
             self.tf_conflict(acts);

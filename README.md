@@ -14,7 +14,7 @@ that accepts a subset of SMT2LIB syntax for the logic `QF_UF`
 - [ ] `get-value`
 - [ ] `get-model`
 - [ ] `get-unsat-core`
-- [ ] `declare-const`
+- [x] `declare-const`
 - [ ] `define-const`
 - [ ] `push` / `pop`
 - [ ] `get-proof`
