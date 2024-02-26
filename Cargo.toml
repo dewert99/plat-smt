@@ -1,0 +1,19 @@
+[package]
+name = "bat_egg_smt"
+version = "0.1.0"
+edition = "2021"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[dependencies]
+batsat = { version = "0.5.0", features = ["logging"] }
+egg = {git = "https://github.com/dewert99/egg", branch = "semi-persistent"}
+hashbrown = "0.14.3"
+log = "0.4.20"
+internment = "0.7.4"
+thiserror = "1.0.57"
+env_logger = {version = "0.11.2", optional = true}
+
+
+[dev-dependencies]
+rstest = "0.18.2"
