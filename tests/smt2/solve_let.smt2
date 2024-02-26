@@ -1,0 +1,5 @@
+(declare-const x Bool)
+(assert x)
+(check-sat-assuming ((let ((x false)) x)))
+(check-sat-assuming (x))
+(check-sat-assuming ((let ((x false) (x x)) x)))

@@ -39,6 +39,10 @@ enum Error {
     InvalidExp,
     #[error("unexpected token when parsing command")]
     InvalidCommand,
+    #[error("unexpected token when parsing binding")]
+    InvalidBinding,
+    #[error("unexpected token when parsing let expression")]
+    InvalidLet,
     #[error("unsupported {0}")]
     Unsupported(&'static str),
     #[error(transparent)]
@@ -85,6 +89,7 @@ struct Syms {
     or: Symbol,
     eq: Symbol,
     not: Symbol,
+    let_: Symbol,
 }
 
 impl Default for Syms {
@@ -94,6 +99,7 @@ impl Default for Syms {
             or: Symbol::new("or"),
             eq: Symbol::new("="),
             not: Symbol::new("not"),
+            let_: Symbol::new("let"),
         }
     }
 }
@@ -101,6 +107,7 @@ impl Default for Syms {
 #[derive(Default)]
 struct Parser<W: Write> {
     bound: HashMap<Symbol, Bound>,
+    scratch_stack: Vec<(Symbol, Option<Bound>)>,
     declared_sorts: HashMap<Symbol, u32>,
     core: Solver,
     syms: Syms,
@@ -168,6 +175,7 @@ impl<W: Write> Parser<W> {
     fn new(writer: W) -> Self {
         let mut res = Parser {
             bound: Default::default(),
+            scratch_stack: Default::default(),
             declared_sorts: Default::default(),
             core: Default::default(),
             syms: Default::default(),
@@ -238,6 +246,29 @@ impl<W: Write> Parser<W> {
         }
     }
 
+    fn parse_binding(&mut self, token: SexpToken) -> Result<(Symbol, Exp)> {
+        match token {
+            SexpToken::List(mut l) => {
+                let sym = match l.next().ok_or(InvalidBinding)?? {
+                    SexpToken::Symbol(s) => Symbol::new(s),
+                    _ => return Err(InvalidBinding),
+                };
+                let exp = self.parse_exp(l.next().ok_or(InvalidBinding)??)?;
+                Ok((sym, exp))
+            }
+            _ => Err(InvalidBinding),
+        }
+    }
+
+    fn undo_bindings(&mut self, old_len: usize) {
+        for (name, bound) in self.scratch_stack.drain(old_len..).rev() {
+            match bound {
+                None => self.bound.remove(&name),
+                Some(x) => self.bound.insert(name, x),
+            };
+        }
+    }
+
     fn parse_fn_exp(&mut self, f: Symbol, mut rest: SexpParser) -> Result<Exp> {
         match f {
             not if not == self.syms.not => {
@@ -273,6 +304,27 @@ impl<W: Write> Parser<W> {
                 }
                 rest.finish()?;
                 Ok(self.core.eq(id1, id2).into())
+            }
+            let_ if let_ == self.syms.let_ => {
+                let mut rest = CountingParser::new(rest, "let", 2);
+                let old_len = self.scratch_stack.len();
+                match rest.next()? {
+                    SexpToken::List(mut l) => l
+                        .map(|token| {
+                            let (name, exp) = self.parse_binding(token?)?;
+                            self.scratch_stack.push((name, Some(Bound::Const(exp))));
+                            Ok(())
+                        })
+                        .collect::<Result<()>>()?,
+                    _ => return Err(InvalidLet),
+                }
+                let body = rest.next()?;
+                for (name, bound) in &mut self.scratch_stack[old_len..] {
+                    *bound = self.bound.insert(*name, bound.unwrap())
+                }
+                let exp = self.parse_exp(body)?;
+                self.undo_bindings(old_len);
+                Ok(exp)
             }
             f => {
                 // Uninterpreted function

@@ -1,0 +1,4 @@
+the function `f` expects 0 arguments but got 1 at 2:28
+(assert (let ((f true)) (f f)))
+                           ^
+
