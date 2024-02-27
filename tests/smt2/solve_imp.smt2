@@ -1,0 +1,5 @@
+(declare-const x Bool)
+(declare-const y Bool)
+(declare-const z Bool)
+(assert (=> x y z))
+(check-sat-assuming (x y (not z)))

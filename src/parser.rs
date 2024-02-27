@@ -96,6 +96,7 @@ struct Syms {
     let_: Symbol,
     ite: Symbol,
     if_: Symbol,
+    imp: Symbol,
 }
 
 impl Default for Syms {
@@ -108,6 +109,7 @@ impl Default for Syms {
             let_: Symbol::new("let"),
             ite: Symbol::new("ite"),
             if_: Symbol::new("if"),
+            imp: Symbol::new("=>"),
         }
     }
 }
@@ -298,6 +300,17 @@ impl<W: Write> Parser<W> {
                     .collect::<Result<Disjunction>>()?;
                 Ok(self.core.collapse_bool(disj).into())
             }
+            imp if imp == self.syms.imp => {
+                let mut iter = rest.zip_map(0.., |token, i| self.parse_bool((token?, i, "=>")));
+                let mut last = iter.next().ok_or(ArgumentMismatch {
+                    actual: 0,
+                    expected: 1,
+                    f: "=>",
+                })??;
+                let not_last = iter.map(|item| Ok(!std::mem::replace(&mut last, item?)));
+                let res = not_last.collect::<Result<Disjunction>>()? | last;
+                Ok(self.core.collapse_bool(res).into())
+            }
             eq if eq == self.syms.eq => {
                 let mut rest = CountingParser::new(rest, "=", 2);
                 let exp1 = self.parse_exp(rest.next()?)?;
@@ -465,7 +478,7 @@ impl<W: Write> Parser<W> {
             }
             "check-sat" => {
                 CountingParser::new(rest, "check-sat", 0).finish()?;
-                let res = self.core.check_sat_assuming(&Default::default());
+                let res = self.core.check_sat();
                 writeln!(self.writer, "{res:?}").unwrap()
             }
             "check-sat-assuming" => {
