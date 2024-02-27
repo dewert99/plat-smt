@@ -5,11 +5,12 @@ use crate::sort::{BaseSort, Sort};
 use crate::util::display_debug;
 use batsat::{lbool, Lit, SolverInterface, Theory, Var};
 use egg::{Id, Symbol};
+use either::Either;
+use hashbrown::HashMap;
 use log::debug;
 use std::borrow::BorrowMut;
 use std::fmt::{Debug, Display, Formatter};
 use std::ops::Not;
-
 /// The main solver structure including the sat solver and egraph.
 ///
 /// It allows constructing and asserting expressions [`Exp`] within the solver
@@ -176,6 +177,7 @@ impl ExpLike for Exp {
 pub type BLit = Lit;
 
 #[derive(Debug)]
+/// Result of calling [`Solver::check_sat_assuming`]
 pub enum SolveResult {
     Sat,
     Unsat,
@@ -341,16 +343,35 @@ impl Solver {
             Some(x) => self.sat.solve_limited_th(&mut self.euf, &x),
         };
         if res == lbool::FALSE {
+            debug!(
+                "check-sat {c:?} returned unsat (level = {})\n{:?}",
+                self.euf.n_levels(),
+                self.sat.unsat_core(),
+            );
             SolveResult::Unsat
         } else if res == lbool::TRUE {
             debug!(
-                "check-sat returned sat (level = {})\n{:?}",
+                "check-sat {c:?} returned sat (level = {})\n{:?}",
                 self.euf.n_levels(),
                 self.sat.get_model()
             );
             SolveResult::Sat
         } else {
             SolveResult::Unknown
+        }
+    }
+
+    /// Like [`check_sat_assuming`](Solver::check_sat_assuming) but takes in an
+    /// [`UnsatCoreConjunction`] which associates its elements values and returns an iterator
+    /// over the values associated with the elements of the unsat core if the result is unsat
+    pub fn check_sat_assuming_for_core<'a, T>(
+        &'a mut self,
+        c: &'a UnsatCoreConjunction<T>,
+    ) -> Option<impl Iterator<Item = &'a T>> {
+        let (conj, info) = c.parts();
+        match self.check_sat_assuming(conj) {
+            SolveResult::Unsat => Some(info.core(self.last_unsat_core())),
+            _ => None,
         }
     }
 
@@ -383,5 +404,81 @@ impl Solver {
         let res = t.canonize(self);
         debug!("{t} canonized to {res}");
         res
+    }
+
+    pub(crate) fn last_unsat_core(&self) -> &[Lit] {
+        self.sat.unsat_core()
+    }
+}
+
+pub(crate) enum UnsatCoreInfo<T> {
+    FalseBy(T),
+    Map(HashMap<Lit, T>),
+}
+
+impl<T> Default for UnsatCoreInfo<T> {
+    fn default() -> Self {
+        UnsatCoreInfo::Map(Default::default())
+    }
+}
+
+impl<T> UnsatCoreInfo<T> {
+    fn add(&mut self, bool_exp: BoolExp, t: T) {
+        match bool_exp {
+            BoolExp::FALSE => *self = UnsatCoreInfo::FalseBy(t),
+            BoolExp::TRUE => {}
+            BoolExp::Unknown(l) => {
+                if let UnsatCoreInfo::Map(m) = self {
+                    m.insert(!l, t);
+                }
+            }
+        }
+    }
+
+    pub(crate) fn core<'a>(&'a self, lits: &'a [Lit]) -> impl Iterator<Item = &'a T> {
+        match self {
+            UnsatCoreInfo::Map(m) => Either::Left(lits.iter().map(|x| m.get(x).unwrap())),
+            UnsatCoreInfo::FalseBy(x) => Either::Right(core::iter::once(x)),
+        }
+    }
+}
+
+#[derive(Default)]
+pub struct UnsatCoreConjunction<T> {
+    conj: Conjunction,
+    info: UnsatCoreInfo<T>,
+}
+
+impl<T> FromIterator<(BoolExp, T)> for UnsatCoreConjunction<T> {
+    fn from_iter<I: IntoIterator<Item = (BoolExp, T)>>(iter: I) -> Self {
+        let mut info = UnsatCoreInfo::default();
+        let conj = iter
+            .into_iter()
+            .map(|(b, t)| {
+                info.add(b, t);
+                b
+            })
+            .collect();
+        UnsatCoreConjunction { info, conj }
+    }
+}
+
+impl<T> Extend<(BoolExp, T)> for UnsatCoreConjunction<T> {
+    fn extend<I: IntoIterator<Item = (BoolExp, T)>>(&mut self, iter: I) {
+        let conj = iter.into_iter().map(|(b, t)| {
+            self.info.add(b, t);
+            b
+        });
+        self.conj.extend(conj);
+    }
+}
+
+impl<T> UnsatCoreConjunction<T> {
+    pub(crate) fn parts(&self) -> (&Conjunction, &UnsatCoreInfo<T>) {
+        (&self.conj, &self.info)
+    }
+
+    pub(crate) fn take_core(self) -> UnsatCoreInfo<T> {
+        self.info
     }
 }

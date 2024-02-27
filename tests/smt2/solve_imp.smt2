@@ -1,5 +1,7 @@
 (declare-const x Bool)
 (declare-const y Bool)
 (declare-const z Bool)
+(declare-const a Bool)
 (assert (=> x y z))
-(check-sat-assuming (x y (not z)))
+(check-sat-assuming (x a y (not z)))
+(get-unsat-core)

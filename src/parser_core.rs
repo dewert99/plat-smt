@@ -429,6 +429,9 @@ impl<'a, 'b> Debug for SexpParser<'a, 'b> {
 pub trait Bind<X> {}
 impl<T, X> Bind<X> for T {}
 
+#[derive(Copy, Clone)]
+pub struct SpanRange(usize, usize);
+
 impl<'a, 'b> SexpParser<'a, 'b> {
     pub fn new<T, E>(
         reader: &'b [u8],
@@ -443,6 +446,10 @@ impl<'a, 'b> SexpParser<'a, 'b> {
                 src: lexer.reader,
             }),
         }
+    }
+
+    pub fn lookup_range(&self, r: SpanRange) -> &'b str {
+        core::str::from_utf8(&self.0.reader[r.0..r.1]).unwrap()
     }
 
     pub fn next(&mut self) -> Option<Result<SexpToken<'_, 'b>, ParseError>> {
@@ -476,7 +483,7 @@ impl<'a, 'b> SexpParser<'a, 'b> {
         }
     }
 
-    pub fn zip_map<
+    pub fn zip_map_full<
         U,
         F: FnMut(Result<SexpToken<'_, 'b>, ParseError>, I::Item) -> U,
         I: IntoIterator,
@@ -484,12 +491,28 @@ impl<'a, 'b> SexpParser<'a, 'b> {
         &mut self,
         zip: I,
         mut f: F,
-    ) -> impl Iterator<Item = U> + Bind<(F, I, &mut Self)> {
+    ) -> impl Iterator<Item = (U, SpanRange)> + Bind<(F, I, &mut Self)> {
         let mut iter = zip.into_iter();
         core::iter::from_fn(move || {
+            self.0.skip();
             let it_next = iter.next()?;
-            Some(f(self.next()?, it_next))
+            let start = self.0.idx;
+            let res = f(self.next()?, it_next);
+            let end = self.0.idx;
+            Some((res, SpanRange(start, end)))
         })
+    }
+
+    pub fn zip_map<
+        U,
+        F: FnMut(Result<SexpToken<'_, 'b>, ParseError>, I::Item) -> U,
+        I: IntoIterator,
+    >(
+        &mut self,
+        zip: I,
+        f: F,
+    ) -> impl Iterator<Item = U> + Bind<(F, I, &mut Self)> {
+        self.zip_map_full(zip, f).map(|(x, _)| x)
     }
 
     pub fn map<U, F: FnMut(Result<SexpToken<'_, 'b>, ParseError>) -> U>(

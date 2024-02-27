@@ -1,5 +1,6 @@
 use crate::solver::BoolExp;
 use batsat::Lit;
+use std::fmt::{Debug, Formatter};
 use std::ops::{BitAnd, BitOr};
 
 /// Either a [`Conjunction`] or a [`Disjunction`]
@@ -20,6 +21,22 @@ pub type Disjunction = Junction<false>;
 impl<const IS_AND: bool> Default for Junction<IS_AND> {
     fn default() -> Self {
         Junction(Some(vec![]))
+    }
+}
+
+impl<const IS_AND: bool> Debug for Junction<IS_AND> {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        match &self.0 {
+            None => Debug::fmt(&(!IS_AND), f),
+            Some(lits) => {
+                let and_or = if IS_AND { "(and " } else { "(or " };
+                f.write_str(and_or)?;
+                for lit in lits {
+                    Debug::fmt(&lit, f)?
+                }
+                f.write_str(")")
+            }
+        }
     }
 }
 

@@ -1,3 +1,4 @@
 Unsat
+((and (f a) (not (f b))))
 Sat
 Sat

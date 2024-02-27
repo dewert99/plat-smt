@@ -4,6 +4,7 @@
 (declare-fun x () Bool)
 (assert (or (= a b) (= x (not x))))
 (declare-fun f (S1) Bool)
-(check-sat-assuming ((and (f a) (not (f b)))))
+(check-sat-assuming ( (and (f a) (not (f b)))))
+(get-unsat-core)
 (check-sat-assuming ((f a)))
 (check-sat-assuming ((not (f a))))

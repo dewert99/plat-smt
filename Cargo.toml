@@ -12,6 +12,7 @@ hashbrown = "0.14.3"
 log = "0.4.20"
 internment = "0.7.4"
 thiserror = "1.0.57"
+either = { version = "1.10.0", default-features = false }
 env_logger = {version = "0.11.2", optional = true}
 
 

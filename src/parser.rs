@@ -1,8 +1,8 @@
 use crate::egraph::Children;
 use crate::junction::{Conjunction, Disjunction};
 use crate::parser::Error::*;
-use crate::parser_core::{ParseError, SexpParser, SexpToken};
-use crate::solver::{BoolExp, Exp, Solver};
+use crate::parser_core::{ParseError, SexpParser, SexpToken, SpanRange};
+use crate::solver::{BoolExp, Exp, SolveResult, Solver, UnsatCoreConjunction, UnsatCoreInfo};
 use crate::sort::{BaseSort, Sort};
 use egg::{Id, Symbol};
 use hashbrown::HashMap;
@@ -47,6 +47,8 @@ enum Error {
     InvalidBinding,
     #[error("unexpected token when parsing let expression")]
     InvalidLet,
+    #[error("The last command was not `check-sat-assuming` that returned `Unsat`")]
+    NoCore,
     #[error("unsupported {0}")]
     Unsupported(&'static str),
     #[error(transparent)]
@@ -122,6 +124,7 @@ struct Parser<W: Write> {
     core: Solver,
     syms: Syms,
     writer: W,
+    last_core_info: Option<UnsatCoreInfo<SpanRange>>,
 }
 
 struct CountingParser<'a, 'b> {
@@ -190,6 +193,7 @@ impl<W: Write> Parser<W> {
             core: Default::default(),
             syms: Default::default(),
             writer,
+            last_core_info: None,
         };
         res.declared_sorts.insert(res.core.bool_sort().name, 0);
         let true_sym = Symbol::new("true");
@@ -412,6 +416,10 @@ impl<W: Write> Parser<W> {
         }
     }
 
+    pub fn reset_state(&mut self) {
+        self.last_core_info = None;
+    }
+
     fn parse_command(&mut self, name: &str, rest: SexpParser) -> Result<()> {
         match name {
             "declare-sort" => {
@@ -448,6 +456,7 @@ impl<W: Write> Parser<W> {
                     .collect::<Result<Box<[_]>>>()?;
                 drop(l);
                 let ret = self.parse_sort(rest.next()?)?;
+                rest.finish()?;
                 if args.is_empty() {
                     self.declare_const(name, ret);
                 } else {
@@ -468,8 +477,32 @@ impl<W: Write> Parser<W> {
                     return Err(Shadow(name));
                 }
                 let ret = self.parse_sort(rest.next()?)?;
+                rest.finish()?;
                 self.declare_const(name, ret);
             }
+            "get-unsat-core" => {
+                let info = self.last_core_info.as_ref().ok_or(NoCore)?;
+                write!(self.writer, "(").unwrap();
+                let mut iter = info
+                    .core(self.core.last_unsat_core())
+                    .map(|x| rest.lookup_range(*x));
+                if let Some(x) = iter.next() {
+                    write!(self.writer, "{x}").unwrap();
+                }
+                for x in iter {
+                    write!(self.writer, " {x}").unwrap();
+                }
+                writeln!(self.writer, ")").unwrap();
+                CountingParser::new(rest, "get-unsat-core", 0).finish()?;
+            }
+            _ => return self.parse_destructive_command(name, rest),
+        }
+        Ok(())
+    }
+
+    fn parse_destructive_command(&mut self, name: &str, rest: SexpParser) -> Result<()> {
+        self.reset_state();
+        match name {
             "assert" => {
                 let mut rest = CountingParser::new(rest, "assert", 1);
                 let b = self.parse_bool(rest.next_full()?)?;
@@ -479,6 +512,9 @@ impl<W: Write> Parser<W> {
             "check-sat" => {
                 CountingParser::new(rest, "check-sat", 0).finish()?;
                 let res = self.core.check_sat();
+                if let SolveResult::Unsat = res {
+                    self.last_core_info = Some(UnsatCoreInfo::default())
+                }
                 writeln!(self.writer, "{res:?}").unwrap()
             }
             "check-sat-assuming" => {
@@ -487,13 +523,17 @@ impl<W: Write> Parser<W> {
                     return Err(InvalidCommand);
                 };
                 let conj = l
-                    .zip_map(0.., |token, i| {
+                    .zip_map_full(0.., |token, i| {
                         self.parse_bool((token?, i, "check-sat-assuming"))
                     })
-                    .collect::<Result<Conjunction>>()?;
+                    .map(|(x, y)| Ok((x?, y)))
+                    .collect::<Result<UnsatCoreConjunction<SpanRange>>>()?;
                 drop(l);
                 rest.finish()?;
-                let res = self.core.check_sat_assuming(&conj);
+                let res = self.core.check_sat_assuming(conj.parts().0);
+                if let SolveResult::Unsat = res {
+                    self.last_core_info = Some(conj.take_core())
+                }
                 writeln!(self.writer, "{res:?}").unwrap()
             }
             _ => return Err(InvalidCommand),

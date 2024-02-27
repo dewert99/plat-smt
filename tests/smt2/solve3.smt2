@@ -6,3 +6,4 @@
 (assert (= a b))
 (check-sat)
 (check-sat-assuming ((not (and x (= (a) (b))))))
+(get-unsat-core)

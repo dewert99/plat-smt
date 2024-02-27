@@ -1,0 +1,4 @@
+The last command was not `check-sat-assuming` that returned `Unsat` at 4:2
+(get-unsat-core)
+ ^
+
