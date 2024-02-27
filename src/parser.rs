@@ -301,17 +301,10 @@ impl<W: Write> Parser<W> {
             eq if eq == self.syms.eq => {
                 let mut rest = CountingParser::new(rest, "=", 2);
                 let exp1 = self.parse_exp(rest.next()?)?;
-                let (id1, sort1) = self.core.id_sort(exp1);
                 let exp2 = self.parse_exp(rest.next()?)?;
-                let (id2, sort2) = self.core.id_sort(exp2);
-                if sort1 != sort2 {
-                    return Err(EqSortMismatch {
-                        left: sort1,
-                        right: sort2,
-                    });
-                }
                 rest.finish()?;
-                Ok(self.core.eq(id1, id2).into())
+                let err_m = |(left, right)| EqSortMismatch { left, right };
+                Ok(self.core.eq(exp1, exp2).map_err(err_m)?.into())
             }
             let_ if let_ == self.syms.let_ => {
                 let mut rest = CountingParser::new(rest, "let", 2);
@@ -340,10 +333,9 @@ impl<W: Write> Parser<W> {
                 let i = self.parse_bool(rest.next_full()?)?;
                 let t = self.parse_exp(rest.next()?)?;
                 let e = self.parse_exp(rest.next()?)?;
-                Ok(self
-                    .core
-                    .ite(i, t, e)
-                    .map_err(|(left, right)| IteSortMismatch { left, right })?)
+                rest.finish()?;
+                let err_m = |(left, right)| IteSortMismatch { left, right };
+                Ok(self.core.ite(i, t, e).map_err(err_m)?)
             }
             f => {
                 // Uninterpreted function
@@ -519,6 +511,8 @@ impl<W: Write> Parser<W> {
     }
 }
 
+/// Evaluate `data`, the bytes of an `smt2` file, reporting results to `stdout` and errors to
+/// `stderr`
 pub fn interp_smt2(data: &[u8], stdout: impl Write, mut stderr: impl Write) {
     let mut p = Parser::new(stdout);
     let res = SexpParser::new(data, |mut x| {

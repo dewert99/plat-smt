@@ -2,10 +2,19 @@ use crate::solver::BoolExp;
 use batsat::Lit;
 use std::ops::{BitAnd, BitOr};
 
+/// Either a [`Conjunction`] or a [`Disjunction`]
 pub struct Junction<const IS_AND: bool>(pub(super) Option<Vec<Lit>>);
 
+/// A conjunction of [`BoolExp`]s (a collection of [`BoolExp`] combined with `and`)
+///
+/// See [`Solver::collapse_bool`](crate::solver::Solver::collapse_bool)
+/// to reduces a [`Conjunction`] to a [`BoolExp`]
 pub type Conjunction = Junction<true>;
 
+/// A disjunction of [`BoolExp`]s (a collection of [`BoolExp`] combined with `or`)
+///
+/// See [`Solver::collapse_bool`](crate::solver::Solver::collapse_bool)
+/// to reduces a [`Conjunction`] to a [`BoolExp`]
 pub type Disjunction = Junction<false>;
 
 impl<const IS_AND: bool> Default for Junction<IS_AND> {

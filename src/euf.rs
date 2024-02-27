@@ -316,7 +316,9 @@ impl EUF {
             (BoolExp::Unknown(l), true, id)
         } else {
             let b = match &self.egraph[id] {
-                EClass::Uninterpreted(_) => unreachable!(),
+                EClass::Uninterpreted(x) => {
+                    unreachable!("merging eclasses with different sorts {}, Bool", x)
+                }
                 EClass::Bool(BoolClass::Const(b)) => BoolExp::Const(*b),
                 EClass::Bool(BoolClass::Unknown(v)) => BoolExp::Unknown(v[0]),
             };

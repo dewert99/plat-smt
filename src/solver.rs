@@ -53,7 +53,8 @@ display_debug!(UExp);
 /// It can be upcast to a dynamically sorted [`Exp`] using [`into`](Into::into), and downcast using
 /// [`Exp::as_bool`].
 ///
-/// It also implements [`BitAnd`], [`BitOr`], and [`BitNot`], but its [`BitAnd`], [`BitOr`]
+/// It also implements [`BitAnd`](core::ops::BitAnd), [`BitOr`](core::ops::BitOr), and
+/// [`Not`], but its [`BitAnd`](core::ops::BitAnd) and [`BitOr`](core::ops::BitOr)
 /// implementations produces [`Conjunction`]s and [`Disjunction`]s respectively.
 /// [`Solver::collapse_bool`] can be used to collapse these types back into [`BoolExp`]s
 #[derive(Copy, Clone, Eq, PartialEq)]
@@ -229,11 +230,27 @@ impl Solver {
         }
     }
 
-    pub fn eq(&mut self, id1: Id, id2: Id) -> BoolExp {
+    fn raw_eq(&mut self, id1: Id, id2: Id) -> BoolExp {
         self.euf
             .add_eq_node(id1, id2, || Lit::new(self.sat.new_var_default(), true))
     }
 
+    /// Produce a boolean expression representing the equality of the two expressions
+    ///
+    /// If the two expressions have different sorts returns an error containing both sorts
+    pub fn eq(&mut self, exp1: Exp, exp2: Exp) -> Result<BoolExp, (Sort, Sort)> {
+        let (id1, sort1) = self.id_sort(exp1);
+        let (id2, sort2) = self.id_sort(exp2);
+        if sort1 != sort2 {
+            Err((sort1, sort2))
+        } else {
+            Ok(self.raw_eq(id1, id2))
+        }
+    }
+
+    /// Produce an expression representing that is equivalent to `t` if `i` is true or `e` otherwise
+    ///
+    /// If `t` and `e` have different sorts returns an error containing both sorts
     pub fn ite(&mut self, i: BoolExp, t: Exp, e: Exp) -> Result<Exp, (Sort, Sort)> {
         let tsort = self.sort(t);
         let esort = self.sort(e);
@@ -249,11 +266,11 @@ impl Solver {
                 let sym = Symbol::new(format!("if|{u:?}|id{tid}|id{eid}"));
                 let fresh = self.sorted_fn(sym, Children::from_iter([]), tsort);
                 let fresh_id = self.id_sort(fresh).0;
-                let eqt = self.eq(fresh_id, tid);
+                let eqt = self.raw_eq(fresh_id, tid);
                 let BoolExp::Unknown(eqt) = eqt else {
                     unreachable!()
                 };
-                let eqe = self.eq(fresh_id, eid);
+                let eqe = self.raw_eq(fresh_id, eid);
                 let BoolExp::Unknown(eqe) = eqe else {
                     unreachable!()
                 };
@@ -270,14 +287,13 @@ impl Solver {
         Ok(res)
     }
 
-    pub fn bool_fn(&mut self, fn_name: Symbol, children: Children) -> BoolExp {
-        self.euf
-            .add_bool_node(fn_name, children, || {
-                Lit::new(self.sat.new_var_default(), true)
-            })
-            .0
-    }
-
+    /// Creates a function call expression with a given name and children and return sort
+    ///
+    /// [`Id`]s for the children can be created with [`id_sort`](Solver::id_sort)
+    ///
+    /// This method does not check sorts of the children so callers need to ensure that functions
+    /// call expressions with the same name but different return sorts do not become congruently
+    /// equal (This would cause a panic when it happens)
     pub fn sorted_fn(&mut self, fn_name: Symbol, children: Children, sort: Sort) -> Exp {
         if sort == self.bool_sort {
             self.bool_fn(fn_name, children).into()
@@ -286,6 +302,18 @@ impl Solver {
             UExp { id, sort }.into()
         }
     }
+
+    /// Similar to calling [`sorted_fn`](Solver::sorted_fn) with the boolean sort, but returns
+    /// a [`BoolExp`] instead of an [`Exp`]
+    pub fn bool_fn(&mut self, fn_name: Symbol, children: Children) -> BoolExp {
+        self.euf
+            .add_bool_node(fn_name, children, || {
+                Lit::new(self.sat.new_var_default(), true)
+            })
+            .0
+    }
+
+    /// Assert that `b` is true
     pub fn assert(&mut self, b: BoolExp) {
         debug!("assert {b}");
         self.clause_adder.clear();
@@ -300,6 +328,13 @@ impl Solver {
             }
         }
     }
+
+    /// Check if the current assertions are satisfiable
+    pub fn check_sat(&mut self) -> SolveResult {
+        self.check_sat_assuming(&Default::default())
+    }
+
+    /// Check if the current assertions combined with the assertions in `c` are satisfiable
     pub fn check_sat_assuming(&mut self, c: &Conjunction) -> SolveResult {
         let res = match &c.0 {
             None => lbool::FALSE,
@@ -318,24 +353,32 @@ impl Solver {
             SolveResult::Unknown
         }
     }
-    pub fn id_sort(&mut self, term: Exp) -> (Id, Sort) {
-        match term.0 {
+
+    /// Returns the id and sort of `exp`
+    ///
+    /// See [`sorted_fn`](Solver::sorted_fn) and  [`bool_fn`](Solver::bool_fn)
+    pub fn id_sort(&mut self, exp: Exp) -> (Id, Sort) {
+        match exp.0 {
             EExp::Bool(BoolExp::Const(b)) => (self.euf.id_for_bool(b), self.bool_sort),
             EExp::Bool(BoolExp::Unknown(lit)) => (self.euf.id_for_lit(lit), self.bool_sort),
             EExp::Uninterpreted(u) => (u.id, u.sort),
         }
     }
 
-    pub fn sort(&self, term: Exp) -> Sort {
-        match term.0 {
+    /// Returns the sort of `exp`
+    pub fn sort(&self, exp: Exp) -> Sort {
+        match exp.0 {
             EExp::Bool(_) => self.bool_sort,
             EExp::Uninterpreted(u) => u.sort,
         }
     }
+
+    /// Returns the boolean sort
     pub fn bool_sort(&self) -> Sort {
         self.bool_sort
     }
 
+    /// Simplifies `t` based on the current assertions
     pub fn canonize<T: ExpLike>(&self, t: T) -> T {
         let res = t.canonize(self);
         debug!("{t} canonized to {res}");
