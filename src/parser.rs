@@ -1,4 +1,5 @@
 use crate::egraph::Children;
+use crate::full_buf_read::FullBufRead;
 use crate::junction::{Conjunction, Disjunction};
 use crate::parser::Error::*;
 use crate::parser_core::{ParseError, SexpParser, SexpToken, SpanRange};
@@ -7,6 +8,7 @@ use crate::sort::{BaseSort, Sort};
 use egg::{Id, Symbol};
 use hashbrown::HashMap;
 use internment::Intern;
+use std::fmt::Formatter;
 use std::io::Write;
 use thiserror::Error;
 
@@ -78,17 +80,47 @@ enum Bound {
     Const(Exp),
 }
 
-// macro_rules! name {
-//     ($s:ident) => {$s};
-//     (($s:ident : $l:literal)) => {$s};
-// }
-//
-// macro_rules! make_syms_raw {
-//     ($($s:ident)*) => {struct Syms { $($s: Symbol,)*}};
-// }
-//
-//
-// make_syms_raw!{and or eq not}
+macro_rules! enum_str {
+    ($name:ident {$($s:literal => $var:ident,)*}) => {
+        #[derive(Copy, Clone)]
+        pub enum $name {
+            $($var,)*
+            Unknown,
+        }
+
+        impl $name {
+            fn from_str(s: &str) -> Self {
+                match s {
+                    $($s => Self::$var,)*
+                    _ => Self::Unknown,
+                }
+            }
+
+            fn to_str(self) -> &'static str {
+                 match self {
+                    $(Self::$var => $s,)*
+                    Self::Unknown => "???",
+                }
+            }
+        }
+
+        impl ::core::fmt::Debug for $name {
+            fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+                f.write_str(self.to_str())
+            }
+        }
+    };
+}
+
+enum_str!(Smt2Command{
+    "declare-sort" => DeclareSort,
+    "declare-fun" => DeclareFn,
+    "declare-const" => DeclareConst,
+    "get-unsat-core" => GetUnsatCore,
+    "assert" => Assert,
+    "check-sat" => CheckSat,
+    "check-sat-assuming" => CheckSatAssuming,
+});
 
 struct Syms {
     and: Symbol,
@@ -117,7 +149,7 @@ impl Default for Syms {
 }
 
 #[derive(Default)]
-struct Parser<W: Write> {
+pub struct Parser<W: Write> {
     bound: HashMap<Symbol, Bound>,
     scratch_stack: Vec<(Symbol, Option<Bound>)>,
     declared_sorts: HashMap<Symbol, u32>,
@@ -127,17 +159,17 @@ struct Parser<W: Write> {
     last_core_info: Option<UnsatCoreInfo<SpanRange>>,
 }
 
-struct CountingParser<'a, 'b> {
-    p: SexpParser<'a, 'b>,
+struct CountingParser<'a, R: FullBufRead> {
+    p: SexpParser<'a, R>,
     name: &'static str,
     actual: usize,
     expected: usize,
 }
 
-type InfoToken<'a, 'b> = (SexpToken<'a, 'b>, usize, &'static str);
+type InfoToken<'a, R> = (SexpToken<'a, R>, usize, &'static str);
 
-impl<'a, 'b> CountingParser<'a, 'b> {
-    fn new(p: SexpParser<'a, 'b>, name: &'static str, expected: usize) -> Self {
+impl<'a, R: FullBufRead> CountingParser<'a, R> {
+    fn new(p: SexpParser<'a, R>, name: &'static str, expected: usize) -> Self {
         CountingParser {
             p,
             name,
@@ -146,7 +178,7 @@ impl<'a, 'b> CountingParser<'a, 'b> {
         }
     }
 
-    fn try_next(&mut self) -> Result<Option<SexpToken<'_, 'b>>> {
+    fn try_next(&mut self) -> Result<Option<SexpToken<'_, R>>> {
         debug_assert!(self.actual < self.expected);
         self.actual += 1;
         match self.p.next() {
@@ -155,7 +187,7 @@ impl<'a, 'b> CountingParser<'a, 'b> {
         }
     }
 
-    fn next_full(&mut self) -> Result<(SexpToken<'_, 'b>, usize, &'static str)> {
+    fn next_full(&mut self) -> Result<(SexpToken<'_, R>, usize, &'static str)> {
         let actual = self.actual;
         let err = ArgumentMismatch {
             f: self.name,
@@ -166,7 +198,7 @@ impl<'a, 'b> CountingParser<'a, 'b> {
         self.actual += 1;
         Ok((self.p.next().ok_or(err)??, actual, self.name))
     }
-    fn next(&mut self) -> Result<SexpToken<'_, 'b>> {
+    fn next(&mut self) -> Result<SexpToken<'_, R>> {
         Ok(self.next_full()?.0)
     }
 
@@ -185,7 +217,7 @@ impl<'a, 'b> CountingParser<'a, 'b> {
 }
 
 impl<W: Write> Parser<W> {
-    fn new(writer: W) -> Self {
+    pub fn new(writer: W) -> Self {
         let mut res = Parser {
             bound: Default::default(),
             scratch_stack: Default::default(),
@@ -205,7 +237,7 @@ impl<W: Write> Parser<W> {
         res
     }
 
-    fn parse_exp(&mut self, token: SexpToken) -> Result<Exp> {
+    fn parse_exp<R: FullBufRead>(&mut self, token: SexpToken<R>) -> Result<Exp> {
         match token {
             SexpToken::Symbol(s) => {
                 let sym = Symbol::new(s);
@@ -229,7 +261,7 @@ impl<W: Write> Parser<W> {
         }
     }
 
-    fn parse_bool(&mut self, (token, arg_n, f): InfoToken) -> Result<BoolExp> {
+    fn parse_bool<R: FullBufRead>(&mut self, (token, arg_n, f): InfoToken<R>) -> Result<BoolExp> {
         let exp = self.parse_exp(token)?;
         exp.as_bool().ok_or_else(|| SortMismatch {
             f,
@@ -239,12 +271,12 @@ impl<W: Write> Parser<W> {
         })
     }
 
-    fn parse_id(
+    fn parse_id<R: FullBufRead>(
         &mut self,
         f: Symbol,
         arg_n: usize,
         expected: Sort,
-        token: SexpToken,
+        token: SexpToken<R>,
     ) -> Result<Id> {
         let exp = self.parse_exp(token)?;
         let (id, actual) = self.core.id_sort(exp);
@@ -260,7 +292,7 @@ impl<W: Write> Parser<W> {
         }
     }
 
-    fn parse_binding(&mut self, token: SexpToken) -> Result<(Symbol, Exp)> {
+    fn parse_binding<R: FullBufRead>(&mut self, token: SexpToken<R>) -> Result<(Symbol, Exp)> {
         match token {
             SexpToken::List(mut l) => {
                 let sym = match l.next().ok_or(InvalidBinding)?? {
@@ -283,7 +315,7 @@ impl<W: Write> Parser<W> {
         }
     }
 
-    fn parse_fn_exp(&mut self, f: Symbol, mut rest: SexpParser) -> Result<Exp> {
+    fn parse_fn_exp<R: FullBufRead>(&mut self, f: Symbol, mut rest: SexpParser<R>) -> Result<Exp> {
         match f {
             not if not == self.syms.not => {
                 let mut rest = CountingParser::new(rest, "not", 1);
@@ -388,7 +420,7 @@ impl<W: Write> Parser<W> {
         }
     }
 
-    fn parse_sort(&self, token: SexpToken) -> Result<Sort> {
+    fn parse_sort<R: FullBufRead>(&self, token: SexpToken<R>) -> Result<Sort> {
         let res = match token {
             SexpToken::Symbol(s) => BaseSort {
                 name: Symbol::new(s),
@@ -420,10 +452,14 @@ impl<W: Write> Parser<W> {
         self.last_core_info = None;
     }
 
-    fn parse_command(&mut self, name: &str, rest: SexpParser) -> Result<()> {
+    fn parse_command<R: FullBufRead>(
+        &mut self,
+        name: Smt2Command,
+        rest: SexpParser<R>,
+    ) -> Result<()> {
         match name {
-            "declare-sort" => {
-                let mut rest = CountingParser::new(rest, "declare-sort", 2);
+            Smt2Command::DeclareSort => {
+                let mut rest = CountingParser::new(rest, name.to_str(), 2);
                 let SexpToken::Symbol(name) = rest.next()? else {
                     return Err(InvalidCommand);
                 };
@@ -439,8 +475,8 @@ impl<W: Write> Parser<W> {
                 self.declared_sorts
                     .insert(name, args.try_into().map_err(|_| ParseError::Overflow)?);
             }
-            "declare-fun" => {
-                let mut rest = CountingParser::new(rest, "declare-fun", 3);
+            Smt2Command::DeclareFn => {
+                let mut rest = CountingParser::new(rest, name.to_str(), 3);
                 let SexpToken::Symbol(name) = rest.next()? else {
                     return Err(InvalidCommand);
                 };
@@ -467,8 +503,8 @@ impl<W: Write> Parser<W> {
                     self.bound.insert(name, Bound::Fn(fn_sort));
                 }
             }
-            "declare-const" => {
-                let mut rest = CountingParser::new(rest, "declare-const", 2);
+            Smt2Command::DeclareConst => {
+                let mut rest = CountingParser::new(rest, name.to_str(), 2);
                 let SexpToken::Symbol(name) = rest.next()? else {
                     return Err(InvalidCommand);
                 };
@@ -480,7 +516,7 @@ impl<W: Write> Parser<W> {
                 rest.finish()?;
                 self.declare_const(name, ret);
             }
-            "get-unsat-core" => {
+            Smt2Command::GetUnsatCore => {
                 let info = self.last_core_info.as_ref().ok_or(NoCore)?;
                 write!(self.writer, "(").unwrap();
                 let mut iter = info
@@ -493,39 +529,41 @@ impl<W: Write> Parser<W> {
                     write!(self.writer, " {x}").unwrap();
                 }
                 writeln!(self.writer, ")").unwrap();
-                CountingParser::new(rest, "get-unsat-core", 0).finish()?;
+                CountingParser::new(rest, name.to_str(), 0).finish()?;
             }
             _ => return self.parse_destructive_command(name, rest),
         }
         Ok(())
     }
 
-    fn parse_destructive_command(&mut self, name: &str, rest: SexpParser) -> Result<()> {
+    fn parse_destructive_command<R: FullBufRead>(
+        &mut self,
+        name: Smt2Command,
+        rest: SexpParser<R>,
+    ) -> Result<()> {
         self.reset_state();
         match name {
-            "assert" => {
-                let mut rest = CountingParser::new(rest, "assert", 1);
+            Smt2Command::Assert => {
+                let mut rest = CountingParser::new(rest, name.to_str(), 1);
                 let b = self.parse_bool(rest.next_full()?)?;
                 self.core.assert(b);
                 rest.finish()?;
             }
-            "check-sat" => {
-                CountingParser::new(rest, "check-sat", 0).finish()?;
+            Smt2Command::CheckSat => {
+                CountingParser::new(rest, name.to_str(), 0).finish()?;
                 let res = self.core.check_sat();
                 if let SolveResult::Unsat = res {
                     self.last_core_info = Some(UnsatCoreInfo::default())
                 }
                 writeln!(self.writer, "{res:?}").unwrap()
             }
-            "check-sat-assuming" => {
-                let mut rest = CountingParser::new(rest, "check-sat-assuming", 1);
+            Smt2Command::CheckSatAssuming => {
+                let mut rest = CountingParser::new(rest, name.to_str(), 1);
                 let SexpToken::List(mut l) = rest.next()? else {
                     return Err(InvalidCommand);
                 };
                 let conj = l
-                    .zip_map_full(0.., |token, i| {
-                        self.parse_bool((token?, i, "check-sat-assuming"))
-                    })
+                    .zip_map_full(0.., |token, i| self.parse_bool((token?, i, name.to_str())))
                     .map(|(x, y)| Ok((x?, y)))
                     .collect::<Result<UnsatCoreConjunction<SpanRange>>>()?;
                 drop(l);
@@ -550,11 +588,11 @@ impl<W: Write> Parser<W> {
         self.bound.insert(name, Bound::Const(exp));
     }
 
-    fn parse_command_token(&mut self, t: SexpToken) -> Result<()> {
+    fn parse_command_token<R: FullBufRead>(&mut self, t: SexpToken<R>) -> Result<()> {
         match t {
             SexpToken::List(mut l) => {
                 let s = match l.next().ok_or(InvalidCommand)?? {
-                    SexpToken::Symbol(s) => s,
+                    SexpToken::Symbol(s) => Smt2Command::from_str(s),
                     _ => return Err(InvalidCommand),
                 };
                 self.parse_command(s, l)
@@ -562,17 +600,19 @@ impl<W: Write> Parser<W> {
             _ => Err(InvalidCommand),
         }
     }
+
+    pub fn interp_smt2(&mut self, data: impl FullBufRead, mut err: impl Write) {
+        SexpParser::parse_stream_keep_going(
+            data,
+            |t| self.parse_command_token(t?),
+            |e| writeln!(err, "{e}").unwrap(),
+        );
+    }
 }
 
 /// Evaluate `data`, the bytes of an `smt2` file, reporting results to `stdout` and errors to
 /// `stderr`
-pub fn interp_smt2(data: &[u8], stdout: impl Write, mut stderr: impl Write) {
-    let mut p = Parser::new(stdout);
-    let res = SexpParser::new(data, |mut x| {
-        x.map(|t| p.parse_command_token(t?)).collect::<Result<()>>()
-    });
-    match res {
-        Ok(()) => {}
-        Err(e) => writeln!(stderr, "{e}").unwrap(),
-    }
+pub fn interp_smt2(data: impl FullBufRead, out: impl Write, err: impl Write) {
+    let mut p = Parser::new(out);
+    p.interp_smt2(data, err)
 }

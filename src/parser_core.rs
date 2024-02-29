@@ -1,7 +1,7 @@
+use crate::full_buf_read::FullBufRead;
 use core::fmt::{Debug, Display, Formatter};
 use core::str::Utf8Error;
 use std::string::FromUtf8Error;
-
 fn is_white_space_byte(c: u8) -> bool {
     matches!(c, b' ' | b'\n' | b'\t' | b'\r')
 }
@@ -61,8 +61,7 @@ pub enum ParseError {
     #[error("integer overflow")]
     Overflow,
 }
-use crate::parser_core::ParseError::Overflow;
-use ParseError::{LiteralError, NumberError, UnexpectedChar, UnexpectedEOI};
+use ParseError::*;
 
 #[derive(Debug)]
 pub struct Spanned<'a, T> {
@@ -94,8 +93,8 @@ impl<'a, T: Display> Display for Spanned<'a, T> {
     }
 }
 
-pub(crate) struct SexpLexer<'a> {
-    reader: &'a [u8],
+pub(crate) struct SexpLexer<R> {
+    reader: R,
     current_line: usize,
     idx: usize,
     last_span: Span,
@@ -108,11 +107,11 @@ pub enum Radix {
     Hexidecimal = 16,
 }
 
-enum RawSexpToken<'a, 'b> {
-    LeftParen(&'a mut SexpLexer<'b>),
+enum RawSexpToken<'a, R> {
+    LeftParen(&'a mut SexpLexer<R>),
     RightParen,
-    Keyword(&'b str),
-    Symbol(&'b str),
+    Keyword(&'a str),
+    Symbol(&'a str),
     String(String),
     Number(u128),
     BitVec { value: u128, bits: u8 },
@@ -135,8 +134,8 @@ enum DropToken {
     None,
 }
 
-impl<'a> SexpLexer<'a> {
-    fn new(reader: &'a [u8]) -> Self {
+impl<R: FullBufRead> SexpLexer<R> {
+    fn new(reader: R) -> Self {
         Self {
             reader,
             current_line: 0,
@@ -160,23 +159,25 @@ impl<'a> SexpLexer<'a> {
         c
     }
 
-    fn peek_char(&mut self) -> char {
-        let end = core::cmp::min(self.idx + 4, self.reader.len());
-        let bytes = &self.reader[self.idx..end];
+    fn read_char(&mut self) -> char {
+        let bytes = &self.reader.fill_to_data(self.idx + 4).unwrap()[self.idx..];
+        let end = core::cmp::min(4, bytes.len());
+        let bytes = &bytes[..end];
         let s = match core::str::from_utf8(bytes) {
             Ok(s) => s,
             Err(err) => core::str::from_utf8(&bytes[..err.valid_up_to()]).unwrap(),
         };
-        s.chars().next().unwrap_or(char::REPLACEMENT_CHARACTER)
-    }
-
-    #[inline]
-    fn peek_bytes(&mut self) -> &'a [u8] {
-        &self.reader[self.idx..]
+        let c = s.chars().next();
+        self.idx += c.map_or(1, char::len_utf8);
+        c.unwrap_or(char::REPLACEMENT_CHARACTER)
     }
 
     fn peek_byte(&mut self) -> Option<u8> {
-        self.peek_bytes().get(0).copied()
+        self.reader
+            .fill_to_data(self.idx + 1)
+            .unwrap()
+            .get(self.idx)
+            .copied()
     }
 
     fn skip_whitespace(&mut self) -> bool {
@@ -225,15 +226,15 @@ impl<'a> SexpLexer<'a> {
         Ok((n, chars))
     }
 
-    fn last_str(&self, before: usize, off: usize) -> Result<&'a str, Utf8Error> {
-        core::str::from_utf8(&self.reader[before..self.idx - off])
+    fn last_str(&self, before: usize, off: usize) -> Result<&str, Utf8Error> {
+        core::str::from_utf8(&self.reader.data()[before..self.idx - off])
     }
 
     fn skip(&mut self) {
         while self.skip_whitespace() || self.skip_comment() {}
     }
 
-    fn lex(&mut self) -> Result<RawSexpToken<'_, 'a>, ParseError> {
+    fn lex(&mut self) -> Result<RawSexpToken<'_, R>, ParseError> {
         self.update_last_span();
         match self.peek_byte() {
             // Parentheses
@@ -297,7 +298,7 @@ impl<'a> SexpLexer<'a> {
                         })
                     }
                     Some(_) => Err(LiteralError {
-                        prefix: self.peek_char(),
+                        prefix: self.read_char(),
                     }),
                     None => Err(UnexpectedEOI { expected: 'b' }),
                 }
@@ -322,7 +323,7 @@ impl<'a> SexpLexer<'a> {
                 Ok(RawSexpToken::Symbol(self.last_str(before, 0)?))
             }
             Some(_) => Err(UnexpectedChar {
-                found: self.peek_char(),
+                found: self.read_char(),
             }),
             None => Err(UnexpectedEOI { expected: ')' }),
         }
@@ -381,13 +382,13 @@ impl<'a> SexpLexer<'a> {
 }
 
 #[derive(Debug)]
-pub enum SexpToken<'a, 'b> {
-    Keyword(&'b str),
-    Symbol(&'b str),
+pub enum SexpToken<'a, R: FullBufRead> {
+    Keyword(&'a str),
+    Symbol(&'a str),
     String(String),
     Number(u128),
     BitVec { value: u128, bits: u8 },
-    List(SexpParser<'a, 'b>),
+    List(SexpParser<'a, R>),
 }
 
 /// # Examples
@@ -395,8 +396,9 @@ pub enum SexpToken<'a, 'b> {
 /// ```
 /// use std::io::Cursor;
 /// use bat_egg_smt::parser_core::{SexpParser, SexpToken, Radix};
-/// let sexp = "|hello world| (+ x 1 (+ a b) (+ c (+ d e))) 42";
-/// SexpParser::new(sexp.as_bytes(), |mut list| {
+/// let sexp = "(|hello world| (+ x 1 (+ a b) (+ c (+ d e))) 42)";
+/// SexpParser::parse_stream_keep_going(sexp.as_bytes(), |token| {
+///     let Ok(SexpToken::List(mut list)) = token else {unreachable!()};
 ///     let t1 = list.next(); // *
 ///     assert!(matches!(t1, Some(Ok(SexpToken::Symbol("hello world")))));
 ///     drop(t1);
@@ -416,11 +418,11 @@ pub enum SexpToken<'a, 'b> {
 ///     drop(t3);
 ///     assert!(list.next().is_none());
 ///     Ok::<(), ()>(())
-/// }).unwrap();
+/// }, |_| unreachable!());
 /// ```
-pub struct SexpParser<'a, 'b>(&'a mut SexpLexer<'b>, bool);
+pub struct SexpParser<'a, R: FullBufRead>(&'a mut SexpLexer<R>);
 
-impl<'a, 'b> Debug for SexpParser<'a, 'b> {
+impl<'a, R: FullBufRead> Debug for SexpParser<'a, R> {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("SexpParser").finish()
     }
@@ -432,37 +434,40 @@ impl<T, X> Bind<X> for T {}
 #[derive(Copy, Clone)]
 pub struct SpanRange(usize, usize);
 
-impl<'a, 'b> SexpParser<'a, 'b> {
-    pub fn new<T, E>(
-        reader: &'b [u8],
-        f: impl FnOnce(SexpParser<'_, 'b>) -> Result<T, E>,
-    ) -> Result<T, Spanned<E>> {
+impl<'a, R: FullBufRead> SexpParser<'a, R> {
+    pub fn parse_stream_keep_going<E>(
+        reader: R,
+        mut f: impl FnMut(Result<SexpToken<'_, R>, ParseError>) -> Result<(), E>,
+        mut handle_err: impl FnMut(Spanned<E>),
+    ) {
         let mut lexer = SexpLexer::new(reader);
-        match f(SexpParser(&mut lexer, false)) {
-            Ok(x) => Ok(x),
-            Err(err) => Err(Spanned {
-                data: err,
-                span: lexer.last_span,
-                src: lexer.reader,
-            }),
+        let mut p = SexpParser(&mut lexer);
+        loop {
+            let next = p.next_raw(false);
+            if next.is_some() {
+                if let Err(e) = f(next.unwrap()) {
+                    handle_err(Spanned {
+                        data: e,
+                        span: p.0.last_span,
+                        src: p.0.reader.data(),
+                    });
+                }
+            } else {
+                return;
+            }
         }
     }
 
-    pub fn lookup_range(&self, r: SpanRange) -> &'b str {
-        core::str::from_utf8(&self.0.reader[r.0..r.1]).unwrap()
+    pub fn lookup_range(&self, r: SpanRange) -> &str {
+        core::str::from_utf8(&self.0.reader.data()[r.0..r.1]).unwrap()
     }
 
-    pub fn next(&mut self) -> Option<Result<SexpToken<'_, 'b>, ParseError>> {
+    pub fn next_raw(&mut self, expect_paren: bool) -> Option<Result<SexpToken<'_, R>, ParseError>> {
         self.0.skip();
         if matches!(self.0.peek_byte(), Some(b')')) {
-            if self.1 {
-                None
-            } else {
-                self.0.update_last_span();
-                Some(Err(UnexpectedChar { found: ')' }))
-            }
+            None
         } else if self.0.peek_byte().is_none() {
-            if self.1 {
+            if expect_paren {
                 self.0.update_last_span();
                 Some(Err(UnexpectedEOI { expected: ')' }))
             } else {
@@ -470,7 +475,7 @@ impl<'a, 'b> SexpParser<'a, 'b> {
             }
         } else {
             let x = match self.0.lex() {
-                Ok(RawSexpToken::LeftParen(m)) => SexpToken::List(SexpParser(m, true)),
+                Ok(RawSexpToken::LeftParen(m)) => SexpToken::List(SexpParser(m)),
                 Ok(RawSexpToken::Keyword(k)) => SexpToken::Keyword(k),
                 Ok(RawSexpToken::Symbol(s)) => SexpToken::Symbol(s),
                 Ok(RawSexpToken::String(s)) => SexpToken::String(s),
@@ -483,9 +488,13 @@ impl<'a, 'b> SexpParser<'a, 'b> {
         }
     }
 
+    pub fn next(&mut self) -> Option<Result<SexpToken<'_, R>, ParseError>> {
+        self.next_raw(true)
+    }
+
     pub fn zip_map_full<
         U,
-        F: FnMut(Result<SexpToken<'_, 'b>, ParseError>, I::Item) -> U,
+        F: FnMut(Result<SexpToken<'_, R>, ParseError>, I::Item) -> U,
         I: IntoIterator,
     >(
         &mut self,
@@ -505,7 +514,7 @@ impl<'a, 'b> SexpParser<'a, 'b> {
 
     pub fn zip_map<
         U,
-        F: FnMut(Result<SexpToken<'_, 'b>, ParseError>, I::Item) -> U,
+        F: FnMut(Result<SexpToken<'_, R>, ParseError>, I::Item) -> U,
         I: IntoIterator,
     >(
         &mut self,
@@ -515,7 +524,7 @@ impl<'a, 'b> SexpParser<'a, 'b> {
         self.zip_map_full(zip, f).map(|(x, _)| x)
     }
 
-    pub fn map<U, F: FnMut(Result<SexpToken<'_, 'b>, ParseError>) -> U>(
+    pub fn map<U, F: FnMut(Result<SexpToken<'_, R>, ParseError>) -> U>(
         &mut self,
         mut f: F,
     ) -> impl Iterator<Item = U> + Bind<(F, &mut Self)> {
@@ -523,7 +532,7 @@ impl<'a, 'b> SexpParser<'a, 'b> {
     }
 }
 
-impl<'a, 'b> Drop for SexpParser<'a, 'b> {
+impl<'a, R: FullBufRead> Drop for SexpParser<'a, R> {
     fn drop(&mut self) {
         let mut depth = 0u32;
         loop {

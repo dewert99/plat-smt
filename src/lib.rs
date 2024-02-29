@@ -1,6 +1,7 @@
 mod egraph;
 mod euf;
 mod explain;
+mod full_buf_read;
 pub mod junction;
 mod parser;
 pub mod parser_core;
