@@ -1,0 +1,8 @@
+unexpected token when parsing command at 1:16
+(declare-fun f Bool)
+               ^
+
+unknown identifier `f` at 2:9
+(assert f)
+        ^
+
