@@ -494,13 +494,14 @@ impl<'a, R: FullBufRead> SexpParser<'a, R> {
 
     pub fn zip_map_full<
         U,
-        F: FnMut(Result<SexpToken<'_, R>, ParseError>, I::Item) -> U,
+        E,
+        F: FnMut(Result<SexpToken<'_, R>, ParseError>, I::Item) -> Result<U, E>,
         I: IntoIterator,
     >(
         &mut self,
         zip: I,
         mut f: F,
-    ) -> impl Iterator<Item = (U, SpanRange)> + Bind<(F, I, &mut Self)> {
+    ) -> impl Iterator<Item = Result<(U, SpanRange), E>> + Bind<(F, I, &mut Self)> {
         let mut iter = zip.into_iter();
         core::iter::from_fn(move || {
             self.0.skip();
@@ -508,7 +509,7 @@ impl<'a, R: FullBufRead> SexpParser<'a, R> {
             let start = self.0.idx;
             let res = f(self.next()?, it_next);
             let end = self.0.idx;
-            Some((res, SpanRange(start, end)))
+            Some(res.map(|res| (res, SpanRange(start, end))))
         })
     }
 
@@ -519,9 +520,15 @@ impl<'a, R: FullBufRead> SexpParser<'a, R> {
     >(
         &mut self,
         zip: I,
-        f: F,
+        mut f: F,
     ) -> impl Iterator<Item = U> + Bind<(F, I, &mut Self)> {
-        self.zip_map_full(zip, f).map(|(x, _)| x)
+        let mut iter = zip.into_iter();
+        core::iter::from_fn(move || {
+            self.0.skip();
+            let it_next = iter.next()?;
+            let res = f(self.next()?, it_next);
+            Some(res)
+        })
     }
 
     pub fn map<U, F: FnMut(Result<SexpToken<'_, R>, ParseError>) -> U>(

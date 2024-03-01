@@ -10,6 +10,7 @@ use hashbrown::HashMap;
 use internment::Intern;
 use std::fmt::Formatter;
 use std::io::Write;
+use std::iter;
 use thiserror::Error;
 
 #[derive(Error, Debug)]
@@ -51,6 +52,8 @@ enum Error {
     InvalidLet,
     #[error("The last command was not `check-sat-assuming` that returned `Unsat`")]
     NoCore,
+    #[error("The last command was not `check-sat-assuming` that returned `Sat`")]
+    NoModel,
     #[error("unsupported {0}")]
     Unsupported(&'static str),
     #[error(transparent)]
@@ -117,6 +120,7 @@ enum_str!(Smt2Command{
     "declare-fun" => DeclareFn,
     "declare-const" => DeclareConst,
     "get-unsat-core" => GetUnsatCore,
+    "get-value" => GetValue,
     "assert" => Assert,
     "check-sat" => CheckSat,
     "check-sat-assuming" => CheckSatAssuming,
@@ -149,6 +153,14 @@ impl Default for Syms {
 }
 
 #[derive(Default)]
+enum State {
+    Unsat(UnsatCoreInfo<SpanRange>),
+    Model,
+    #[default]
+    Base,
+}
+
+#[derive(Default)]
 pub struct Parser<W: Write> {
     bound: HashMap<Symbol, Bound>,
     scratch_stack: Vec<(Symbol, Option<Bound>)>,
@@ -156,7 +168,7 @@ pub struct Parser<W: Write> {
     core: Solver,
     syms: Syms,
     writer: W,
-    last_core_info: Option<UnsatCoreInfo<SpanRange>>,
+    state: State,
 }
 
 struct CountingParser<'a, R: FullBufRead> {
@@ -225,7 +237,7 @@ impl<W: Write> Parser<W> {
             core: Default::default(),
             syms: Default::default(),
             writer,
-            last_core_info: None,
+            state: State::Base,
         };
         res.declared_sorts.insert(res.core.bool_sort().name, 0);
         let true_sym = Symbol::new("true");
@@ -449,7 +461,10 @@ impl<W: Write> Parser<W> {
     }
 
     pub fn reset_state(&mut self) {
-        self.last_core_info = None;
+        if matches!(self.state, State::Model) {
+            self.core.pop_model();
+        }
+        self.state = State::Base;
     }
 
     fn parse_command<R: FullBufRead>(
@@ -475,6 +490,67 @@ impl<W: Write> Parser<W> {
                 self.declared_sorts
                     .insert(name, args.try_into().map_err(|_| ParseError::Overflow)?);
             }
+            Smt2Command::GetUnsatCore => {
+                let State::Unsat(info) = &self.state else {
+                    return Err(NoCore);
+                };
+                write!(self.writer, "(").unwrap();
+                let mut iter = info
+                    .core(self.core.last_unsat_core())
+                    .map(|x| rest.lookup_range(*x));
+                if let Some(x) = iter.next() {
+                    write!(self.writer, "{x}").unwrap();
+                }
+                for x in iter {
+                    write!(self.writer, " {x}").unwrap();
+                }
+                writeln!(self.writer, ")").unwrap();
+                CountingParser::new(rest, name.to_str(), 0).finish()?;
+            }
+            Smt2Command::GetValue => {
+                let mut rest = CountingParser::new(rest, name.to_str(), 1);
+                if !matches!(self.state, State::Model) {
+                    return Err(NoModel);
+                }
+                let SexpToken::List(mut l) = rest.next()? else {
+                    return Err(InvalidCommand);
+                };
+                let values = l
+                    .zip_map_full(iter::repeat(()), |x, ()| self.parse_exp(x?))
+                    .collect::<Result<Vec<_>>>()?;
+                drop(l);
+                write!(self.writer, "(").unwrap();
+                let mut iter = values.into_iter();
+                if let Some((x, span)) = iter.next() {
+                    write!(self.writer, "({} {x})", rest.p.lookup_range(span)).unwrap();
+                }
+                for (x, span) in iter {
+                    write!(self.writer, "\n ({} {x})", rest.p.lookup_range(span)).unwrap();
+                }
+                writeln!(self.writer, ")").unwrap();
+                rest.finish()?;
+            }
+            _ => return self.parse_destructive_command(name, rest),
+        }
+        Ok(())
+    }
+
+    fn set_state(&mut self, res: SolveResult, info: UnsatCoreInfo<SpanRange>) {
+        self.state = if let SolveResult::Unsat = res {
+            self.core.pop_model();
+            State::Unsat(info)
+        } else {
+            State::Model
+        }
+    }
+
+    fn parse_destructive_command<R: FullBufRead>(
+        &mut self,
+        name: Smt2Command,
+        rest: SexpParser<R>,
+    ) -> Result<()> {
+        self.reset_state();
+        match name {
             Smt2Command::DeclareFn => {
                 let mut rest = CountingParser::new(rest, name.to_str(), 3);
                 let SexpToken::Symbol(name) = rest.next()? else {
@@ -516,33 +592,6 @@ impl<W: Write> Parser<W> {
                 rest.finish()?;
                 self.declare_const(name, ret);
             }
-            Smt2Command::GetUnsatCore => {
-                let info = self.last_core_info.as_ref().ok_or(NoCore)?;
-                write!(self.writer, "(").unwrap();
-                let mut iter = info
-                    .core(self.core.last_unsat_core())
-                    .map(|x| rest.lookup_range(*x));
-                if let Some(x) = iter.next() {
-                    write!(self.writer, "{x}").unwrap();
-                }
-                for x in iter {
-                    write!(self.writer, " {x}").unwrap();
-                }
-                writeln!(self.writer, ")").unwrap();
-                CountingParser::new(rest, name.to_str(), 0).finish()?;
-            }
-            _ => return self.parse_destructive_command(name, rest),
-        }
-        Ok(())
-    }
-
-    fn parse_destructive_command<R: FullBufRead>(
-        &mut self,
-        name: Smt2Command,
-        rest: SexpParser<R>,
-    ) -> Result<()> {
-        self.reset_state();
-        match name {
             Smt2Command::Assert => {
                 let mut rest = CountingParser::new(rest, name.to_str(), 1);
                 let b = self.parse_bool(rest.next_full()?)?;
@@ -551,10 +600,10 @@ impl<W: Write> Parser<W> {
             }
             Smt2Command::CheckSat => {
                 CountingParser::new(rest, name.to_str(), 0).finish()?;
-                let res = self.core.check_sat();
-                if let SolveResult::Unsat = res {
-                    self.last_core_info = Some(UnsatCoreInfo::default())
-                }
+                let res = self
+                    .core
+                    .check_sat_assuming_preserving_trail(&Default::default());
+                self.set_state(res, Default::default());
                 writeln!(self.writer, "{res:?}").unwrap()
             }
             Smt2Command::CheckSatAssuming => {
@@ -564,14 +613,13 @@ impl<W: Write> Parser<W> {
                 };
                 let conj = l
                     .zip_map_full(0.., |token, i| self.parse_bool((token?, i, name.to_str())))
-                    .map(|(x, y)| Ok((x?, y)))
                     .collect::<Result<UnsatCoreConjunction<SpanRange>>>()?;
                 drop(l);
                 rest.finish()?;
-                let res = self.core.check_sat_assuming(conj.parts().0);
-                if let SolveResult::Unsat = res {
-                    self.last_core_info = Some(conj.take_core())
-                }
+                let res = self
+                    .core
+                    .check_sat_assuming_preserving_trail(conj.parts().0);
+                self.set_state(res, conj.take_core());
                 writeln!(self.writer, "{res:?}").unwrap()
             }
             _ => return Err(InvalidCommand),

@@ -1,0 +1,7 @@
+Unsat
+((= a b))
+Sat
+((a S1!val!2)
+ (b S1!val!3)
+ ((f a) S2!val!4)
+ ((f b) S2!val!5))

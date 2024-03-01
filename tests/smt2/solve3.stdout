@@ -1,3 +1,6 @@
 Sat
+((a S1!val!2)
+ (b S1!val!2)
+ (x true))
 Unsat
 ((not (and x (= (a) (b)))))

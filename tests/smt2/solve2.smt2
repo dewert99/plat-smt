@@ -7,4 +7,6 @@
 (check-sat-assuming ( (and (f a) (not (f b)))))
 (get-unsat-core)
 (check-sat-assuming ((f a)))
-(check-sat-assuming ((not (f a))))
+(get-value (a b x (f a) (f b)))
+(check-sat-assuming ((not (f b))))
+(get-value (a b x (f a) (f b)))

@@ -163,6 +163,7 @@ impl<'x, L: Language, D, U> ExplainWith<'x, &'x RawEGraph<L, D, U>> {
                 EJustification::Congruence => {}
             }
             if next == ancestor {
+                self.handle_congruence(pre_congrence, next, res);
                 return;
             }
             debug_assert_ne!(next, node);

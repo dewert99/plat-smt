@@ -1,3 +1,7 @@
 Sat
+((i true)
+ (x true)
+ (y false)
+ (o false))
 Unsat
 ((not (= a b)))

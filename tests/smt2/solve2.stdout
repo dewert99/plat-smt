@@ -1,4 +1,14 @@
 Unsat
 ((and (f a) (not (f b))))
 Sat
+((a S1!val!2)
+ (b S1!val!2)
+ (x true)
+ ((f a) true)
+ ((f b) true))
 Sat
+((a S1!val!2)
+ (b S1!val!2)
+ (x true)
+ ((f a) false)
+ ((f b) false))

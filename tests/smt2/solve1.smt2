@@ -4,3 +4,5 @@
 (check-sat-assuming ((not x)))
 (get-unsat-core)
 (check-sat)
+(get-value (x (f true) (f false)))
+(get-value ((f x) (f (f x))))

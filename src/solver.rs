@@ -43,7 +43,7 @@ struct UExp {
 
 impl Debug for UExp {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{}${:?}", self.sort, self.id)
+        write!(f, "{}!val!{:?}", self.sort.name, self.id)
     }
 }
 
@@ -106,7 +106,14 @@ impl Debug for BoolExp {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         match self {
             BoolExp::Const(c) => Debug::fmt(c, f),
-            BoolExp::Unknown(l) => write!(f, "Bool${l:?}"),
+            BoolExp::Unknown(l) => {
+                write!(
+                    f,
+                    "{}Bool!val!{:?}",
+                    if l.sign() { "" } else { "!" },
+                    l.var()
+                )
+            }
         }
     }
 }
@@ -142,7 +149,7 @@ impl ExpLike for BoolExp {
     fn canonize(self, solver: &Solver) -> Self {
         match self {
             BoolExp::Unknown(x) => {
-                let val = solver.sat.value_lvl_0(x);
+                let val = solver.sat.raw_value_lit(x);
                 if val == lbool::TRUE {
                     BoolExp::TRUE
                 } else if val == lbool::FALSE {
@@ -176,7 +183,7 @@ impl ExpLike for Exp {
 
 pub type BLit = Lit;
 
-#[derive(Debug)]
+#[derive(Debug, Copy, Clone)]
 /// Result of calling [`Solver::check_sat_assuming`]
 pub enum SolveResult {
     Sat,
@@ -337,10 +344,13 @@ impl Solver {
     }
 
     /// Check if the current assertions combined with the assertions in `c` are satisfiable
-    pub fn check_sat_assuming(&mut self, c: &Conjunction) -> SolveResult {
+    /// Leave the solver in a state representing the model
+    pub fn check_sat_assuming_preserving_trail(&mut self, c: &Conjunction) -> SolveResult {
         let res = match &c.0 {
             None => lbool::FALSE,
-            Some(x) => self.sat.solve_limited_th(&mut self.euf, &x),
+            Some(x) => self
+                .sat
+                .solve_limited_preserving_trail_th(&mut self.euf, &x),
         };
         if res == lbool::FALSE {
             debug!(
@@ -359,6 +369,18 @@ impl Solver {
         } else {
             SolveResult::Unknown
         }
+    }
+
+    /// Check if the current assertions combined with the assertions in `c` are satisfiable
+    pub fn check_sat_assuming(&mut self, c: &Conjunction) -> SolveResult {
+        let res = self.check_sat_assuming_preserving_trail(c);
+        self.pop_model();
+        res
+    }
+
+    /// Restores the state after calling `raw_check_sat_assuming`
+    pub fn pop_model(&mut self) {
+        self.sat.pop_model(&mut self.euf)
     }
 
     /// Like [`check_sat_assuming`](Solver::check_sat_assuming) but takes in an
@@ -443,7 +465,6 @@ impl<T> UnsatCoreInfo<T> {
     }
 }
 
-#[derive(Default)]
 pub struct UnsatCoreConjunction<T> {
     conj: Conjunction,
     info: UnsatCoreInfo<T>,

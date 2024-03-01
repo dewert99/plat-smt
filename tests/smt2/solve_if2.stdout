@@ -1,2 +1,12 @@
 Sat
+((i true)
+ (x true)
+ (y false)
+ (o false))
 Sat
+((i false)
+ (x true)
+ (y false)
+ (o true)
+ (a U!val!8)
+ (b U!val!10))
