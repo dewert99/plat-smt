@@ -1,5 +1,5 @@
 use crate::egraph::Children;
-use crate::euf::EUF;
+use crate::euf::{FullFunctionInfo, FunctionInfo, EUF};
 use crate::junction::*;
 use crate::sort::{BaseSort, Sort};
 use crate::util::display_debug;
@@ -18,6 +18,7 @@ pub struct Solver {
     euf: EUF,
     sat: batsat::BasicSolver,
     clause_adder: Vec<Lit>,
+    function_info_buf: FunctionInfo,
     bool_sort: Sort,
 }
 
@@ -27,6 +28,7 @@ impl Default for Solver {
             euf: Default::default(),
             sat: Default::default(),
             clause_adder: vec![],
+            function_info_buf: Default::default(),
             bool_sort: Sort::new(BaseSort {
                 name: Symbol::new("Bool"),
                 params: Box::new([]),
@@ -36,9 +38,9 @@ impl Default for Solver {
 }
 
 #[derive(Copy, Clone)]
-struct UExp {
-    id: Id,
-    sort: Sort,
+pub(crate) struct UExp {
+    pub(crate) id: Id,
+    pub(crate) sort: Sort,
 }
 
 impl Debug for UExp {
@@ -430,6 +432,11 @@ impl Solver {
 
     pub(crate) fn last_unsat_core(&self) -> &[Lit] {
         self.sat.unsat_core()
+    }
+
+    pub fn function_info(&mut self) -> (FullFunctionInfo<'_>, &Self) {
+        self.euf.function_info(&mut self.function_info_buf);
+        (self.function_info_buf.with_euf(&self.euf), &*self)
     }
 }
 

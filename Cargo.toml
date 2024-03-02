@@ -14,6 +14,7 @@ internment = "0.7.4"
 thiserror = "1.0.57"
 either = { version = "1.10.0", default-features = false }
 env_logger = {version = "0.11.2", optional = true}
+perfect-derive = "0.1.3"
 
 
 [dev-dependencies]

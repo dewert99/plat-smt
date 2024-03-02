@@ -5,4 +5,5 @@
 (get-unsat-core)
 (check-sat)
 (get-value (x (f true) (f false)))
+(get-model)
 (get-value ((f x) (f (f x))))

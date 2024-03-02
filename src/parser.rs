@@ -1,10 +1,12 @@
 use crate::egraph::Children;
+use crate::euf::FullFunctionInfo;
 use crate::full_buf_read::FullBufRead;
 use crate::junction::{Conjunction, Disjunction};
 use crate::parser::Error::*;
 use crate::parser_core::{ParseError, SexpParser, SexpToken, SpanRange};
 use crate::solver::{BoolExp, Exp, SolveResult, Solver, UnsatCoreConjunction, UnsatCoreInfo};
 use crate::sort::{BaseSort, Sort};
+use crate::util::{format_args2, parenthesized};
 use egg::{Id, Symbol};
 use hashbrown::HashMap;
 use internment::Intern;
@@ -86,7 +88,7 @@ enum Bound {
 macro_rules! enum_str {
     ($name:ident {$($s:literal => $var:ident,)*}) => {
         #[derive(Copy, Clone)]
-        pub enum $name {
+        enum $name {
             $($var,)*
             Unknown,
         }
@@ -121,6 +123,7 @@ enum_str!(Smt2Command{
     "declare-const" => DeclareConst,
     "get-unsat-core" => GetUnsatCore,
     "get-value" => GetValue,
+    "get-model" => GetModel,
     "assert" => Assert,
     "check-sat" => CheckSat,
     "check-sat-assuming" => CheckSatAssuming,
@@ -530,6 +533,44 @@ impl<W: Write> Parser<W> {
                 writeln!(self.writer, ")").unwrap();
                 rest.finish()?;
             }
+            Smt2Command::GetModel => {
+                CountingParser::new(rest, name.to_str(), 0).finish()?;
+                if !matches!(self.state, State::Model) {
+                    return Err(NoModel);
+                }
+                let (funs, core) = self.core.function_info();
+                writeln!(self.writer, "(").unwrap();
+                let mut bound: Vec<_> = self
+                    .bound
+                    .keys()
+                    .copied()
+                    .filter(|k| !matches!(k.as_str(), "true" | "false"))
+                    .collect();
+                bound.sort_unstable_by_key(|x| x.as_str());
+                for k in bound {
+                    match &self.bound[&k] {
+                        Bound::Const(x) => {
+                            if matches!(k.as_str(), "true" | "false") {
+                                continue;
+                            }
+                            let x = core.canonize(*x);
+                            let sort = core.sort(x);
+                            writeln!(self.writer, " (define-fun {k} () {sort} {x})").unwrap();
+                        }
+                        Bound::Fn(f) => {
+                            let args = f
+                                .args
+                                .iter()
+                                .enumerate()
+                                .map(|(i, s)| format_args2!("(x!{i} {s})"));
+                            let args = parenthesized(args, " ");
+                            writeln!(self.writer, " (define-fun {k} {args} {}", f.ret).unwrap();
+                            write_body(&mut self.writer, &funs, k);
+                        }
+                    }
+                }
+                writeln!(self.writer, ")").unwrap();
+            }
             _ => return self.parse_destructive_command(name, rest),
         }
         Ok(())
@@ -656,6 +697,30 @@ impl<W: Write> Parser<W> {
             |e| writeln!(err, "{e}").unwrap(),
         );
     }
+}
+
+fn write_body<W: Write>(writer: &mut W, info: &FullFunctionInfo, name: Symbol) {
+    let cases = info.get(name);
+    let len = cases.len();
+    for (case, res) in cases {
+        let mut case = case
+            .enumerate()
+            .map(|(i, x)| format_args2!("(= x!{i} {x})"));
+        write!(writer, "  (ite ").unwrap();
+        let c1 = case.next().unwrap();
+        match case.next() {
+            None => write!(writer, "{c1}").unwrap(),
+            Some(c2) => {
+                write!(writer, "(and {c1} {c2}").unwrap();
+                for c in case {
+                    write!(writer, " {c}").unwrap();
+                }
+                write!(writer, ")").unwrap();
+            }
+        }
+        writeln!(writer, " {res}").unwrap();
+    }
+    writeln!(writer, "   {name}!default{:)<len$})", "").unwrap()
 }
 
 /// Evaluate `data`, the bytes of an `smt2` file, reporting results to `stdout` and errors to

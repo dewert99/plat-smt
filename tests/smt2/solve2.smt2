@@ -8,5 +8,7 @@
 (get-unsat-core)
 (check-sat-assuming ((f a)))
 (get-value (a b x (f a) (f b)))
+(get-model)
 (check-sat-assuming ((not (f b))))
+(get-model)
 (get-value (a b x (f a) (f b)))
