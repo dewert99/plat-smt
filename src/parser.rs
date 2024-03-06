@@ -121,6 +121,7 @@ enum_str!(Smt2Command{
     "declare-sort" => DeclareSort,
     "declare-fun" => DeclareFn,
     "declare-const" => DeclareConst,
+    "define-const" => DefineConst,
     "get-unsat-core" => GetUnsatCore,
     "get-value" => GetValue,
     "get-model" => GetModel,
@@ -655,6 +656,17 @@ impl<W: Write> Parser<W> {
         }
     }
 
+    fn parse_fresh_binder<R: FullBufRead>(&self, token: SexpToken<R>) -> Result<Symbol> {
+        let SexpToken::Symbol(name) = token else {
+            return Err(InvalidCommand);
+        };
+        let name = Symbol::new(name);
+        if self.bound.contains_key(&name) {
+            return Err(Shadow(name));
+        }
+        Ok(name)
+    }
+
     fn parse_destructive_command<R: FullBufRead>(
         &mut self,
         name: Smt2Command,
@@ -664,13 +676,7 @@ impl<W: Write> Parser<W> {
         match name {
             Smt2Command::DeclareFn => {
                 let mut rest = CountingParser::new(rest, name.to_str(), 3);
-                let SexpToken::Symbol(name) = rest.next()? else {
-                    return Err(InvalidCommand);
-                };
-                let name = Symbol::new(name);
-                if self.bound.contains_key(&name) {
-                    return Err(Shadow(name));
-                }
+                let name = self.parse_fresh_binder(rest.next()?)?;
                 let SexpToken::List(mut l) = rest.next()? else {
                     return Err(InvalidCommand);
                 };
@@ -692,16 +698,17 @@ impl<W: Write> Parser<W> {
             }
             Smt2Command::DeclareConst => {
                 let mut rest = CountingParser::new(rest, name.to_str(), 2);
-                let SexpToken::Symbol(name) = rest.next()? else {
-                    return Err(InvalidCommand);
-                };
-                let name = Symbol::new(name);
-                if self.bound.contains_key(&name) {
-                    return Err(Shadow(name));
-                }
+                let name = self.parse_fresh_binder(rest.next()?)?;
                 let ret = self.parse_sort(rest.next()?)?;
                 rest.finish()?;
                 self.declare_const(name, ret);
+            }
+            Smt2Command::DefineConst => {
+                let mut rest = CountingParser::new(rest, name.to_str(), 2);
+                let name = self.parse_fresh_binder(rest.next()?)?;
+                let ret = self.parse_exp(rest.next()?)?;
+                rest.finish()?;
+                self.bound.insert(name, Bound::Const(ret));
             }
             Smt2Command::Assert => {
                 let mut rest = CountingParser::new(rest, name.to_str(), 1);
