@@ -203,6 +203,13 @@ impl Solver {
     pub fn fresh_bool(&mut self) -> BoolExp {
         BoolExp::Unknown(Lit::new(self.fresh(), true))
     }
+
+    fn add_clause<const N: usize>(&mut self, clause: [Lit; N]) {
+        self.clause_adder.clear();
+        self.clause_adder.extend(clause);
+        self.sat.add_clause_reuse(&mut self.clause_adder);
+    }
+
     fn andor_reuse(&mut self, exps: &mut Vec<BLit>, is_and: bool) -> BLit {
         let fresh = self.fresh();
         let res = Lit::new(fresh, true);
@@ -214,10 +221,7 @@ impl Solver {
             return *exp;
         }
         for lit in &mut *exps {
-            self.clause_adder.clear();
-            self.clause_adder.push(*lit ^ !is_and);
-            self.clause_adder.push(Lit::new(fresh, !is_and));
-            self.sat.add_clause_reuse(&mut self.clause_adder);
+            self.add_clause([*lit ^ !is_and, Lit::new(fresh, !is_and)]);
             *lit = *lit ^ is_and;
         }
         exps.push(Lit::new(fresh, is_and));
@@ -239,6 +243,26 @@ impl Solver {
             Some(x) if x.is_empty() => BoolExp::Const(IS_AND),
             Some(x) => BoolExp::Unknown(self.andor_reuse(x, IS_AND)),
         }
+    }
+
+    pub fn xor(&mut self, b1: BoolExp, b2: BoolExp) -> BoolExp {
+        let res = match (b1, b2) {
+            (BoolExp::Const(b1), BoolExp::Const(b2)) => BoolExp::Const(b1 ^ b2),
+            (BoolExp::Const(b), BoolExp::Unknown(l)) | (BoolExp::Unknown(l), BoolExp::Const(b)) => {
+                BoolExp::Unknown(l ^ b)
+            }
+            (BoolExp::Unknown(l1), BoolExp::Unknown(l2)) => {
+                let fresh = self.fresh();
+                let fresh = Lit::new(fresh, true);
+                self.add_clause([l1, l2, !fresh]);
+                self.add_clause([!l1, l2, fresh]);
+                self.add_clause([l1, !l2, fresh]);
+                self.add_clause([!l1, !l2, !fresh]);
+                BoolExp::Unknown(fresh)
+            }
+        };
+        debug!("{res} = (xor {b1} {b2})");
+        res
     }
 
     fn raw_eq(&mut self, id1: Id, id2: Id) -> BoolExp {

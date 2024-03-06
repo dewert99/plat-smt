@@ -129,31 +129,34 @@ enum_str!(Smt2Command{
     "check-sat-assuming" => CheckSatAssuming,
 });
 
-struct Syms {
-    and: Symbol,
-    or: Symbol,
-    eq: Symbol,
-    not: Symbol,
-    let_: Symbol,
-    ite: Symbol,
-    if_: Symbol,
-    imp: Symbol,
+macro_rules! sym_struct {
+    ($name:ident {$($var:ident = $l:literal,)*}) => {
+        #[derive(Copy, Clone)]
+        struct $name {
+            $($var: ::egg::Symbol,)*
+        }
+
+        impl ::core::default::Default for $name {
+            fn default() -> Self {
+                $name{
+                    $($var: ::egg::Symbol::new($l),)*
+                }
+            }
+        }
+    };
 }
 
-impl Default for Syms {
-    fn default() -> Self {
-        Syms {
-            and: Symbol::new("and"),
-            or: Symbol::new("or"),
-            eq: Symbol::new("="),
-            not: Symbol::new("not"),
-            let_: Symbol::new("let"),
-            ite: Symbol::new("ite"),
-            if_: Symbol::new("if"),
-            imp: Symbol::new("=>"),
-        }
-    }
-}
+sym_struct! {Syms{
+    and = "and",
+    or = "or",
+    not = "not",
+    imp = "=>",
+    xor = "xor",
+    eq = "=",
+    let_ = "let",
+    ite = "ite",
+    if_ = "if",
+}}
 
 #[derive(Default)]
 enum State {
@@ -361,6 +364,16 @@ impl<W: Write> Parser<W> {
                 let not_last = iter.map(|item| Ok(!std::mem::replace(&mut last, item?)));
                 let res = not_last.collect::<Result<Disjunction>>()? | last;
                 Ok(self.core.collapse_bool(res).into())
+            }
+            xor if xor == self.syms.xor => {
+                let mut res = BoolExp::FALSE;
+                rest.zip_map(0.., |token, i| {
+                    let parsed = self.parse_bool((token?, i, "xor"))?;
+                    res = self.core.xor(res, parsed);
+                    Ok(())
+                })
+                .collect::<Result<()>>()?;
+                Ok(res.into())
             }
             eq if eq == self.syms.eq => {
                 let mut rest = CountingParser::new(rest, "=", 2);

@@ -3,8 +3,8 @@ that accepts a subset of SMT2LIB syntax for the logic `QF_UF`
 
 ## Supported syntax:
 - [x] `true`, `false`, `and`, `or`, `not`,
+- [x] `=>`, `xor`
 - [x] `=`
-- [x] `=>`
 - [x] `declare-sort`
 - [x] `declare-function`
 - [x] `assert`
