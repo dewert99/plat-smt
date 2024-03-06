@@ -29,10 +29,11 @@ impl<const IS_AND: bool> Debug for Junction<IS_AND> {
         match &self.0 {
             None => Debug::fmt(&(!IS_AND), f),
             Some(lits) => {
-                let and_or = if IS_AND { "(and " } else { "(or " };
+                let and_or = if IS_AND { "(and" } else { "(or" };
                 f.write_str(and_or)?;
                 for lit in lits {
-                    Debug::fmt(&lit, f)?
+                    f.write_str(" ")?;
+                    Debug::fmt(&lit, f)?;
                 }
                 f.write_str(")")
             }

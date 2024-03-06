@@ -376,12 +376,17 @@ impl<W: Write> Parser<W> {
                 Ok(res.into())
             }
             eq if eq == self.syms.eq => {
-                let mut rest = CountingParser::new(rest, "=", 2);
+                let mut rest = CountingParser::new(rest, "=", 1);
                 let exp1 = self.parse_exp(rest.next()?)?;
-                let exp2 = self.parse_exp(rest.next()?)?;
-                rest.finish()?;
                 let err_m = |(left, right)| EqSortMismatch { left, right };
-                Ok(self.core.eq(exp1, exp2).map_err(err_m)?.into())
+                let conj = rest
+                    .p
+                    .map(|x| {
+                        let parsed = self.parse_exp(x?)?;
+                        self.core.eq(exp1, parsed).map_err(err_m)
+                    })
+                    .collect::<Result<Conjunction>>()?;
+                Ok(self.core.collapse_bool(conj).into())
             }
             let_ if let_ == self.syms.let_ => {
                 let mut rest = CountingParser::new(rest, "let", 2);

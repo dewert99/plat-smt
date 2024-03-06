@@ -1,0 +1,8 @@
+Sat
+(
+ (define-fun a () T T!val!2)
+ (define-fun b () T T!val!2)
+ (define-fun c () T T!val!2)
+ (define-fun d () T T!val!2)
+)
+Unsat
