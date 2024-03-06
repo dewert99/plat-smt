@@ -264,7 +264,7 @@ impl Solver {
         res
     }
 
-    fn raw_eq(&mut self, id1: Id, id2: Id) -> BoolExp {
+    pub(crate) fn raw_eq(&mut self, id1: Id, id2: Id) -> BoolExp {
         let res = self
             .euf
             .add_eq_node(id1, id2, || Lit::new(self.sat.new_var_default(), true));

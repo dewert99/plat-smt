@@ -153,6 +153,7 @@ sym_struct! {Syms{
     imp = "=>",
     xor = "xor",
     eq = "=",
+    distinct = "distinct",
     let_ = "let",
     ite = "ite",
     if_ = "if",
@@ -232,6 +233,24 @@ impl<'a, R: FullBufRead> CountingParser<'a, R> {
             Ok(())
         }
     }
+}
+
+fn cross<I1: IntoIterator, I2: IntoIterator + Clone>(
+    iter1: I1,
+    iter2: I2,
+) -> impl Iterator<Item = (I1::Item, I2::Item)>
+where
+    I1::Item: Copy,
+{
+    iter1
+        .into_iter()
+        .flat_map(move |x1| iter2.clone().into_iter().map(move |x2| (x1, x2)))
+}
+
+fn pairwise<T>(slice: &[T]) -> impl Iterator<Item = (&T, &T)> {
+    cross(0..slice.len(), 0..slice.len())
+        .filter(|&(i, j)| i != j)
+        .map(|(i, j)| (&slice[i], &slice[j]))
 }
 
 impl<W: Write> Parser<W> {
@@ -378,14 +397,47 @@ impl<W: Write> Parser<W> {
             eq if eq == self.syms.eq => {
                 let mut rest = CountingParser::new(rest, "=", 1);
                 let exp1 = self.parse_exp(rest.next()?)?;
-                let err_m = |(left, right)| EqSortMismatch { left, right };
+                let (id1, sort1) = self.core.id_sort(exp1);
                 let conj = rest
                     .p
                     .map(|x| {
                         let parsed = self.parse_exp(x?)?;
-                        self.core.eq(exp1, parsed).map_err(err_m)
+                        let (id2, sort2) = self.core.id_sort(parsed);
+                        if sort1 != sort2 {
+                            return Err(EqSortMismatch {
+                                left: sort1,
+                                right: sort2,
+                            });
+                        } else {
+                            Ok(self.core.raw_eq(id1, id2))
+                        }
                     })
                     .collect::<Result<Conjunction>>()?;
+                Ok(self.core.collapse_bool(conj).into())
+            }
+            distinct if distinct == self.syms.distinct => {
+                let mut rest = CountingParser::new(rest, "distinct", 1);
+                let exp1 = self.parse_exp(rest.next()?)?;
+                let (id1, sort1) = self.core.id_sort(exp1);
+                let iter = rest.p.map(|x| {
+                    let parsed = self.parse_exp(x?)?;
+                    let (id2, sort2) = self.core.id_sort(parsed);
+                    if sort1 != sort2 {
+                        return Err(EqSortMismatch {
+                            left: sort1,
+                            right: sort2,
+                        });
+                    } else {
+                        Ok(id2)
+                    }
+                });
+                let ids = [Ok(id1)]
+                    .into_iter()
+                    .chain(iter)
+                    .collect::<Result<Vec<Id>>>()?;
+                let conj: Conjunction = pairwise(&ids)
+                    .map(|(&id1, &id2)| !self.core.raw_eq(id1, id2))
+                    .collect();
                 Ok(self.core.collapse_bool(conj).into())
             }
             let_ if let_ == self.syms.let_ => {
