@@ -1,10 +1,11 @@
 use crate::solver::BoolExp;
 use batsat::Lit;
 use std::fmt::{Debug, Formatter};
+use std::mem;
 use std::ops::{BitAnd, BitOr};
 
 /// Either a [`Conjunction`] or a [`Disjunction`]
-pub struct Junction<const IS_AND: bool>(pub(super) Option<Vec<Lit>>);
+pub struct Junction<const IS_AND: bool>(pub(super) Result<Vec<Lit>, Vec<Lit>>);
 
 /// A conjunction of [`BoolExp`]s (a collection of [`BoolExp`] combined with `and`)
 ///
@@ -20,15 +21,15 @@ pub type Disjunction = Junction<false>;
 
 impl<const IS_AND: bool> Default for Junction<IS_AND> {
     fn default() -> Self {
-        Junction(Some(vec![]))
+        Junction(Ok(vec![]))
     }
 }
 
 impl<const IS_AND: bool> Debug for Junction<IS_AND> {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         match &self.0 {
-            None => Debug::fmt(&(!IS_AND), f),
-            Some(lits) => {
+            Err(_) => Debug::fmt(&(!IS_AND), f),
+            Ok(lits) => {
                 let and_or = if IS_AND { "(and" } else { "(or" };
                 f.write_str(and_or)?;
                 for lit in lits {
@@ -43,7 +44,7 @@ impl<const IS_AND: bool> Debug for Junction<IS_AND> {
 
 impl<const IS_AND: bool> Extend<BoolExp> for Junction<IS_AND> {
     fn extend<T: IntoIterator<Item = BoolExp>>(&mut self, iter: T) {
-        if let Some(v) = &mut self.0 {
+        if let Ok(v) = &mut self.0 {
             let mut mk_none = false;
             v.extend(
                 iter.into_iter()
@@ -60,7 +61,7 @@ impl<const IS_AND: bool> Extend<BoolExp> for Junction<IS_AND> {
                     }),
             );
             if mk_none {
-                self.0 = None
+                self.0 = Err(mem::take(v))
             }
         }
     }
@@ -71,9 +72,9 @@ impl<const IS_AND: bool> FromIterator<BoolExp> for Junction<IS_AND> {
         Junction(
             iter.into_iter()
                 .filter_map(|x| match x {
-                    BoolExp::Const(x) if x != IS_AND => Some(None),
+                    BoolExp::Const(x) if x != IS_AND => Some(Err(vec![])),
                     BoolExp::Const(_) => None,
-                    BoolExp::Unknown(lit) => Some(Some(lit)),
+                    BoolExp::Unknown(lit) => Some(Ok(lit)),
                 })
                 .collect(),
         )
@@ -86,9 +87,34 @@ impl<const IS_AND: bool> Junction<IS_AND> {
     }
 
     pub fn clear(&mut self) {
-        match &mut self.0 {
-            None => self.0 = Some(vec![]),
-            Some(x) => x.clear(),
+        self.truncate(0)
+    }
+
+    pub fn combine(&mut self, other: &Junction<IS_AND>) {
+        match (&other.0, &mut self.0) {
+            (Ok(x), Ok(xs)) => xs.extend(x),
+            (Ok(_), Err(_)) => {}
+            (Err(_), Ok(xs)) => self.0 = Err(mem::take(xs)),
+            (Err(_), Err(_)) => {}
+        }
+    }
+
+    pub(crate) fn len_or_max(&self) -> usize {
+        match &self.0 {
+            Ok(x) => x.len(),
+            Err(_) => usize::MAX,
+        }
+    }
+
+    pub(crate) fn truncate(&mut self, len_or_max: usize) {
+        if len_or_max != usize::MAX {
+            match &mut self.0 {
+                Err(x) => {
+                    x.truncate(len_or_max);
+                    self.0 = Ok(mem::take(x));
+                }
+                Ok(x) => x.truncate(len_or_max),
+            }
         }
     }
 }
@@ -148,36 +174,38 @@ mod test {
     #[test]
     fn test() {
         let c1: Conjunction = build([BoolExp::FALSE, BoolExp::FALSE]);
-        assert_eq!(c1.0, None);
+        assert!(c1.0.is_err());
         let c2: Conjunction = build([BoolExp::FALSE, BoolExp::TRUE]);
-        assert_eq!(c2.0, None);
+        assert!(c2.0.is_err());
         let c3: Conjunction = build([BoolExp::TRUE, BoolExp::FALSE]);
-        assert_eq!(c3.0, None);
+        assert!(c3.0.is_err());
         let c4: Conjunction = build([BoolExp::TRUE, BoolExp::TRUE]);
-        assert_eq!(c4.0, Some(vec![]));
+        assert_eq!(c4.0, Ok(vec![]));
         let d1: Disjunction = build([BoolExp::FALSE, BoolExp::FALSE]);
-        assert_eq!(d1.0, Some(vec![]));
+        assert_eq!(d1.0, Ok(vec![]));
         let d2: Disjunction = build([BoolExp::FALSE, BoolExp::TRUE]);
-        assert_eq!(d2.0, None);
+        assert!(d2.0.is_err());
         let d3: Disjunction = build([BoolExp::TRUE, BoolExp::FALSE]);
-        assert_eq!(d3.0, None);
+        assert!(d3.0.is_err());
         let d4: Disjunction = build([BoolExp::TRUE, BoolExp::TRUE]);
-        assert_eq!(d4.0, None);
+        assert!(d4.0.is_err());
     }
 
     #[test]
     fn test_ops() {
         assert_eq!(
             (BoolExp::TRUE & BoolExp::TRUE & BoolExp::TRUE).0,
-            Some(vec![])
+            Ok(vec![])
         );
-        assert_eq!((BoolExp::TRUE & BoolExp::FALSE & BoolExp::TRUE).0, None);
-        assert_eq!((BoolExp::FALSE & BoolExp::FALSE & BoolExp::FALSE).0, None);
-        assert_eq!((BoolExp::TRUE | BoolExp::TRUE | BoolExp::TRUE).0, None);
-        assert_eq!((BoolExp::TRUE | BoolExp::FALSE | BoolExp::TRUE).0, None);
+        assert!((BoolExp::TRUE & BoolExp::FALSE & BoolExp::TRUE).0.is_err());
+        assert!((BoolExp::FALSE & BoolExp::FALSE & BoolExp::FALSE)
+            .0
+            .is_err());
+        assert!((BoolExp::TRUE | BoolExp::TRUE | BoolExp::TRUE).0.is_err());
+        assert!((BoolExp::TRUE | BoolExp::FALSE | BoolExp::TRUE).0.is_err());
         assert_eq!(
             (BoolExp::FALSE | BoolExp::FALSE | BoolExp::FALSE).0,
-            Some(vec![])
+            Ok(vec![])
         );
     }
 }

@@ -1,4 +1,4 @@
-use crate::egraph::{Children, EGraph, PushInfo};
+use crate::egraph::{Children, EGraph, PushInfo as EGPushInfo};
 use crate::explain::Justification;
 use crate::solver::{BoolExp, Exp, UExp};
 use crate::sort::Sort;
@@ -10,6 +10,7 @@ use hashbrown::HashMap;
 use log::{debug, trace};
 use perfect_derive::perfect_derive;
 use std::mem;
+use std::num::NonZeroUsize;
 use std::ops::Range;
 
 #[derive(Debug, Clone)]
@@ -70,10 +71,21 @@ enum MergeInfo {
 }
 
 #[derive(Debug)]
+struct PushInfo {
+    egraph: EGPushInfo,
+    prev_len: usize,
+    lit_log_len: usize,
+    assert_len: usize,
+}
+
+#[derive(Debug)]
 pub struct EUF {
     egraph: EGraph<EClass>,
     bool_class_history: Vec<MergeInfo>,
-    push_log: Vec<(PushInfo, usize)>,
+    push_log: Vec<PushInfo>,
+    lit_id_log: Vec<Lit>,
+    // push level from smt level push/pop
+    base_level: usize,
     explanation: LSet,
     lit_ids: LMap<Option<Id>>,
     const_bool_ids: [Id; 2],
@@ -98,10 +110,12 @@ impl Default for EUF {
             bool_class_history: vec![],
             push_log: vec![],
             explanation: Default::default(),
+            lit_id_log: vec![],
             lit_ids: Default::default(),
             const_bool_ids: [fid, tid],
             eq_sym,
             prev_len: 0,
+            base_level: 0,
         };
         debug_assert_eq!(tid, res.id_for_bool(true));
         debug!("id{tid:?} is true");
@@ -120,29 +134,16 @@ impl Theory for EUF {
     }
 
     fn create_level(&mut self) {
-        debug!("Push");
-        self.push_log.push((self.egraph.push(), self.prev_len))
+        self.raw_push(usize::MAX)
     }
 
     fn pop_levels(&mut self, n: usize) {
-        debug!("Pop {n}");
-        let mut info = None;
-        for _ in 0..n {
-            info = self.push_log.pop();
-        }
-        let (info, prev_len) = info.unwrap();
-        self.prev_len = prev_len;
-        self.egraph.pop(info, |class| match class {
-            EClass::Uninterpreted(x) => EClass::Uninterpreted(*x),
-            EClass::Bool(class) => {
-                EClass::Bool(class.split(self.bool_class_history.pop().unwrap()))
-            }
-        });
-        trace!("\n{:?}", self.egraph.dump_uncanonical());
+        let res = self.raw_pop(n);
+        debug_assert_eq!(res, usize::MAX)
     }
 
     fn n_levels(&self) -> usize {
-        self.push_log.len()
+        self.push_log.len() - self.base_level
     }
 
     fn partial_check(&mut self, acts: &mut TheoryArg) {
@@ -330,6 +331,7 @@ impl EUF {
         if let Some(l) = added {
             self.reserve(l.var());
             self.lit_ids[l] = Some(id);
+            self.lit_id_log.push(l);
             debug!(
                 "{l:?} is defined as {:?} and given id{id:?}",
                 self.egraph.id_to_node(id)
@@ -421,6 +423,69 @@ impl EUF {
 
     pub fn id_to_exp(&self, id: Id) -> Exp {
         self.egraph[id].to_exp(id)
+    }
+
+    pub fn smt_push_level(&self) -> usize {
+        self.base_level
+    }
+
+    fn raw_push(&mut self, assert_len: usize) {
+        debug!("Push");
+        let v = PushInfo {
+            egraph: self.egraph.push(),
+            prev_len: self.prev_len,
+            lit_log_len: self.lit_id_log.len(),
+            assert_len,
+        };
+        self.push_log.push(v)
+    }
+
+    fn raw_pop(&mut self, n: usize) -> usize {
+        debug!("Pop {n}");
+        let mut info = None;
+        for _ in 0..n {
+            info = self.push_log.pop();
+        }
+        let info = info.unwrap();
+        self.prev_len = info.prev_len;
+        for lit in self.lit_id_log.drain(info.lit_log_len..) {
+            self.lit_ids[lit] = None
+        }
+        self.egraph.pop(info.egraph, |class| match class {
+            EClass::Uninterpreted(x) => EClass::Uninterpreted(*x),
+            EClass::Bool(class) => {
+                EClass::Bool(class.split(self.bool_class_history.pop().unwrap()))
+            }
+        });
+        trace!("\n{:?}", self.egraph.dump_uncanonical());
+        info.assert_len
+    }
+
+    pub fn smt_push(&mut self, assert_len: usize) {
+        self.base_level += 1;
+        self.raw_push(assert_len);
+    }
+
+    pub fn smt_pop(&mut self, n: NonZeroUsize) -> usize {
+        self.base_level -= usize::from(n);
+        self.raw_pop(n.into())
+    }
+
+    pub fn clear(&mut self) {
+        let bools = [true, false];
+        let bool_syms = bools.map(|b| self.egraph.id_to_node(self.id_for_bool(b)).op);
+        self.base_level = 0;
+        self.egraph.clear();
+        self.lit_id_log.clear();
+        self.lit_ids.clear();
+        self.prev_len = 0;
+        self.bool_class_history.clear();
+        for (b, s) in bools.into_iter().zip(bool_syms) {
+            let id = self.egraph.add(s, Children::from_iter([]), |_| {
+                EClass::Bool(BoolClass::Const(b))
+            });
+            self.const_bool_ids[b as usize] = id;
+        }
     }
 }
 

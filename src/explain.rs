@@ -66,7 +66,7 @@ pub(crate) struct ExplainWith<'a, X> {
 
 impl Explain {
     pub(crate) fn add(&mut self, set: Id) -> Id {
-        assert_eq!(self.explainfind.len(), usize::from(set));
+        debug_assert_eq!(self.explainfind.len(), usize::from(set));
         self.explainfind.push(Connection::end(set));
         set
     }
@@ -85,7 +85,7 @@ impl Explain {
             prev = curr.next;
             curr = next;
             count += 1;
-            assert!(count < 1000);
+            debug_assert!(count < 1000);
         }
     }
 
@@ -211,7 +211,7 @@ impl Explain {
         PushInfo(self.undo_log.len())
     }
 
-    pub(crate) fn pop(&mut self, info: PushInfo) {
+    pub(crate) fn pop(&mut self, info: PushInfo, old_nodes: usize) {
         for (id1, id2) in self.undo_log.drain(info.0..).rev() {
             let mut did_something = false;
 
@@ -227,5 +227,11 @@ impl Explain {
             }
             debug_assert!(did_something)
         }
+        self.explainfind.truncate(old_nodes);
+    }
+
+    pub(crate) fn clear(&mut self) {
+        self.undo_log.clear();
+        self.explainfind.clear();
     }
 }

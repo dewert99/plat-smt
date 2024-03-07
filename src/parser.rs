@@ -128,6 +128,10 @@ enum_str!(Smt2Command{
     "assert" => Assert,
     "check-sat" => CheckSat,
     "check-sat-assuming" => CheckSatAssuming,
+    "push" => Push,
+    "pop" => Pop,
+    "reset" => Reset,
+    "set-logic" => SetLogic,
 });
 
 macro_rules! sym_struct {
@@ -168,11 +172,17 @@ enum State {
     Base,
 }
 
+struct PushInfo {
+    sort: usize,
+    bound: usize,
+}
 #[derive(Default)]
 pub struct Parser<W: Write> {
     bound: HashMap<Symbol, Bound>,
-    scratch_stack: Vec<(Symbol, Option<Bound>)>,
+    bound_stack: Vec<(Symbol, Option<Bound>)>,
     declared_sorts: HashMap<Symbol, u32>,
+    sort_stack: Vec<Symbol>,
+    push_info: Vec<PushInfo>,
     core: Solver,
     syms: Syms,
     writer: W,
@@ -258,12 +268,14 @@ impl<W: Write> Parser<W> {
     pub fn new(writer: W) -> Self {
         let mut res = Parser {
             bound: Default::default(),
-            scratch_stack: Default::default(),
+            bound_stack: Default::default(),
+            push_info: vec![],
             declared_sorts: Default::default(),
             core: Default::default(),
             syms: Default::default(),
             writer,
             state: State::Base,
+            sort_stack: vec![],
         };
         res.declared_sorts.insert(res.core.bool_sort().name, 0);
         let true_sym = Symbol::new("true");
@@ -345,7 +357,7 @@ impl<W: Write> Parser<W> {
     }
 
     fn undo_bindings(&mut self, old_len: usize) {
-        for (name, bound) in self.scratch_stack.drain(old_len..).rev() {
+        for (name, bound) in self.bound_stack.drain(old_len..).rev() {
             match bound {
                 None => self.bound.remove(&name),
                 Some(x) => self.bound.insert(name, x),
@@ -443,19 +455,19 @@ impl<W: Write> Parser<W> {
             }
             let_ if let_ == self.syms.let_ => {
                 let mut rest = CountingParser::new(rest, "let", 2);
-                let old_len = self.scratch_stack.len();
+                let old_len = self.bound_stack.len();
                 match rest.next()? {
                     SexpToken::List(mut l) => l
                         .map(|token| {
                             let (name, exp) = self.parse_binding(token?)?;
-                            self.scratch_stack.push((name, Some(Bound::Const(exp))));
+                            self.bound_stack.push((name, Some(Bound::Const(exp))));
                             Ok(())
                         })
                         .collect::<Result<()>>()?,
                     _ => return Err(InvalidLet),
                 }
                 let body = rest.next()?;
-                for (name, bound) in &mut self.scratch_stack[old_len..] {
+                for (name, bound) in &mut self.bound_stack[old_len..] {
                     *bound = self.bound.insert(*name, bound.unwrap())
                 }
                 let exp = self.parse_exp(body)?;
@@ -561,6 +573,8 @@ impl<W: Write> Parser<W> {
                     Some(SexpToken::Number(n)) => n,
                     Some(_) => return Err(InvalidCommand),
                 };
+                rest.finish()?;
+                self.sort_stack.push(name);
                 self.declared_sorts
                     .insert(name, args.try_into().map_err(|_| ParseError::Overflow)?);
             }
@@ -642,6 +656,15 @@ impl<W: Write> Parser<W> {
                 }
                 writeln!(self.writer, ")").unwrap();
             }
+            Smt2Command::SetLogic => {
+                let mut rest = CountingParser::new(rest, name.to_str(), 1);
+                match rest.next()? {
+                    SexpToken::Symbol("QF_UF") => {}
+                    SexpToken::Symbol(_) => return Err(Unsupported("logic")),
+                    _ => return Err(InvalidCommand),
+                }
+                rest.finish()?;
+            }
             _ => return self.parse_destructive_command(name, rest),
         }
         Ok(())
@@ -665,6 +688,20 @@ impl<W: Write> Parser<W> {
             return Err(Shadow(name));
         }
         Ok(name)
+    }
+
+    fn clear(&mut self) {
+        self.push_info.clear();
+        self.bound_stack.clear();
+        self.bound.clear();
+        self.core.clear();
+        self.declared_sorts.clear();
+        self.sort_stack.clear();
+        self.declared_sorts.insert(self.core.bool_sort().name, 0);
+        self.bound
+            .insert(Symbol::new("true"), Bound::Const(BoolExp::TRUE.into()));
+        self.bound
+            .insert(Symbol::new("false"), Bound::Const(BoolExp::FALSE.into()));
     }
 
     fn parse_destructive_command<R: FullBufRead>(
@@ -693,7 +730,7 @@ impl<W: Write> Parser<W> {
                         args: Intern::from(args),
                         ret,
                     };
-                    self.bound.insert(name, Bound::Fn(fn_sort));
+                    self.insert_bound(name, Bound::Fn(fn_sort));
                 }
             }
             Smt2Command::DeclareConst => {
@@ -708,7 +745,7 @@ impl<W: Write> Parser<W> {
                 let name = self.parse_fresh_binder(rest.next()?)?;
                 let ret = self.parse_exp(rest.next()?)?;
                 rest.finish()?;
-                self.bound.insert(name, Bound::Const(ret));
+                self.insert_bound(name, Bound::Const(ret));
             }
             Smt2Command::Assert => {
                 let mut rest = CountingParser::new(rest, name.to_str(), 1);
@@ -740,9 +777,48 @@ impl<W: Write> Parser<W> {
                 self.set_state(res, conj.take_core());
                 writeln!(self.writer, "{res:?}").unwrap()
             }
+            Smt2Command::Push => {
+                CountingParser::new(rest, name.to_str(), 0).finish()?;
+                self.core.push();
+                let info = PushInfo {
+                    bound: self.bound_stack.len(),
+                    sort: self.sort_stack.len(),
+                };
+                self.push_info.push(info);
+            }
+            Smt2Command::Pop => {
+                let mut rest = CountingParser::new(rest, name.to_str(), 1);
+                let n = match rest.try_next()? {
+                    None => 1,
+                    Some(SexpToken::Number(x)) => {
+                        usize::try_from(x).map_err(|_| ParseError::Overflow)?
+                    }
+                    Some(_) => return Err(InvalidCommand),
+                };
+                if n > self.push_info.len() {
+                    self.clear()
+                } else if n > 0 {
+                    self.core.pop(n);
+                    let mut info = None;
+                    for _ in 0..n {
+                        info = self.push_info.pop();
+                    }
+                    let info = info.unwrap();
+                    self.undo_bindings(info.bound);
+
+                    for s in self.sort_stack.drain(info.sort..).rev() {
+                        self.declared_sorts.remove(&s);
+                    }
+                }
+            }
+            Smt2Command::Reset => self.clear(),
             _ => return Err(InvalidCommand),
         }
         Ok(())
+    }
+
+    fn insert_bound(&mut self, name: Symbol, val: Bound) {
+        self.bound_stack.push((name, self.bound.insert(name, val)))
     }
 
     fn declare_const(&mut self, name: Symbol, ret: Sort) {
@@ -751,7 +827,7 @@ impl<W: Write> Parser<W> {
         } else {
             self.core.sorted_fn(name, Children::from_iter([]), ret)
         };
-        self.bound.insert(name, Bound::Const(exp));
+        self.insert_bound(name, Bound::Const(exp));
     }
 
     fn parse_command_token<R: FullBufRead>(&mut self, t: SexpToken<R>) -> Result<()> {

@@ -1,0 +1,34 @@
+Sat
+(
+ (define-fun a () S S!val!2)
+ (define-fun b () S S!val!2)
+ (define-fun f ((x!0 S)) Bool
+  (ite (= x!0 S!val!2) true
+   f!default))
+)
+Sat
+(
+ (define-fun a () S S!val!2)
+ (define-fun b () S S!val!2)
+ (define-fun c () S2 S2!val!7)
+ (define-fun f ((x!0 S)) Bool
+  (ite (= x!0 S!val!2) true
+   f!default))
+ (define-fun g ((x!0 S2)) S
+  (ite (= x!0 S2!val!7) S!val!8
+   g!default))
+)
+Unsat
+()
+Sat
+(
+ (define-fun a () S S!val!2)
+ (define-fun b () S S!val!2)
+ (define-fun c () S S!val!7)
+ (define-fun f ((x!0 S)) Bool
+  (ite (= x!0 S!val!2) true
+  (ite (= x!0 S!val!7) false
+   f!default)))
+)
+Unsat
+()

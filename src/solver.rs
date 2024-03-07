@@ -3,13 +3,14 @@ use crate::euf::{FullFunctionInfo, FunctionInfo, EUF};
 use crate::junction::*;
 use crate::sort::{BaseSort, Sort};
 use crate::util::display_debug;
-use batsat::{lbool, Lit, SolverInterface, Theory, Var};
+use batsat::{lbool, Lit, SolverInterface, Var};
 use egg::{Id, Symbol};
 use either::Either;
 use hashbrown::HashMap;
 use log::debug;
 use std::borrow::BorrowMut;
 use std::fmt::{Debug, Display, Formatter};
+use std::num::NonZeroUsize;
 use std::ops::Not;
 /// The main solver structure including the sat solver and egraph.
 ///
@@ -17,6 +18,7 @@ use std::ops::Not;
 pub struct Solver {
     euf: EUF,
     sat: batsat::BasicSolver,
+    assertions: Conjunction,
     clause_adder: Vec<Lit>,
     function_info_buf: FunctionInfo,
     bool_sort: Sort,
@@ -27,6 +29,7 @@ impl Default for Solver {
         Solver {
             euf: Default::default(),
             sat: Default::default(),
+            assertions: Default::default(),
             clause_adder: vec![],
             function_info_buf: Default::default(),
             bool_sort: Sort::new(BaseSort {
@@ -236,9 +239,9 @@ impl Solver {
     ) -> BoolExp {
         debug!("{j:?} was collapsed to ...");
         let res = match &mut j.borrow_mut().0 {
-            None => BoolExp::Const(!IS_AND),
-            Some(x) if x.is_empty() => BoolExp::Const(IS_AND),
-            Some(x) => BoolExp::Unknown(self.andor_reuse(x, IS_AND)),
+            Err(_) => BoolExp::Const(!IS_AND),
+            Ok(x) if x.is_empty() => BoolExp::Const(IS_AND),
+            Ok(x) => BoolExp::Unknown(self.andor_reuse(x, IS_AND)),
         };
         debug!("... {res}");
         res
@@ -354,15 +357,19 @@ impl Solver {
     pub fn assert(&mut self, b: BoolExp) {
         debug!("assert {b}");
         self.clause_adder.clear();
-        match b {
-            BoolExp::Const(true) => {}
-            BoolExp::Unknown(l) => {
-                self.clause_adder.push(l);
-                self.sat.add_clause_reuse(&mut self.clause_adder);
+        if self.euf.smt_push_level() == 0 {
+            match b {
+                BoolExp::TRUE => {}
+                BoolExp::Unknown(l) => {
+                    self.clause_adder.push(l);
+                    self.sat.add_clause_reuse(&mut self.clause_adder);
+                }
+                BoolExp::FALSE => {
+                    self.sat.add_clause_reuse(&mut self.clause_adder);
+                }
             }
-            BoolExp::Const(false) => {
-                self.sat.add_clause_reuse(&mut self.clause_adder);
-            }
+        } else {
+            self.assertions.push(b)
         }
     }
 
@@ -374,23 +381,24 @@ impl Solver {
     /// Check if the current assertions combined with the assertions in `c` are satisfiable
     /// Leave the solver in a state representing the model
     pub fn check_sat_assuming_preserving_trail(&mut self, c: &Conjunction) -> SolveResult {
-        let res = match &c.0 {
-            None => lbool::FALSE,
-            Some(x) => self
+        let old_len = self.assertions.len_or_max();
+        self.assertions.combine(&c);
+        let res = match &self.assertions.0 {
+            Err(_) => lbool::FALSE,
+            Ok(x) => self
                 .sat
                 .solve_limited_preserving_trail_th(&mut self.euf, &x),
         };
+        self.assertions.truncate(old_len);
         if res == lbool::FALSE {
             debug!(
-                "check-sat {c:?} returned unsat (level = {})\n{:?}",
-                self.euf.n_levels(),
+                "check-sat {c:?} returned unsat, core:\n{:?}",
                 self.sat.unsat_core(),
             );
             SolveResult::Unsat
         } else if res == lbool::TRUE {
             debug!(
-                "check-sat {c:?} returned sat (level = {})\n{:?}",
-                self.euf.n_levels(),
+                "check-sat {c:?} returned sat, model:\n{:?}",
                 self.sat.get_model()
             );
             SolveResult::Sat
@@ -409,6 +417,25 @@ impl Solver {
     /// Restores the state after calling `raw_check_sat_assuming`
     pub fn pop_model(&mut self) {
         self.sat.pop_model(&mut self.euf)
+    }
+
+    pub fn push(&mut self) {
+        self.check_sat();
+        self.euf.smt_push(self.assertions.len_or_max())
+    }
+
+    pub fn pop(&mut self, n: usize) {
+        if n > self.euf.smt_push_level() {
+            self.clear();
+        } else if let Ok(n) = NonZeroUsize::try_from(n) {
+            self.assertions.truncate(self.euf.smt_pop(n))
+        }
+    }
+
+    pub fn clear(&mut self) {
+        self.sat.reset();
+        self.euf.clear();
+        self.assertions.clear();
     }
 
     /// Like [`check_sat_assuming`](Solver::check_sat_assuming) but takes in an
@@ -492,7 +519,7 @@ impl<T> UnsatCoreInfo<T> {
 
     pub(crate) fn core<'a>(&'a self, lits: &'a [Lit]) -> impl Iterator<Item = &'a T> {
         match self {
-            UnsatCoreInfo::Map(m) => Either::Left(lits.iter().map(|x| m.get(x).unwrap())),
+            UnsatCoreInfo::Map(m) => Either::Left(lits.iter().filter_map(|x| m.get(x))),
             UnsatCoreInfo::FalseBy(x) => Either::Right(core::iter::once(x)),
         }
     }
