@@ -1,0 +1,6 @@
+(define-const t1 Bool true)
+(define-fun f1 () Bool false)
+(define-fun t2 () Bool (or t1 f1))
+(define-const f2 Bool (and t1 f1))
+(check-sat-assuming (t2 f2))
+(get-unsat-core)

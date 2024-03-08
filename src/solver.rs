@@ -195,6 +195,25 @@ pub enum SolveResult {
     Unsat,
     Unknown,
 }
+
+impl SolveResult {
+    pub fn valid_when_expecting(self, oth: SolveResult) -> bool {
+        match (self, oth) {
+            (SolveResult::Sat, SolveResult::Sat)
+            | (SolveResult::Unsat, SolveResult::Unsat)
+            | (_, SolveResult::Unknown) => true,
+            _ => false,
+        }
+    }
+
+    pub fn as_lower_str(self) -> &'static str {
+        match self {
+            SolveResult::Sat => "sat",
+            SolveResult::Unsat => "unsat",
+            SolveResult::Unknown => "unknown",
+        }
+    }
+}
 impl Solver {
     fn fresh(&mut self) -> Var {
         let fresh = self.sat.new_var_default();

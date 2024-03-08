@@ -1,4 +1,4 @@
-Sat
+sat
 (
  (define-fun f ((x!0 Bool)) Bool
    f!default)

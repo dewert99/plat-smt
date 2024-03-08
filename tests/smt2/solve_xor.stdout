@@ -1,7 +1,7 @@
-Sat
+sat
 (
  (define-fun a () Bool true)
  (define-fun b () Bool false)
  (define-fun c () Bool false)
 )
-Unsat
+unsat

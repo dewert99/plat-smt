@@ -1,0 +1,16 @@
+unsupported arithmetic at 1:9
+(assert 0)
+        ^
+
+unsupported bitvec at 2:9
+(assert #b010)
+        ^
+
+unsupported bitvec at 3:9
+(assert #xA1eBadF00D)
+        ^
+
+unsupported decimal at 4:9
+(assert 0.3)
+        ^
+

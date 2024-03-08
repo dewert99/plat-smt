@@ -1,6 +1,6 @@
-Unsat
+unsat
 ((and (f a) (not (f b))))
-Sat
+sat
 ((a S1!val!2)
  (b S1!val!2)
  (x true)
@@ -14,7 +14,7 @@ Sat
    f!default))
  (define-fun x () Bool true)
 )
-Sat
+sat
 (
  (define-fun a () S1 S1!val!2)
  (define-fun b () S1 S1!val!2)

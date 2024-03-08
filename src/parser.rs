@@ -30,6 +30,8 @@ enum Error {
         "the left side of the ite expression has sort {left} but the right side has sort {right}"
     )]
     IteSortMismatch { left: Sort, right: Sort },
+    #[error("the definition had the incorrect sort {0:?}")]
+    BindSortMismatch(Sort),
     #[error("the function `{f}` expects {expected} arguments but got {actual}")]
     ArgumentMismatch {
         f: &'static str,
@@ -48,10 +50,17 @@ enum Error {
     InvalidExp,
     #[error("unexpected token when parsing command")]
     InvalidCommand,
+    #[error("`define-fun` does not support functions with arguments")]
+    InvalidDefineFun,
     #[error("unexpected token when parsing binding")]
     InvalidBinding,
     #[error("unexpected token when parsing let expression")]
     InvalidLet,
+    #[error("(check-sat) returned {actual:?} but should have returned {expected:?} based on last (set-info :status)")]
+    CheckSatStatusMismatch {
+        actual: SolveResult,
+        expected: SolveResult,
+    },
     #[error("The last command was not `check-sat-assuming` that returned `Unsat`")]
     NoCore,
     #[error("The last command was not `check-sat-assuming` that returned `Sat`")]
@@ -122,6 +131,7 @@ enum_str!(Smt2Command{
     "declare-fun" => DeclareFn,
     "declare-const" => DeclareConst,
     "define-const" => DefineConst,
+    "define-fun" => DefineFn,
     "get-unsat-core" => GetUnsatCore,
     "get-value" => GetValue,
     "get-model" => GetModel,
@@ -132,6 +142,8 @@ enum_str!(Smt2Command{
     "pop" => Pop,
     "reset" => Reset,
     "set-logic" => SetLogic,
+    "set-info" => SetInfo,
+    "exit" => Exit,
 });
 
 macro_rules! sym_struct {
@@ -187,6 +199,7 @@ pub struct Parser<W: Write> {
     syms: Syms,
     writer: W,
     state: State,
+    last_status_info: Option<SolveResult>,
 }
 
 struct CountingParser<'a, R: FullBufRead> {
@@ -276,6 +289,7 @@ impl<W: Write> Parser<W> {
             writer,
             state: State::Base,
             sort_stack: vec![],
+            last_status_info: None,
         };
         res.declared_sorts.insert(res.core.bool_sort().name, 0);
         let true_sym = Symbol::new("true");
@@ -298,7 +312,8 @@ impl<W: Write> Parser<W> {
                 }
             }
             SexpToken::String(_) => Err(Unsupported("strings")),
-            SexpToken::Number(_) => Err(Unsupported("arithmatic")),
+            SexpToken::Number(_) => Err(Unsupported("arithmetic")),
+            SexpToken::Decimal(_, _) => Err(Unsupported("decimal")),
             SexpToken::BitVec { .. } => Err(Unsupported("bitvec")),
             SexpToken::List(mut l) => {
                 let s = match l.next().ok_or(InvalidExp)?? {
@@ -665,18 +680,43 @@ impl<W: Write> Parser<W> {
                 }
                 rest.finish()?;
             }
+            Smt2Command::SetInfo => {
+                let mut rest = CountingParser::new(rest, name.to_str(), 2);
+                let SexpToken::Keyword(key) = rest.next()? else {
+                    return Err(InvalidCommand);
+                };
+                let info_was_status = key == "status";
+                let body = rest.next()?;
+                if info_was_status {
+                    self.last_status_info = match body {
+                        SexpToken::Symbol("sat") => Some(SolveResult::Sat),
+                        SexpToken::Symbol("unsat") => Some(SolveResult::Unsat),
+                        SexpToken::Symbol("unknown") => Some(SolveResult::Unknown),
+                        _ => return Err(InvalidCommand),
+                    }
+                }
+            }
             _ => return self.parse_destructive_command(name, rest),
         }
         Ok(())
     }
 
-    fn set_state(&mut self, res: SolveResult, info: UnsatCoreInfo<SpanRange>) {
+    fn set_state(&mut self, res: SolveResult, info: UnsatCoreInfo<SpanRange>) -> Result<()> {
         self.state = if let SolveResult::Unsat = res {
             self.core.pop_model();
             State::Unsat(info)
         } else {
             State::Model
+        };
+        if let Some(expected) = self.last_status_info.take() {
+            if !res.valid_when_expecting(expected) {
+                return Err(CheckSatStatusMismatch {
+                    actual: res,
+                    expected,
+                });
+            }
         }
+        Ok(())
     }
 
     fn parse_fresh_binder<R: FullBufRead>(&self, token: SexpToken<R>) -> Result<Symbol> {
@@ -741,9 +781,31 @@ impl<W: Write> Parser<W> {
                 self.declare_const(name, ret);
             }
             Smt2Command::DefineConst => {
-                let mut rest = CountingParser::new(rest, name.to_str(), 2);
+                let mut rest = CountingParser::new(rest, name.to_str(), 3);
                 let name = self.parse_fresh_binder(rest.next()?)?;
+                let sort = self.parse_sort(rest.next()?)?;
                 let ret = self.parse_exp(rest.next()?)?;
+                if sort != self.core.sort(ret) {
+                    return Err(BindSortMismatch(self.core.sort(ret)));
+                }
+                rest.finish()?;
+                self.insert_bound(name, Bound::Const(ret));
+            }
+            Smt2Command::DefineFn => {
+                let mut rest = CountingParser::new(rest, name.to_str(), 4);
+                let name = self.parse_fresh_binder(rest.next()?)?;
+                let SexpToken::List(mut args) = rest.next()? else {
+                    return Err(InvalidCommand);
+                };
+                if args.next().is_some() {
+                    return Err(InvalidDefineFun);
+                }
+                drop(args);
+                let sort = self.parse_sort(rest.next()?)?;
+                let ret = self.parse_exp(rest.next()?)?;
+                if sort != self.core.sort(ret) {
+                    return Err(BindSortMismatch(self.core.sort(ret)));
+                }
                 rest.finish()?;
                 self.insert_bound(name, Bound::Const(ret));
             }
@@ -758,8 +820,8 @@ impl<W: Write> Parser<W> {
                 let res = self
                     .core
                     .check_sat_assuming_preserving_trail(&Default::default());
-                self.set_state(res, Default::default());
-                writeln!(self.writer, "{res:?}").unwrap()
+                self.set_state(res, Default::default())?;
+                writeln!(self.writer, "{}", res.as_lower_str()).unwrap()
             }
             Smt2Command::CheckSatAssuming => {
                 let mut rest = CountingParser::new(rest, name.to_str(), 1);
@@ -774,17 +836,26 @@ impl<W: Write> Parser<W> {
                 let res = self
                     .core
                     .check_sat_assuming_preserving_trail(conj.parts().0);
-                self.set_state(res, conj.take_core());
-                writeln!(self.writer, "{res:?}").unwrap()
+                self.set_state(res, conj.take_core())?;
+                writeln!(self.writer, "{}", res.as_lower_str()).unwrap()
             }
             Smt2Command::Push => {
-                CountingParser::new(rest, name.to_str(), 0).finish()?;
-                self.core.push();
-                let info = PushInfo {
-                    bound: self.bound_stack.len(),
-                    sort: self.sort_stack.len(),
+                let mut rest = CountingParser::new(rest, name.to_str(), 1);
+                let n = match rest.try_next()? {
+                    None => 1,
+                    Some(SexpToken::Number(x)) => {
+                        usize::try_from(x).map_err(|_| ParseError::Overflow)?
+                    }
+                    Some(_) => return Err(InvalidCommand),
                 };
-                self.push_info.push(info);
+                for _ in 0..n {
+                    self.core.push();
+                    let info = PushInfo {
+                        bound: self.bound_stack.len(),
+                        sort: self.sort_stack.len(),
+                    };
+                    self.push_info.push(info);
+                }
             }
             Smt2Command::Pop => {
                 let mut rest = CountingParser::new(rest, name.to_str(), 1);
@@ -812,6 +883,7 @@ impl<W: Write> Parser<W> {
                 }
             }
             Smt2Command::Reset => self.clear(),
+            Smt2Command::Exit => {}
             _ => return Err(InvalidCommand),
         }
         Ok(())

@@ -1,4 +1,4 @@
-Sat
+sat
 (
  (define-fun a () S S!val!2)
  (define-fun b () S S!val!2)
@@ -6,7 +6,7 @@ Sat
   (ite (= x!0 S!val!2) true
    f!default))
 )
-Sat
+sat
 (
  (define-fun a () S S!val!2)
  (define-fun b () S S!val!2)
@@ -18,9 +18,9 @@ Sat
   (ite (= x!0 S2!val!7) S!val!8
    g!default))
 )
-Unsat
+unsat
 ()
-Sat
+sat
 (
  (define-fun a () S S!val!2)
  (define-fun b () S S!val!2)
@@ -30,5 +30,5 @@ Sat
   (ite (= x!0 S!val!7) false
    f!default)))
 )
-Unsat
+unsat
 ()

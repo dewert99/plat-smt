@@ -1,4 +1,4 @@
-Sat
+sat
 ((i true)
  (x true)
  (y false)
@@ -9,5 +9,5 @@ Sat
  (define-fun x () Bool true)
  (define-fun y () Bool false)
 )
-Unsat
+unsat
 ((not (= a b)))

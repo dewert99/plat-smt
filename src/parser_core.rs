@@ -46,7 +46,7 @@ pub struct Span {
 
 #[derive(thiserror::Error, Debug, Clone)]
 pub enum ParseError {
-    #[error("error parsing number with radix {radix:?}")]
+    #[error("error parsing number with radix {}", *radix as u8)]
     NumberError { radix: Radix },
     #[error(transparent)]
     UTF8Error(#[from] Utf8Error),
@@ -114,6 +114,8 @@ enum RawSexpToken<'a, R> {
     Symbol(&'a str),
     String(String),
     Number(u128),
+    // x*10^-y
+    Decimal(u128, u8),
     BitVec { value: u128, bits: u8 },
 }
 
@@ -205,7 +207,7 @@ impl<R: FullBufRead> SexpLexer<R> {
         }
     }
 
-    fn read_number<'x>(
+    fn read_number_raw<'x>(
         &mut self,
         first_byte: Option<u8>,
         radix: Radix,
@@ -215,7 +217,7 @@ impl<R: FullBufRead> SexpLexer<R> {
         let mut chars = 1;
         self.consume_byte();
         while let Some(c) = self.peek_byte() {
-            if !is_symbol_byte(c) {
+            if !c.is_ascii_alphanumeric() {
                 break;
             }
             chars += 1;
@@ -224,6 +226,11 @@ impl<R: FullBufRead> SexpLexer<R> {
             self.consume_byte();
         }
         Ok((n, chars))
+    }
+
+    fn read_number(&mut self, radix: Radix) -> Result<(u128, u8), ParseError> {
+        let x = self.peek_byte();
+        self.read_number_raw(x, radix)
     }
 
     fn last_str(&self, before: usize, off: usize) -> Result<&str, Utf8Error> {
@@ -284,14 +291,12 @@ impl<R: FullBufRead> SexpLexer<R> {
                 match self.peek_byte() {
                     Some(b'b') => {
                         self.consume_byte();
-                        let x = self.peek_byte();
-                        let (value, bits) = self.read_number(x, Radix::Binary)?;
+                        let (value, bits) = self.read_number(Radix::Binary)?;
                         Ok(RawSexpToken::BitVec { value, bits })
                     }
                     Some(b'x') => {
                         self.consume_byte();
-                        let x = self.peek_byte();
-                        let (value, hexits) = self.read_number(x, Radix::Hexidecimal)?;
+                        let (value, hexits) = self.read_number(Radix::Hexidecimal)?;
                         Ok(RawSexpToken::BitVec {
                             value,
                             bits: hexits * 16,
@@ -305,8 +310,18 @@ impl<R: FullBufRead> SexpLexer<R> {
             }
             // Number literals
             Some(digit @ b'0'..=b'9') => {
-                let n = self.read_number(Some(digit), Radix::Decimal)?.0;
-                Ok(RawSexpToken::Number(n))
+                let n = self.read_number_raw(Some(digit), Radix::Decimal)?.0;
+                if self.peek_byte() == Some(b'.') {
+                    self.consume_byte();
+
+                    let (after, exp) = self.read_number(Radix::Decimal)?;
+                    Ok(RawSexpToken::Decimal(
+                        n * 10u128.pow(exp.into()) + after,
+                        exp,
+                    ))
+                } else {
+                    Ok(RawSexpToken::Number(n))
+                }
             }
             // Keywords
             Some(b':') => {
@@ -387,6 +402,8 @@ pub enum SexpToken<'a, R: FullBufRead> {
     Symbol(&'a str),
     String(String),
     Number(u128),
+    // x * 10^-y
+    Decimal(u128, u8),
     BitVec { value: u128, bits: u8 },
     List(SexpParser<'a, R>),
 }
@@ -480,6 +497,7 @@ impl<'a, R: FullBufRead> SexpParser<'a, R> {
                 Ok(RawSexpToken::Symbol(s)) => SexpToken::Symbol(s),
                 Ok(RawSexpToken::String(s)) => SexpToken::String(s),
                 Ok(RawSexpToken::Number(n)) => SexpToken::Number(n),
+                Ok(RawSexpToken::Decimal(x, y)) => SexpToken::Decimal(x, y),
                 Ok(RawSexpToken::BitVec { value, bits }) => SexpToken::BitVec { value, bits },
                 Ok(RawSexpToken::RightParen) => unreachable!(),
                 Err(err) => return Some(Err(err)),
