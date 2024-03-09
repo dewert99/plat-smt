@@ -107,3 +107,36 @@ fn test_sequential_reset_clear() {
 fn test_sequential_push_pop() {
     test_sequential("(push)", "(pop) (push)", false)
 }
+
+#[cfg(not(debug_assertions))]
+#[test]
+fn test_smtlib_benchmarks() {
+    use std::io::stderr;
+    use std::process::{Command, Stdio};
+    use walkdir::WalkDir;
+
+    let mut out = Vec::new();
+    let mut file_buf = Vec::new();
+    let path = Path::new("benches/starexec");
+    for x in WalkDir::new(path).into_iter().filter_map(Result::ok) {
+        let path = x.path();
+        if path.extension() == Some("smt2".as_ref()) {
+            use std::io::Write;
+            writeln!(stderr(), "Testing file {:?}", path).unwrap();
+            let z3_child = Command::new("z3")
+                .arg(path)
+                .stdout(Stdio::piped())
+                .spawn()
+                .unwrap();
+            File::open(&path)
+                .unwrap()
+                .read_to_end(&mut file_buf)
+                .unwrap();
+            interp_smt2(&file_buf, &mut out, stderr());
+            let z3_out = z3_child.wait_with_output().unwrap();
+            assert_eq!(from_utf8(&out).unwrap(), from_utf8(&z3_out.stdout).unwrap());
+            file_buf.clear();
+            out.clear();
+        }
+    }
+}
