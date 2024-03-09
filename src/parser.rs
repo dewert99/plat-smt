@@ -10,6 +10,7 @@ use crate::util::{format_args2, parenthesized};
 use egg::{Id, Symbol};
 use hashbrown::HashMap;
 use internment::Intern;
+use log::debug;
 use std::fmt::Formatter;
 use std::io::Write;
 use std::iter;
@@ -899,6 +900,7 @@ impl<W: Write> Parser<W> {
         } else {
             self.core.sorted_fn(name, Children::from_iter([]), ret)
         };
+        debug!("{name} is bound to {exp}");
         self.insert_bound(name, Bound::Const(exp));
     }
 
