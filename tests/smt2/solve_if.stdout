@@ -1,3 +1,13 @@
 Sat
+((i true)
+ (x true)
+ (y false)
+ (o false))
+(
+ (define-fun i () Bool true)
+ (define-fun o () Bool false)
+ (define-fun x () Bool true)
+ (define-fun y () Bool false)
+)
 Unsat
 ((not (= a b)))

@@ -1,3 +1,15 @@
 Unsat
 ((not x))
 Sat
+((x true)
+ ((f true) true)
+ ((f false) true))
+(
+ (define-fun f ((x!0 Bool)) Bool
+  (ite (= x!0 false) true
+  (ite (= x!0 true) true
+   f!default)))
+ (define-fun x () Bool true)
+)
+(((f x) true)
+ ((f (f x)) true))

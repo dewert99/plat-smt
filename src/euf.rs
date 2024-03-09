@@ -1,13 +1,16 @@
 use crate::egraph::{Children, EGraph, PushInfo};
 use crate::explain::Justification;
-use crate::solver::BoolExp;
+use crate::solver::{BoolExp, Exp, UExp};
 use crate::sort::Sort;
 use crate::util::DebugIter;
 use batsat::{LMap, LSet};
 use batsat::{Lit, Theory, TheoryArg, Var};
-use egg::{Id, Symbol};
+use egg::{Id, Language, Symbol, SymbolLang};
+use hashbrown::HashMap;
 use log::{debug, trace};
+use perfect_derive::perfect_derive;
 use std::mem;
+use std::ops::Range;
 
 #[derive(Debug, Clone)]
 pub(crate) enum BoolClass {
@@ -15,10 +18,28 @@ pub(crate) enum BoolClass {
     Unknown(Vec<Lit>),
 }
 
+impl BoolClass {
+    fn to_exp(&self) -> BoolExp {
+        match self {
+            BoolClass::Const(b) => BoolExp::Const(*b),
+            BoolClass::Unknown(v) => BoolExp::Unknown(v[0]),
+        }
+    }
+}
+
 #[derive(Debug, Clone)]
 pub(crate) enum EClass {
     Uninterpreted(Sort),
     Bool(BoolClass),
+}
+
+impl EClass {
+    fn to_exp(&self, id: Id) -> Exp {
+        match self {
+            EClass::Bool(b) => b.to_exp().into(),
+            EClass::Uninterpreted(s) => UExp { id, sort: *s }.into(),
+        }
+    }
 }
 
 impl BoolClass {
@@ -319,8 +340,7 @@ impl EUF {
                 EClass::Uninterpreted(x) => {
                     unreachable!("merging eclasses with different sorts {}, Bool", x)
                 }
-                EClass::Bool(BoolClass::Const(b)) => BoolExp::Const(*b),
-                EClass::Bool(BoolClass::Unknown(v)) => BoolExp::Unknown(v[0]),
+                EClass::Bool(b) => b.to_exp(),
             };
             (b, false, id)
         }
@@ -372,8 +392,71 @@ impl EUF {
             }
         }
     }
-
     pub fn id_for_bool(&self, b: bool) -> Id {
         self.const_bool_ids[b as usize]
+    }
+
+    pub fn function_info(&self, buf: &mut FunctionInfo) {
+        buf.clear();
+        for (id, node) in self.egraph.uncanonical_nodes() {
+            let node = node.clone().map_children(|id| self.find(id));
+            buf.data.push((node, id))
+        }
+        buf.data.sort_unstable_by(|x, y| x.0.cmp(&y.0));
+        buf.data.dedup_by(|x, y| x.0 == y.0);
+        let mut iter = buf.data.iter().map(|x| &x.0).enumerate();
+        if let Some((i, x)) = iter.next() {
+            let mut last_symbol = x.op;
+            let mut last_idx = i;
+            for (i, x) in iter {
+                if x.op != last_symbol {
+                    buf.indices.insert(last_symbol, last_idx..i);
+                    last_idx = i;
+                    last_symbol = x.op;
+                }
+            }
+            buf.indices.insert(last_symbol, last_idx..buf.data.len());
+        }
+    }
+
+    pub fn id_to_exp(&self, id: Id) -> Exp {
+        self.egraph[id].to_exp(id)
+    }
+}
+
+#[perfect_derive(Default)]
+pub struct FunctionInfo<L = SymbolLang> {
+    indices: HashMap<Symbol, Range<usize>>,
+    data: Vec<(L, Id)>,
+}
+
+pub struct FullFunctionInfo<'a, L = SymbolLang> {
+    base: &'a FunctionInfo<L>,
+    euf: &'a EUF,
+}
+
+impl<L> FunctionInfo<L> {
+    pub fn clear(&mut self) {
+        self.indices.clear();
+        self.data.clear();
+    }
+
+    pub fn get(&self, s: Symbol) -> &[(L, Id)] {
+        self.indices.get(&s).map_or(&[], |r| &self.data[r.clone()])
+    }
+
+    pub fn with_euf<'a>(&'a self, euf: &'a EUF) -> FullFunctionInfo<'a, L> {
+        FullFunctionInfo { base: self, euf }
+    }
+}
+
+impl<'a, L: Language> FullFunctionInfo<'a, L> {
+    pub fn get(
+        &self,
+        s: Symbol,
+    ) -> impl ExactSizeIterator<Item = (impl Iterator<Item = Exp> + 'a, Exp)> {
+        let iter = self.base.get(s).iter();
+        let id_to_exp = |id: &Id| self.euf.id_to_exp(*id);
+        iter.map(move |(node, id)| (node.children().iter().map(id_to_exp), id_to_exp(id)))
     }
 }

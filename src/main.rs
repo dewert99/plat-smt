@@ -21,7 +21,10 @@ fn main() {
         if &*arg == "-i" {
             parser.interp_smt2(FullBufReader::new(stdin(), 256), stderr())
         } else {
-            let mut file = File::open(arg).unwrap();
+            let Ok(mut file) = File::open(&arg) else {
+                eprintln!("{arg} is not a valid file");
+                continue;
+            };
             let mut buf: Vec<u8> = Vec::new();
             file.read_to_end(&mut buf).unwrap();
             parser::interp_smt2(&buf, stdout(), stderr())

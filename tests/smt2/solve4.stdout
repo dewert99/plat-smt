@@ -1,0 +1,15 @@
+Unsat
+((= a b))
+Sat
+(
+ (define-fun a () S1 S1!val!2)
+ (define-fun b () S1 S1!val!3)
+ (define-fun f ((x!0 S1) (x!1 S1)) (S2 S1)
+  (ite (and (= x!0 S1!val!2) (= x!1 S1!val!2)) S2!val!4
+  (ite (and (= x!0 S1!val!2) (= x!1 S1!val!3)) S2!val!5
+   f!default)))
+)
+((a S1!val!2)
+ (b S1!val!3)
+ ((f a a) S2!val!4)
+ ((f a b) S2!val!5))

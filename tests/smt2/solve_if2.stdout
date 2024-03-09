@@ -1,2 +1,26 @@
 Sat
+((i true)
+ (x true)
+ (y false)
+ (o false))
+(
+ (define-fun i () Bool true)
+ (define-fun o () Bool false)
+ (define-fun x () Bool true)
+ (define-fun y () Bool false)
+)
 Sat
+((i false)
+ (x true)
+ (y false)
+ (o true)
+ (a U!val!8)
+ (b U!val!10))
+(
+ (define-fun a () U U!val!8)
+ (define-fun b () U U!val!10)
+ (define-fun i () Bool false)
+ (define-fun o () Bool true)
+ (define-fun x () Bool true)
+ (define-fun y () Bool false)
+)

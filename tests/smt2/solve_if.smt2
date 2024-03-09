@@ -4,6 +4,8 @@
 (declare-const o Bool)
 (assert (or (ite i x y) o))
 (check-sat-assuming ((not o) (not y)))
+(get-value (i x y o))
+(get-model)
 (assert i)
 (declare-sort U)
 (declare-const a U)

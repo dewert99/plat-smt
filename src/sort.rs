@@ -18,7 +18,7 @@ impl Debug for BaseSort {
         } else {
             write!(f, "({}", self.name)?;
             for x in &*self.params {
-                write!(f, " {x:?}")?;
+                write!(f, " {x}")?;
             }
             write!(f, ")")
         }

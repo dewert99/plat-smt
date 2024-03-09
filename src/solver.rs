@@ -1,5 +1,5 @@
 use crate::egraph::Children;
-use crate::euf::EUF;
+use crate::euf::{FullFunctionInfo, FunctionInfo, EUF};
 use crate::junction::*;
 use crate::sort::{BaseSort, Sort};
 use crate::util::display_debug;
@@ -18,6 +18,7 @@ pub struct Solver {
     euf: EUF,
     sat: batsat::BasicSolver,
     clause_adder: Vec<Lit>,
+    function_info_buf: FunctionInfo,
     bool_sort: Sort,
 }
 
@@ -27,6 +28,7 @@ impl Default for Solver {
             euf: Default::default(),
             sat: Default::default(),
             clause_adder: vec![],
+            function_info_buf: Default::default(),
             bool_sort: Sort::new(BaseSort {
                 name: Symbol::new("Bool"),
                 params: Box::new([]),
@@ -36,14 +38,14 @@ impl Default for Solver {
 }
 
 #[derive(Copy, Clone)]
-struct UExp {
-    id: Id,
-    sort: Sort,
+pub(crate) struct UExp {
+    pub(crate) id: Id,
+    pub(crate) sort: Sort,
 }
 
 impl Debug for UExp {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{}${:?}", self.sort, self.id)
+        write!(f, "{}!val!{:?}", self.sort.name, self.id)
     }
 }
 
@@ -106,7 +108,14 @@ impl Debug for BoolExp {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         match self {
             BoolExp::Const(c) => Debug::fmt(c, f),
-            BoolExp::Unknown(l) => write!(f, "Bool${l:?}"),
+            BoolExp::Unknown(l) => {
+                write!(
+                    f,
+                    "{}Bool!val!{:?}",
+                    if l.sign() { "" } else { "!" },
+                    l.var()
+                )
+            }
         }
     }
 }
@@ -142,7 +151,7 @@ impl ExpLike for BoolExp {
     fn canonize(self, solver: &Solver) -> Self {
         match self {
             BoolExp::Unknown(x) => {
-                let val = solver.sat.value_lvl_0(x);
+                let val = solver.sat.raw_value_lit(x);
                 if val == lbool::TRUE {
                     BoolExp::TRUE
                 } else if val == lbool::FALSE {
@@ -176,7 +185,7 @@ impl ExpLike for Exp {
 
 pub type BLit = Lit;
 
-#[derive(Debug)]
+#[derive(Debug, Copy, Clone)]
 /// Result of calling [`Solver::check_sat_assuming`]
 pub enum SolveResult {
     Sat,
@@ -337,10 +346,13 @@ impl Solver {
     }
 
     /// Check if the current assertions combined with the assertions in `c` are satisfiable
-    pub fn check_sat_assuming(&mut self, c: &Conjunction) -> SolveResult {
+    /// Leave the solver in a state representing the model
+    pub fn check_sat_assuming_preserving_trail(&mut self, c: &Conjunction) -> SolveResult {
         let res = match &c.0 {
             None => lbool::FALSE,
-            Some(x) => self.sat.solve_limited_th(&mut self.euf, &x),
+            Some(x) => self
+                .sat
+                .solve_limited_preserving_trail_th(&mut self.euf, &x),
         };
         if res == lbool::FALSE {
             debug!(
@@ -359,6 +371,18 @@ impl Solver {
         } else {
             SolveResult::Unknown
         }
+    }
+
+    /// Check if the current assertions combined with the assertions in `c` are satisfiable
+    pub fn check_sat_assuming(&mut self, c: &Conjunction) -> SolveResult {
+        let res = self.check_sat_assuming_preserving_trail(c);
+        self.pop_model();
+        res
+    }
+
+    /// Restores the state after calling `raw_check_sat_assuming`
+    pub fn pop_model(&mut self) {
+        self.sat.pop_model(&mut self.euf)
     }
 
     /// Like [`check_sat_assuming`](Solver::check_sat_assuming) but takes in an
@@ -409,6 +433,11 @@ impl Solver {
     pub(crate) fn last_unsat_core(&self) -> &[Lit] {
         self.sat.unsat_core()
     }
+
+    pub fn function_info(&mut self) -> (FullFunctionInfo<'_>, &Self) {
+        self.euf.function_info(&mut self.function_info_buf);
+        (self.function_info_buf.with_euf(&self.euf), &*self)
+    }
 }
 
 pub(crate) enum UnsatCoreInfo<T> {
@@ -443,7 +472,6 @@ impl<T> UnsatCoreInfo<T> {
     }
 }
 
-#[derive(Default)]
 pub struct UnsatCoreConjunction<T> {
     conj: Conjunction,
     info: UnsatCoreInfo<T>,

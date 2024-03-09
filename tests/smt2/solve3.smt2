@@ -5,5 +5,7 @@
 (assert x)
 (assert (= a b))
 (check-sat)
+(get-value (a b x))
+(get-model)
 (check-sat-assuming ((not (and x (= (a) (b))))))
 (get-unsat-core)

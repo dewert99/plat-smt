@@ -1,15 +1,18 @@
 use crate::egraph::Children;
+use crate::euf::FullFunctionInfo;
 use crate::full_buf_read::FullBufRead;
 use crate::junction::{Conjunction, Disjunction};
 use crate::parser::Error::*;
 use crate::parser_core::{ParseError, SexpParser, SexpToken, SpanRange};
 use crate::solver::{BoolExp, Exp, SolveResult, Solver, UnsatCoreConjunction, UnsatCoreInfo};
 use crate::sort::{BaseSort, Sort};
+use crate::util::{format_args2, parenthesized};
 use egg::{Id, Symbol};
 use hashbrown::HashMap;
 use internment::Intern;
 use std::fmt::Formatter;
 use std::io::Write;
+use std::iter;
 use thiserror::Error;
 
 #[derive(Error, Debug)]
@@ -51,6 +54,8 @@ enum Error {
     InvalidLet,
     #[error("The last command was not `check-sat-assuming` that returned `Unsat`")]
     NoCore,
+    #[error("The last command was not `check-sat-assuming` that returned `Sat`")]
+    NoModel,
     #[error("unsupported {0}")]
     Unsupported(&'static str),
     #[error(transparent)]
@@ -83,7 +88,7 @@ enum Bound {
 macro_rules! enum_str {
     ($name:ident {$($s:literal => $var:ident,)*}) => {
         #[derive(Copy, Clone)]
-        pub enum $name {
+        enum $name {
             $($var,)*
             Unknown,
         }
@@ -117,6 +122,8 @@ enum_str!(Smt2Command{
     "declare-fun" => DeclareFn,
     "declare-const" => DeclareConst,
     "get-unsat-core" => GetUnsatCore,
+    "get-value" => GetValue,
+    "get-model" => GetModel,
     "assert" => Assert,
     "check-sat" => CheckSat,
     "check-sat-assuming" => CheckSatAssuming,
@@ -149,6 +156,14 @@ impl Default for Syms {
 }
 
 #[derive(Default)]
+enum State {
+    Unsat(UnsatCoreInfo<SpanRange>),
+    Model,
+    #[default]
+    Base,
+}
+
+#[derive(Default)]
 pub struct Parser<W: Write> {
     bound: HashMap<Symbol, Bound>,
     scratch_stack: Vec<(Symbol, Option<Bound>)>,
@@ -156,7 +171,7 @@ pub struct Parser<W: Write> {
     core: Solver,
     syms: Syms,
     writer: W,
-    last_core_info: Option<UnsatCoreInfo<SpanRange>>,
+    state: State,
 }
 
 struct CountingParser<'a, R: FullBufRead> {
@@ -225,7 +240,7 @@ impl<W: Write> Parser<W> {
             core: Default::default(),
             syms: Default::default(),
             writer,
-            last_core_info: None,
+            state: State::Base,
         };
         res.declared_sorts.insert(res.core.bool_sort().name, 0);
         let true_sym = Symbol::new("true");
@@ -449,7 +464,10 @@ impl<W: Write> Parser<W> {
     }
 
     pub fn reset_state(&mut self) {
-        self.last_core_info = None;
+        if matches!(self.state, State::Model) {
+            self.core.pop_model();
+        }
+        self.state = State::Base;
     }
 
     fn parse_command<R: FullBufRead>(
@@ -475,6 +493,105 @@ impl<W: Write> Parser<W> {
                 self.declared_sorts
                     .insert(name, args.try_into().map_err(|_| ParseError::Overflow)?);
             }
+            Smt2Command::GetUnsatCore => {
+                let State::Unsat(info) = &self.state else {
+                    return Err(NoCore);
+                };
+                write!(self.writer, "(").unwrap();
+                let mut iter = info
+                    .core(self.core.last_unsat_core())
+                    .map(|x| rest.lookup_range(*x));
+                if let Some(x) = iter.next() {
+                    write!(self.writer, "{x}").unwrap();
+                }
+                for x in iter {
+                    write!(self.writer, " {x}").unwrap();
+                }
+                writeln!(self.writer, ")").unwrap();
+                CountingParser::new(rest, name.to_str(), 0).finish()?;
+            }
+            Smt2Command::GetValue => {
+                let mut rest = CountingParser::new(rest, name.to_str(), 1);
+                if !matches!(self.state, State::Model) {
+                    return Err(NoModel);
+                }
+                let SexpToken::List(mut l) = rest.next()? else {
+                    return Err(InvalidCommand);
+                };
+                let values = l
+                    .zip_map_full(iter::repeat(()), |x, ()| self.parse_exp(x?))
+                    .collect::<Result<Vec<_>>>()?;
+                drop(l);
+                write!(self.writer, "(").unwrap();
+                let mut iter = values.into_iter();
+                if let Some((x, span)) = iter.next() {
+                    write!(self.writer, "({} {x})", rest.p.lookup_range(span)).unwrap();
+                }
+                for (x, span) in iter {
+                    write!(self.writer, "\n ({} {x})", rest.p.lookup_range(span)).unwrap();
+                }
+                writeln!(self.writer, ")").unwrap();
+                rest.finish()?;
+            }
+            Smt2Command::GetModel => {
+                CountingParser::new(rest, name.to_str(), 0).finish()?;
+                if !matches!(self.state, State::Model) {
+                    return Err(NoModel);
+                }
+                let (funs, core) = self.core.function_info();
+                writeln!(self.writer, "(").unwrap();
+                let mut bound: Vec<_> = self
+                    .bound
+                    .keys()
+                    .copied()
+                    .filter(|k| !matches!(k.as_str(), "true" | "false"))
+                    .collect();
+                bound.sort_unstable_by_key(|x| x.as_str());
+                for k in bound {
+                    match &self.bound[&k] {
+                        Bound::Const(x) => {
+                            if matches!(k.as_str(), "true" | "false") {
+                                continue;
+                            }
+                            let x = core.canonize(*x);
+                            let sort = core.sort(x);
+                            writeln!(self.writer, " (define-fun {k} () {sort} {x})").unwrap();
+                        }
+                        Bound::Fn(f) => {
+                            let args = f
+                                .args
+                                .iter()
+                                .enumerate()
+                                .map(|(i, s)| format_args2!("(x!{i} {s})"));
+                            let args = parenthesized(args, " ");
+                            writeln!(self.writer, " (define-fun {k} {args} {}", f.ret).unwrap();
+                            write_body(&mut self.writer, &funs, k);
+                        }
+                    }
+                }
+                writeln!(self.writer, ")").unwrap();
+            }
+            _ => return self.parse_destructive_command(name, rest),
+        }
+        Ok(())
+    }
+
+    fn set_state(&mut self, res: SolveResult, info: UnsatCoreInfo<SpanRange>) {
+        self.state = if let SolveResult::Unsat = res {
+            self.core.pop_model();
+            State::Unsat(info)
+        } else {
+            State::Model
+        }
+    }
+
+    fn parse_destructive_command<R: FullBufRead>(
+        &mut self,
+        name: Smt2Command,
+        rest: SexpParser<R>,
+    ) -> Result<()> {
+        self.reset_state();
+        match name {
             Smt2Command::DeclareFn => {
                 let mut rest = CountingParser::new(rest, name.to_str(), 3);
                 let SexpToken::Symbol(name) = rest.next()? else {
@@ -516,33 +633,6 @@ impl<W: Write> Parser<W> {
                 rest.finish()?;
                 self.declare_const(name, ret);
             }
-            Smt2Command::GetUnsatCore => {
-                let info = self.last_core_info.as_ref().ok_or(NoCore)?;
-                write!(self.writer, "(").unwrap();
-                let mut iter = info
-                    .core(self.core.last_unsat_core())
-                    .map(|x| rest.lookup_range(*x));
-                if let Some(x) = iter.next() {
-                    write!(self.writer, "{x}").unwrap();
-                }
-                for x in iter {
-                    write!(self.writer, " {x}").unwrap();
-                }
-                writeln!(self.writer, ")").unwrap();
-                CountingParser::new(rest, name.to_str(), 0).finish()?;
-            }
-            _ => return self.parse_destructive_command(name, rest),
-        }
-        Ok(())
-    }
-
-    fn parse_destructive_command<R: FullBufRead>(
-        &mut self,
-        name: Smt2Command,
-        rest: SexpParser<R>,
-    ) -> Result<()> {
-        self.reset_state();
-        match name {
             Smt2Command::Assert => {
                 let mut rest = CountingParser::new(rest, name.to_str(), 1);
                 let b = self.parse_bool(rest.next_full()?)?;
@@ -551,10 +641,10 @@ impl<W: Write> Parser<W> {
             }
             Smt2Command::CheckSat => {
                 CountingParser::new(rest, name.to_str(), 0).finish()?;
-                let res = self.core.check_sat();
-                if let SolveResult::Unsat = res {
-                    self.last_core_info = Some(UnsatCoreInfo::default())
-                }
+                let res = self
+                    .core
+                    .check_sat_assuming_preserving_trail(&Default::default());
+                self.set_state(res, Default::default());
                 writeln!(self.writer, "{res:?}").unwrap()
             }
             Smt2Command::CheckSatAssuming => {
@@ -564,14 +654,13 @@ impl<W: Write> Parser<W> {
                 };
                 let conj = l
                     .zip_map_full(0.., |token, i| self.parse_bool((token?, i, name.to_str())))
-                    .map(|(x, y)| Ok((x?, y)))
                     .collect::<Result<UnsatCoreConjunction<SpanRange>>>()?;
                 drop(l);
                 rest.finish()?;
-                let res = self.core.check_sat_assuming(conj.parts().0);
-                if let SolveResult::Unsat = res {
-                    self.last_core_info = Some(conj.take_core())
-                }
+                let res = self
+                    .core
+                    .check_sat_assuming_preserving_trail(conj.parts().0);
+                self.set_state(res, conj.take_core());
                 writeln!(self.writer, "{res:?}").unwrap()
             }
             _ => return Err(InvalidCommand),
@@ -608,6 +697,30 @@ impl<W: Write> Parser<W> {
             |e| writeln!(err, "{e}").unwrap(),
         );
     }
+}
+
+fn write_body<W: Write>(writer: &mut W, info: &FullFunctionInfo, name: Symbol) {
+    let cases = info.get(name);
+    let len = cases.len();
+    for (case, res) in cases {
+        let mut case = case
+            .enumerate()
+            .map(|(i, x)| format_args2!("(= x!{i} {x})"));
+        write!(writer, "  (ite ").unwrap();
+        let c1 = case.next().unwrap();
+        match case.next() {
+            None => write!(writer, "{c1}").unwrap(),
+            Some(c2) => {
+                write!(writer, "(and {c1} {c2}").unwrap();
+                for c in case {
+                    write!(writer, " {c}").unwrap();
+                }
+                write!(writer, ")").unwrap();
+            }
+        }
+        writeln!(writer, " {res}").unwrap();
+    }
+    writeln!(writer, "   {name}!default{:)<len$})", "").unwrap()
 }
 
 /// Evaluate `data`, the bytes of an `smt2` file, reporting results to `stdout` and errors to
