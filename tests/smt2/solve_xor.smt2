@@ -1,0 +1,8 @@
+(declare-const a Bool)
+(declare-const b Bool)
+(declare-const c Bool)
+(assert (xor a b c))
+(check-sat-assuming (a (not (and a b c))))
+(get-model)
+(assert (xor (not a) (not b) (not c)))
+(check-sat)

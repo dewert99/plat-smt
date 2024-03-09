@@ -129,31 +129,35 @@ enum_str!(Smt2Command{
     "check-sat-assuming" => CheckSatAssuming,
 });
 
-struct Syms {
-    and: Symbol,
-    or: Symbol,
-    eq: Symbol,
-    not: Symbol,
-    let_: Symbol,
-    ite: Symbol,
-    if_: Symbol,
-    imp: Symbol,
+macro_rules! sym_struct {
+    ($name:ident {$($var:ident = $l:literal,)*}) => {
+        #[derive(Copy, Clone)]
+        struct $name {
+            $($var: ::egg::Symbol,)*
+        }
+
+        impl ::core::default::Default for $name {
+            fn default() -> Self {
+                $name{
+                    $($var: ::egg::Symbol::new($l),)*
+                }
+            }
+        }
+    };
 }
 
-impl Default for Syms {
-    fn default() -> Self {
-        Syms {
-            and: Symbol::new("and"),
-            or: Symbol::new("or"),
-            eq: Symbol::new("="),
-            not: Symbol::new("not"),
-            let_: Symbol::new("let"),
-            ite: Symbol::new("ite"),
-            if_: Symbol::new("if"),
-            imp: Symbol::new("=>"),
-        }
-    }
-}
+sym_struct! {Syms{
+    and = "and",
+    or = "or",
+    not = "not",
+    imp = "=>",
+    xor = "xor",
+    eq = "=",
+    distinct = "distinct",
+    let_ = "let",
+    ite = "ite",
+    if_ = "if",
+}}
 
 #[derive(Default)]
 enum State {
@@ -229,6 +233,24 @@ impl<'a, R: FullBufRead> CountingParser<'a, R> {
             Ok(())
         }
     }
+}
+
+fn cross<I1: IntoIterator, I2: IntoIterator + Clone>(
+    iter1: I1,
+    iter2: I2,
+) -> impl Iterator<Item = (I1::Item, I2::Item)>
+where
+    I1::Item: Copy,
+{
+    iter1
+        .into_iter()
+        .flat_map(move |x1| iter2.clone().into_iter().map(move |x2| (x1, x2)))
+}
+
+fn pairwise<T>(slice: &[T]) -> impl Iterator<Item = (&T, &T)> {
+    cross(0..slice.len(), 0..slice.len())
+        .filter(|&(i, j)| i != j)
+        .map(|(i, j)| (&slice[i], &slice[j]))
 }
 
 impl<W: Write> Parser<W> {
@@ -362,13 +384,61 @@ impl<W: Write> Parser<W> {
                 let res = not_last.collect::<Result<Disjunction>>()? | last;
                 Ok(self.core.collapse_bool(res).into())
             }
+            xor if xor == self.syms.xor => {
+                let mut res = BoolExp::FALSE;
+                rest.zip_map(0.., |token, i| {
+                    let parsed = self.parse_bool((token?, i, "xor"))?;
+                    res = self.core.xor(res, parsed);
+                    Ok(())
+                })
+                .collect::<Result<()>>()?;
+                Ok(res.into())
+            }
             eq if eq == self.syms.eq => {
-                let mut rest = CountingParser::new(rest, "=", 2);
+                let mut rest = CountingParser::new(rest, "=", 1);
                 let exp1 = self.parse_exp(rest.next()?)?;
-                let exp2 = self.parse_exp(rest.next()?)?;
-                rest.finish()?;
-                let err_m = |(left, right)| EqSortMismatch { left, right };
-                Ok(self.core.eq(exp1, exp2).map_err(err_m)?.into())
+                let (id1, sort1) = self.core.id_sort(exp1);
+                let conj = rest
+                    .p
+                    .map(|x| {
+                        let parsed = self.parse_exp(x?)?;
+                        let (id2, sort2) = self.core.id_sort(parsed);
+                        if sort1 != sort2 {
+                            return Err(EqSortMismatch {
+                                left: sort1,
+                                right: sort2,
+                            });
+                        } else {
+                            Ok(self.core.raw_eq(id1, id2))
+                        }
+                    })
+                    .collect::<Result<Conjunction>>()?;
+                Ok(self.core.collapse_bool(conj).into())
+            }
+            distinct if distinct == self.syms.distinct => {
+                let mut rest = CountingParser::new(rest, "distinct", 1);
+                let exp1 = self.parse_exp(rest.next()?)?;
+                let (id1, sort1) = self.core.id_sort(exp1);
+                let iter = rest.p.map(|x| {
+                    let parsed = self.parse_exp(x?)?;
+                    let (id2, sort2) = self.core.id_sort(parsed);
+                    if sort1 != sort2 {
+                        return Err(EqSortMismatch {
+                            left: sort1,
+                            right: sort2,
+                        });
+                    } else {
+                        Ok(id2)
+                    }
+                });
+                let ids = [Ok(id1)]
+                    .into_iter()
+                    .chain(iter)
+                    .collect::<Result<Vec<Id>>>()?;
+                let conj: Conjunction = pairwise(&ids)
+                    .map(|(&id1, &id2)| !self.core.raw_eq(id1, id2))
+                    .collect();
+                Ok(self.core.collapse_bool(conj).into())
             }
             let_ if let_ == self.syms.let_ => {
                 let mut rest = CountingParser::new(rest, "let", 2);

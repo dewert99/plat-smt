@@ -203,21 +203,21 @@ impl Solver {
     pub fn fresh_bool(&mut self) -> BoolExp {
         BoolExp::Unknown(Lit::new(self.fresh(), true))
     }
+
+    fn add_clause<const N: usize>(&mut self, clause: [Lit; N]) {
+        self.clause_adder.clear();
+        self.clause_adder.extend(clause);
+        self.sat.add_clause_reuse(&mut self.clause_adder);
+    }
+
     fn andor_reuse(&mut self, exps: &mut Vec<BLit>, is_and: bool) -> BLit {
-        let fresh = self.fresh();
-        let res = Lit::new(fresh, true);
-        debug!(
-            "{res:?} is defined as {} {exps:?}",
-            if is_and { "and" } else { "or" }
-        );
         if let [exp] = &**exps {
             return *exp;
         }
+        let fresh = self.fresh();
+        let res = Lit::new(fresh, true);
         for lit in &mut *exps {
-            self.clause_adder.clear();
-            self.clause_adder.push(*lit ^ !is_and);
-            self.clause_adder.push(Lit::new(fresh, !is_and));
-            self.sat.add_clause_reuse(&mut self.clause_adder);
+            self.add_clause([*lit ^ !is_and, Lit::new(fresh, !is_and)]);
             *lit = *lit ^ is_and;
         }
         exps.push(Lit::new(fresh, is_and));
@@ -232,18 +232,44 @@ impl Solver {
     /// [`clear`](Junction::clear)ed before it is used again
     pub fn collapse_bool<const IS_AND: bool>(
         &mut self,
-        mut j: impl BorrowMut<Junction<IS_AND>>,
+        mut j: impl BorrowMut<Junction<IS_AND>> + Debug,
     ) -> BoolExp {
-        match &mut j.borrow_mut().0 {
+        debug!("{j:?} was collapsed to ...");
+        let res = match &mut j.borrow_mut().0 {
             None => BoolExp::Const(!IS_AND),
             Some(x) if x.is_empty() => BoolExp::Const(IS_AND),
             Some(x) => BoolExp::Unknown(self.andor_reuse(x, IS_AND)),
-        }
+        };
+        debug!("... {res}");
+        res
     }
 
-    fn raw_eq(&mut self, id1: Id, id2: Id) -> BoolExp {
-        self.euf
-            .add_eq_node(id1, id2, || Lit::new(self.sat.new_var_default(), true))
+    pub fn xor(&mut self, b1: BoolExp, b2: BoolExp) -> BoolExp {
+        let res = match (b1, b2) {
+            (BoolExp::Const(b1), BoolExp::Const(b2)) => BoolExp::Const(b1 ^ b2),
+            (BoolExp::Const(b), BoolExp::Unknown(l)) | (BoolExp::Unknown(l), BoolExp::Const(b)) => {
+                BoolExp::Unknown(l ^ b)
+            }
+            (BoolExp::Unknown(l1), BoolExp::Unknown(l2)) => {
+                let fresh = self.fresh();
+                let fresh = Lit::new(fresh, true);
+                self.add_clause([l1, l2, !fresh]);
+                self.add_clause([!l1, l2, fresh]);
+                self.add_clause([l1, !l2, fresh]);
+                self.add_clause([!l1, !l2, !fresh]);
+                BoolExp::Unknown(fresh)
+            }
+        };
+        debug!("{res} = (xor {b1} {b2})");
+        res
+    }
+
+    pub(crate) fn raw_eq(&mut self, id1: Id, id2: Id) -> BoolExp {
+        let res = self
+            .euf
+            .add_eq_node(id1, id2, || Lit::new(self.sat.new_var_default(), true));
+        debug!("{res:?} is defined as (= id{id1:?} id{id2:?})");
+        res
     }
 
     /// Produce a boolean expression representing the equality of the two expressions

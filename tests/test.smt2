@@ -1,5 +1,0 @@
-(declare-fun x () Bool)
-(declare-fun f (Bool) Bool)
-(assert (= x (f x)))
-(assert (f (f false)))
-(check-sat-assuming ())
