@@ -1,6 +1,6 @@
-Unsat
+unsat
 ((not x))
-Sat
+sat
 ((x true)
  ((f true) true)
  ((f false) true))

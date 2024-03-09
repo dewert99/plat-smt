@@ -1,4 +1,4 @@
-Sat
+sat
 ((a S1!val!2)
  (b S1!val!2)
  (x true))
@@ -7,5 +7,5 @@ Sat
  (define-fun b () S1 S1!val!2)
  (define-fun x () Bool true)
 )
-Unsat
+unsat
 ((not (and x (= (a) (b)))))

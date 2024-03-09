@@ -81,8 +81,14 @@ impl<D> EGraph<D> {
     }
 
     pub fn pop(&mut self, info: PushInfo, mut split: impl FnMut(&mut D) -> D) {
-        self.explain.pop(info.1);
+        self.explain
+            .pop(info.1, info.0.number_of_uncanonical_nodes());
         self.inner.raw_pop1(info.0, |data, _, _| split(data))
+    }
+
+    pub fn clear(&mut self) {
+        self.explain.clear();
+        self.inner.clear();
     }
 
     pub fn explain_equivalence(&self, id1: Id, id2: Id, res: &mut LSet) {

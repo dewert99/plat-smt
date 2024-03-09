@@ -1,4 +1,4 @@
-Sat
+sat
 ((i true)
  (x true)
  (y false)
@@ -9,7 +9,7 @@ Sat
  (define-fun x () Bool true)
  (define-fun y () Bool false)
 )
-Sat
+sat
 ((i false)
  (x true)
  (y false)

@@ -1,4 +1,4 @@
-Unsat
+unsat
 ((let ((x false)) x))
-Sat
-Sat
+sat
+sat

@@ -11,6 +11,6 @@ mod util;
 
 #[doc(inline)]
 pub use junction::{Conjunction, Disjunction};
-pub use parser::interp_smt2;
+pub use parser::{interp_smt2, Parser};
 pub use solver::{BLit, BoolExp, Exp, SolveResult, Solver};
 pub use sort::Sort;
