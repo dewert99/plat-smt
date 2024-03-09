@@ -7,6 +7,7 @@ use batsat::LSet;
 use egg::raw::RawEGraph;
 use egg::{Id, Language};
 use hashbrown::HashSet;
+use log::trace;
 
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
 pub(crate) struct Justification(Lit);
@@ -152,11 +153,13 @@ impl<'x, L: Language, D, U> ExplainWith<'x, &'x RawEGraph<L, D, U>> {
             let next = connection.next;
             match connection.justification.expand() {
                 EJustification::Lit(l) => {
+                    trace!("id{node} = id{next} by {l:?}");
                     res.insert(l);
                     self.handle_congruence(pre_congrence, node, res);
                     pre_congrence = next;
                 }
                 EJustification::NoOp => {
+                    trace!("id{node} = id{next} by assumption");
                     self.handle_congruence(pre_congrence, node, res);
                     pre_congrence = next;
                 }
@@ -175,7 +178,7 @@ impl<'x, L: Language, D, U> ExplainWith<'x, &'x RawEGraph<L, D, U>> {
         if left == right {
             return;
         }
-
+        trace!("{left} = {right} by congruence:");
         let current_node = self.node(left);
         let next_node = self.node(right);
         debug_assert!(current_node.matches(next_node));
@@ -191,9 +194,11 @@ impl<'x, L: Language, D, U> ExplainWith<'x, &'x RawEGraph<L, D, U>> {
 
     pub fn explain_equivalence(&self, left: Id, right: Id, res: &mut LSet) {
         debug_assert_eq!(self.raw.find(left), self.raw.find(right));
+        trace!("start explain id{left} = id{right}");
         let ancestor = self.common_ancestor(left, right);
         self.get_connections(left, ancestor, res);
         self.get_connections(right, ancestor, res);
+        trace!("end explain id{left} = id{right}");
     }
 }
 

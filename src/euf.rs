@@ -157,8 +157,13 @@ impl Theory for EUF {
             if self.egraph.find(id) == self.egraph.find(const_bool) {
                 self.egraph
                     .explain_equivalence(id, const_bool, &mut self.explanation);
-                debug!("EUF explains {:?} by {:?}", p, self.explanation.as_slice());
-                return self.explanation.as_slice();
+                if self.explanation.as_slice() != &[p] {
+                    debug!("EUF explains {:?} by {:?}", p, self.explanation.as_slice());
+                    return self.explanation.as_slice();
+                } else {
+                    self.explanation.clear();
+                    trace!("Skipping incorrect explanation");
+                }
             }
         }
         if let Some(id) = self.lit_ids[!p] {
