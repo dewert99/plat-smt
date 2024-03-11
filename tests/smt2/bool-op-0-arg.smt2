@@ -1,0 +1,5 @@
+(define-const xor* Bool xor)
+(define-const and* Bool and)
+(define-const or* Bool or)
+(check-sat)
+(get-model)

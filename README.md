@@ -6,6 +6,7 @@ that accepts a subset of SMT2LIB syntax for the logic `QF_UF`
 - [x] `=>`, `xor`
 - [x] `=`
 - [x] `distinct`
+- [x] `as`
 - [x] `declare-sort`
 - [x] `declare-function`
 - [x] `assert`

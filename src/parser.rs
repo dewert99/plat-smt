@@ -25,6 +25,14 @@ enum Error {
         actual: Sort,
         expected: Sort,
     },
+    #[error(
+        "the function {f} has return sort {actual} but should have sort {expected} because of as"
+    )]
+    AsSortMismatch {
+        f: &'static str,
+        actual: Sort,
+        expected: Sort,
+    },
     #[error("the left side of the equality has sort {left} but the right side has sort {right}")]
     EqSortMismatch { left: Sort, right: Sort },
     #[error(
@@ -302,26 +310,46 @@ impl<W: Write> Parser<W> {
         res
     }
 
+    fn handle_as<R: FullBufRead>(&mut self, rest: SexpParser<R>) -> Result<(Symbol, Sort)> {
+        let mut rest = CountingParser::new(rest, "as", 2);
+        let SexpToken::Symbol(s) = rest.next()? else {
+            return Err(InvalidExp);
+        };
+        let s = Symbol::new(s);
+        let sort = self.parse_sort(rest.next()?)?;
+        rest.finish()?;
+        Ok((s, sort))
+    }
+
     fn parse_exp<R: FullBufRead>(&mut self, token: SexpToken<R>) -> Result<Exp> {
         match token {
             SexpToken::Symbol(s) => {
-                let sym = Symbol::new(s);
-                match self.bound.get(&sym) {
-                    None => Err(Unbound(sym)),
-                    Some(Bound::Fn(f)) => Err(f.mismatch(sym, 0)),
-                    Some(Bound::Const(x)) => Ok(self.core.canonize(*x)),
-                }
+                SexpParser::with_empty(|p| self.parse_fn_exp(Symbol::new(s), p, None))
             }
             SexpToken::String(_) => Err(Unsupported("strings")),
             SexpToken::Number(_) => Err(Unsupported("arithmetic")),
             SexpToken::Decimal(_, _) => Err(Unsupported("decimal")),
             SexpToken::BitVec { .. } => Err(Unsupported("bitvec")),
             SexpToken::List(mut l) => {
-                let s = match l.next().ok_or(InvalidExp)?? {
-                    SexpToken::Symbol(s) => Symbol::new(s),
+                let status = match l.next().ok_or(InvalidExp)?? {
+                    SexpToken::Symbol("as") => None,
+                    SexpToken::Symbol(s) => Some((Symbol::new(s), None)),
+                    SexpToken::List(mut l2) => {
+                        if matches!(l2.next().ok_or(InvalidExp)??, SexpToken::Symbol("as")) {
+                            let (s, sort) = self.handle_as(l2)?;
+                            Some((s, Some(sort)))
+                        } else {
+                            return Err(InvalidExp);
+                        }
+                    }
                     _ => return Err(InvalidExp),
                 };
-                self.parse_fn_exp(s, l)
+                if let Some((s, sort)) = status {
+                    self.parse_fn_exp(s, l, sort)
+                } else {
+                    let (s, sort) = self.handle_as(l)?;
+                    SexpParser::with_empty(|p| self.parse_fn_exp(s, p, Some(sort)))
+                }
             }
             SexpToken::Keyword(_) => Err(InvalidExp),
         }
@@ -381,26 +409,31 @@ impl<W: Write> Parser<W> {
         }
     }
 
-    fn parse_fn_exp<R: FullBufRead>(&mut self, f: Symbol, mut rest: SexpParser<R>) -> Result<Exp> {
-        match f {
+    fn parse_fn_exp<R: FullBufRead>(
+        &mut self,
+        f: Symbol,
+        mut rest: SexpParser<R>,
+        expect_res: Option<Sort>,
+    ) -> Result<Exp> {
+        let res = match f {
             not if not == self.syms.not => {
                 let mut rest = CountingParser::new(rest, "not", 1);
                 let token = rest.next_full()?;
                 let x = self.parse_bool(token)?;
                 rest.finish()?;
-                Ok((!x).into())
+                (!x).into()
             }
             and if and == self.syms.and => {
                 let conj = rest
                     .zip_map(0.., |token, i| self.parse_bool((token?, i, "and")))
                     .collect::<Result<Conjunction>>()?;
-                Ok(self.core.collapse_bool(conj).into())
+                self.core.collapse_bool(conj).into()
             }
             or if or == self.syms.or => {
                 let disj = rest
                     .zip_map(0.., |token, i| self.parse_bool((token?, i, "or")))
                     .collect::<Result<Disjunction>>()?;
-                Ok(self.core.collapse_bool(disj).into())
+                self.core.collapse_bool(disj).into()
             }
             imp if imp == self.syms.imp => {
                 let mut iter = rest.zip_map(0.., |token, i| self.parse_bool((token?, i, "=>")));
@@ -411,7 +444,7 @@ impl<W: Write> Parser<W> {
                 })??;
                 let not_last = iter.map(|item| Ok(!std::mem::replace(&mut last, item?)));
                 let res = not_last.collect::<Result<Disjunction>>()? | last;
-                Ok(self.core.collapse_bool(res).into())
+                self.core.collapse_bool(res).into()
             }
             xor if xor == self.syms.xor => {
                 let mut res = BoolExp::FALSE;
@@ -421,7 +454,7 @@ impl<W: Write> Parser<W> {
                     Ok(())
                 })
                 .collect::<Result<()>>()?;
-                Ok(res.into())
+                res.into()
             }
             eq if eq == self.syms.eq => {
                 let mut rest = CountingParser::new(rest, "=", 1);
@@ -442,7 +475,7 @@ impl<W: Write> Parser<W> {
                         }
                     })
                     .collect::<Result<Conjunction>>()?;
-                Ok(self.core.collapse_bool(conj).into())
+                self.core.collapse_bool(conj).into()
             }
             distinct if distinct == self.syms.distinct => {
                 let mut rest = CountingParser::new(rest, "distinct", 1);
@@ -467,7 +500,7 @@ impl<W: Write> Parser<W> {
                 let conj: Conjunction = pairwise(&ids)
                     .map(|(&id1, &id2)| !self.core.raw_eq(id1, id2))
                     .collect();
-                Ok(self.core.collapse_bool(conj).into())
+                self.core.collapse_bool(conj).into()
             }
             let_ if let_ == self.syms.let_ => {
                 let mut rest = CountingParser::new(rest, "let", 2);
@@ -489,7 +522,7 @@ impl<W: Write> Parser<W> {
                 let exp = self.parse_exp(body)?;
                 rest.finish()?;
                 self.undo_bindings(old_len);
-                Ok(exp)
+                exp
             }
             ite if ite == self.syms.ite || ite == self.syms.if_ => {
                 let mut rest = CountingParser::new(rest, ite.as_str(), 3);
@@ -498,7 +531,7 @@ impl<W: Write> Parser<W> {
                 let e = self.parse_exp(rest.next()?)?;
                 rest.finish()?;
                 let err_m = |(left, right)| IteSortMismatch { left, right };
-                Ok(self.core.ite(i, t, e).map_err(err_m)?)
+                self.core.ite(i, t, e).map_err(err_m)?
             }
             f => {
                 // Uninterpreted function
@@ -517,7 +550,7 @@ impl<W: Write> Parser<W> {
                         if children.len() < sig.args.len() {
                             return Err(sig.mismatch(f, children.len()));
                         }
-                        Ok(self.core.sorted_fn(f, children, sig.ret))
+                        self.core.sorted_fn(f, children, sig.ret)
                     }
                     Bound::Const(c) => {
                         if rest.next().is_some() {
@@ -527,11 +560,22 @@ impl<W: Write> Parser<W> {
                                 expected: 0,
                             });
                         }
-                        Ok(self.core.canonize(c))
+                        self.core.canonize(c)
                     }
                 }
             }
-        }
+        };
+        if let Some(expected) = expect_res {
+            let actual = self.core.sort(res);
+            if actual != expected {
+                return Err(AsSortMismatch {
+                    f: f.as_str(),
+                    actual,
+                    expected,
+                });
+            }
+        };
+        return Ok(res);
     }
 
     fn parse_sort<R: FullBufRead>(&self, token: SexpToken<R>) -> Result<Sort> {
