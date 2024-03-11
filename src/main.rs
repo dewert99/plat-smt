@@ -1,33 +1,28 @@
-use crate::full_buf_read::FullBufReader;
+use bat_egg_smt::interp_smt2_with_reader;
+use either::Either;
 use std::fs::File;
-use std::io::{stderr, stdin, stdout, Read};
-
-mod egraph;
-mod euf;
-mod explain;
-mod full_buf_read;
-mod junction;
-mod parser;
-mod parser_core;
-mod solver;
-mod sort;
-mod util;
+use std::io::{empty, stderr, stdin, stdout, Read};
 
 fn main() {
     #[cfg(feature = "env_logger")]
     env_logger::init();
-    let mut parser = parser::Parser::new(stdout());
+    let mut buf = Vec::new();
+    let mut interactive = false;
     for arg in std::env::args().skip(1) {
         if &*arg == "-i" {
-            parser.interp_smt2(FullBufReader::new(stdin(), 256), stderr())
+            interactive = true;
         } else {
             let Ok(mut file) = File::open(&arg) else {
                 eprintln!("{arg} is not a valid file");
                 continue;
             };
-            let mut buf: Vec<u8> = Vec::new();
             file.read_to_end(&mut buf).unwrap();
-            parser::interp_smt2(&buf, stdout(), stderr())
         }
     }
+    let reader = if interactive {
+        Either::Left(stdin())
+    } else {
+        Either::Right(empty())
+    };
+    interp_smt2_with_reader(buf, reader, stdout(), stderr())
 }

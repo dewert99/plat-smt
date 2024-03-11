@@ -1,6 +1,6 @@
 use crate::egraph::Children;
 use crate::euf::FullFunctionInfo;
-use crate::full_buf_read::FullBufRead;
+use crate::full_buf_read::{FullBufRead, FullBufReader};
 use crate::junction::{Conjunction, Disjunction};
 use crate::parser::Error::*;
 use crate::parser_core::{ParseError, SexpParser, SexpToken, SpanRange};
@@ -12,7 +12,7 @@ use hashbrown::HashMap;
 use internment::Intern;
 use log::debug;
 use std::fmt::Formatter;
-use std::io::Write;
+use std::io::{Read, Write};
 use std::iter;
 use thiserror::Error;
 
@@ -190,7 +190,7 @@ struct PushInfo {
     bound: usize,
 }
 #[derive(Default)]
-pub struct Parser<W: Write> {
+struct Parser<W: Write> {
     bound: HashMap<Symbol, Bound>,
     bound_stack: Vec<(Symbol, Option<Bound>)>,
     declared_sorts: HashMap<Symbol, u32>,
@@ -279,7 +279,7 @@ fn pairwise<T>(slice: &[T]) -> impl Iterator<Item = (&T, &T)> {
 }
 
 impl<W: Write> Parser<W> {
-    pub fn new(writer: W) -> Self {
+    fn new(writer: W) -> Self {
         let mut res = Parser {
             bound: Default::default(),
             bound_stack: Default::default(),
@@ -562,7 +562,7 @@ impl<W: Write> Parser<W> {
         }
     }
 
-    pub fn reset_state(&mut self) {
+    fn reset_state(&mut self) {
         if matches!(self.state, State::Model) {
             self.core.pop_model();
         }
@@ -917,7 +917,7 @@ impl<W: Write> Parser<W> {
         }
     }
 
-    pub fn interp_smt2(&mut self, data: impl FullBufRead, mut err: impl Write) {
+    fn interp_smt2(&mut self, data: impl FullBufRead, mut err: impl Write) {
         SexpParser::parse_stream_keep_going(
             data,
             |t| self.parse_command_token(t?),
@@ -952,7 +952,18 @@ fn write_body<W: Write>(writer: &mut W, info: &FullFunctionInfo, name: Symbol) {
 
 /// Evaluate `data`, the bytes of an `smt2` file, reporting results to `stdout` and errors to
 /// `stderr`
-pub fn interp_smt2(data: impl FullBufRead, out: impl Write, err: impl Write) {
+pub fn interp_smt2(data: &[u8], out: impl Write, err: impl Write) {
     let mut p = Parser::new(out);
     p.interp_smt2(data, err)
+}
+
+/// Similar to [`interp_smt2`] but evaluates the bytes read from `reader` after init_data
+pub fn interp_smt2_with_reader(
+    init_data: Vec<u8>,
+    reader: impl Read,
+    out: impl Write,
+    err: impl Write,
+) {
+    let mut p = Parser::new(out);
+    p.interp_smt2(FullBufReader::new(reader, init_data), err)
 }

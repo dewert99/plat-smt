@@ -1,9 +1,10 @@
-use bat_egg_smt::{interp_smt2, Parser};
+use bat_egg_smt::interp_smt2;
 use log::info;
 use rstest::rstest;
 use std::fs::{remove_file, File};
 use std::io::{BufWriter, Read};
 use std::path::{Path, PathBuf};
+use std::str::from_utf8;
 
 fn read_path(p: &Path) -> Vec<u8> {
     let mut res = Vec::new();
@@ -67,8 +68,7 @@ fn test_sequential(init_command: &str, split_command: &str, exact: bool) {
     let mut err = Vec::new();
     let mut expect_out = Vec::new();
     let mut file_buf = Vec::new();
-    let mut parser = Parser::new(&mut out);
-    parser.interp_smt2(init_command.as_bytes(), &mut err);
+    file_buf.extend_from_slice(init_command.as_bytes());
     let path = Path::new("tests/smt2");
     for x in path.read_dir().unwrap().filter_map(Result::ok) {
         let mut path = x.path();
@@ -78,22 +78,18 @@ fn test_sequential(init_command: &str, split_command: &str, exact: bool) {
                 .unwrap()
                 .read_to_end(&mut file_buf)
                 .unwrap();
-            parser.interp_smt2(&file_buf, &mut err);
-            parser.interp_smt2(split_command.as_bytes(), &mut err);
-            file_buf.clear();
+            file_buf.extend_from_slice(split_command.as_bytes());
             path.set_extension("stdout");
             File::open(&path)
                 .unwrap()
                 .read_to_end(&mut expect_out)
                 .unwrap();
         }
-        assert_eq!(core::str::from_utf8(&err).unwrap(), "");
     }
+    interp_smt2(&file_buf, &mut out, &mut err);
+    assert_eq!(from_utf8(&err).unwrap(), "");
     if exact {
-        assert_eq!(
-            String::from_utf8(out).unwrap(),
-            String::from_utf8(expect_out).unwrap()
-        );
+        assert_eq!(from_utf8(&out).unwrap(), from_utf8(&expect_out).unwrap());
     }
 }
 

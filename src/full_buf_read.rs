@@ -17,7 +17,7 @@ pub trait FullBufRead {
     }
 }
 
-impl<R: AsRef<[u8]>> FullBufRead for R {
+impl<'a> FullBufRead for &'a [u8] {
     #[inline(always)]
     fn fill_to(&mut self, _: usize) -> Result<()> {
         Ok(())
@@ -25,7 +25,7 @@ impl<R: AsRef<[u8]>> FullBufRead for R {
 
     #[inline(always)]
     fn data(&self) -> &[u8] {
-        self.as_ref()
+        self
     }
 }
 
@@ -36,11 +36,11 @@ pub struct FullBufReader<R: Read> {
 }
 
 impl<R: Read> FullBufReader<R> {
-    pub fn new(reader: R, capacity: usize) -> Self {
+    pub fn new(reader: R, init: Vec<u8>) -> Self {
         FullBufReader {
             reader,
-            read_to: 0,
-            buf: vec![0; capacity],
+            read_to: init.len(),
+            buf: init,
         }
     }
 
