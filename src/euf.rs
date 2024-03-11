@@ -156,7 +156,7 @@ impl Theory for EUF {
             let const_bool = self.id_for_bool(true);
             if self.egraph.find(id) == self.egraph.find(const_bool) {
                 self.egraph
-                    .explain_equivalence(id, const_bool, &mut self.explanation);
+                    .explain_equivalence(id, const_bool, &mut self.explanation, false);
                 if self.explanation.as_slice() != &[p] {
                     debug!("EUF explains {:?} by {:?}", p, self.explanation.as_slice());
                     return self.explanation.as_slice();
@@ -169,7 +169,7 @@ impl Theory for EUF {
         if let Some(id) = self.lit_ids[!p] {
             let const_bool = self.id_for_bool(false);
             self.egraph
-                .explain_equivalence(id, const_bool, &mut self.explanation);
+                .explain_equivalence(id, const_bool, &mut self.explanation, false);
             debug!("EUF explains {:?} by {:?}", p, self.explanation.as_slice());
             return self.explanation.as_slice();
         }
@@ -241,11 +241,9 @@ impl EUF {
         let fid = self.id_for_bool(false);
         let tid = self.id_for_bool(true);
         self.egraph
-            .explain_equivalence(fid, tid, &mut self.explanation);
+            .explain_equivalence(fid, tid, &mut self.explanation, true);
         debug!("EUF Conflict by {:?}", self.explanation.as_slice());
-        // TODO This should be in-place but the `batsat` API doesn't allow this
-        let exp: Vec<_> = self.explanation.iter().map(|x| !*x).collect();
-        acts.raise_conflict(&exp, true)
+        acts.raise_conflict(&self.explanation, true)
     }
     fn rebuild(&mut self, acts: &mut TheoryArg) {
         let mut conflict = false;
