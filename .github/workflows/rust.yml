@@ -12,5 +12,25 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
-      - run: cargo test --all-features
+      - name: Setup rust toolchain, cache
+        uses: moonrepo/setup-rust@v0
+        with:
+          channel: stable
+          cache-target: dev
+      - run: cargo test
+  test-full:
+    name: StarExec SMT tests
+    runs-on: ubuntu-latest
+    needs: [test]
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install Z3
+        uses: pavpanchekha/setup-z3@v0.3.0
+        with:
+          version: 4.13.0
+      - name: Setup rust toolchain, cache
+        uses: moonrepo/setup-rust@v0
+        with:
+          channel: stable
+          cache-target: release
+      - run: cargo test --release
