@@ -1,0 +1,12 @@
+the function false has return sort Bool but should have sort S because of as at 3:19
+(assert (as false S))
+                  ^
+
+the function and has return sort Bool but should have sort S because of as at 4:26
+(assert ((as and S) true false))
+                         ^
+
+the 0th argument of the function and has sort S but should have sort Bool at 5:21
+(assert ((as and S) a false))
+                    ^
+

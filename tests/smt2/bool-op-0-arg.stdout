@@ -1,0 +1,6 @@
+sat
+(
+ (define-fun and* () Bool true)
+ (define-fun or* () Bool false)
+ (define-fun xor* () Bool false)
+)

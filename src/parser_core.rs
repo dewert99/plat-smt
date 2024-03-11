@@ -451,6 +451,13 @@ impl<T, X> Bind<X> for T {}
 #[derive(Copy, Clone)]
 pub struct SpanRange(usize, usize);
 
+impl<'a> SexpParser<'a, &'static [u8]> {
+    pub fn with_empty<T>(mut f: impl FnMut(SexpParser<'_, &'static [u8]>) -> T) -> T {
+        let mut lexer: SexpLexer<&[u8]> = SexpLexer::new(b")");
+        f(SexpParser(&mut lexer))
+    }
+}
+
 impl<'a, R: FullBufRead> SexpParser<'a, R> {
     pub fn parse_stream_keep_going<E>(
         reader: R,

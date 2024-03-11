@@ -1,0 +1,5 @@
+(declare-sort S)
+(declare-const a S)
+(assert (as false S))
+(assert ((as and S) true false))
+(assert ((as and S) a false))
