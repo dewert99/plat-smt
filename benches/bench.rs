@@ -6,7 +6,7 @@ use std::path::Path;
 pub fn criterion_benchmark(c: &mut Criterion) {
     use walkdir::WalkDir;
 
-    let path = Path::new("benches/starexec/incremental/QF_UF/20190906-CLEARSY/0000");
+    let path = Path::new("benches/starexec");
     for x in WalkDir::new(path).into_iter().filter_map(Result::ok) {
         let path = x.path();
         if path.extension() == Some("smt2".as_ref()) {

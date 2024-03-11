@@ -35,6 +35,7 @@ jobs:
           cache-target: release
       - run: cargo test --release
   benchmarks:
+    needs: [test-full]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v3
