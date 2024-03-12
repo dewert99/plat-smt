@@ -141,9 +141,11 @@ impl<'x, L: Language, D, U> ExplainWith<'x, &'x RawEGraph<L, D, U>> {
         }
     }
 
-    fn get_connections(&self, mut node: Id, ancestor: Id, res: &mut LSet, negate: bool) {
+    // Returns an id that is congruently equivalent to `ancestor` and adds explanation between
+    // `node` and the returned value
+    fn get_connections(&self, mut node: Id, ancestor: Id, res: &mut LSet, negate: bool) -> Id {
         if node == ancestor {
-            return;
+            return node;
         }
 
         let mut pre_congrence = node;
@@ -166,8 +168,7 @@ impl<'x, L: Language, D, U> ExplainWith<'x, &'x RawEGraph<L, D, U>> {
                 EJustification::Congruence => {}
             }
             if next == ancestor {
-                self.handle_congruence(pre_congrence, next, res, negate);
-                return;
+                return pre_congrence;
             }
             debug_assert_ne!(next, node);
             node = next;
@@ -196,8 +197,9 @@ impl<'x, L: Language, D, U> ExplainWith<'x, &'x RawEGraph<L, D, U>> {
         debug_assert_eq!(self.raw.find(left), self.raw.find(right));
         trace!("start explain id{left} = id{right}");
         let ancestor = self.common_ancestor(left, right);
-        self.get_connections(left, ancestor, res, negate);
-        self.get_connections(right, ancestor, res, negate);
+        let c1 = self.get_connections(left, ancestor, res, negate);
+        let c2 = self.get_connections(right, ancestor, res, negate);
+        self.handle_congruence(c1, c2, res, negate);
         trace!("end explain id{left} = id{right}");
     }
 }
