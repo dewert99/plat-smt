@@ -1,11 +1,11 @@
-use crate::egraph::{Children, EGraph, PushInfo as EGPushInfo};
+use crate::egraph::{Children, EGraph, PushInfo as EGPushInfo, SymbolLang};
 use crate::explain::Justification;
 use crate::solver::{BoolExp, Exp, UExp};
 use crate::sort::Sort;
 use crate::util::DebugIter;
 use batsat::{LMap, LSet};
 use batsat::{Lit, Theory, TheoryArg, Var};
-use egg::{Id, Language, Symbol, SymbolLang};
+use egg::{Id, Language, Symbol};
 use hashbrown::HashMap;
 use log::{debug, trace};
 use perfect_derive::perfect_derive;
