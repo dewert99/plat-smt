@@ -141,7 +141,7 @@ impl<'x, L: Language, D, U> ExplainWith<'x, &'x RawEGraph<L, D, U>> {
         }
     }
 
-    fn get_connections(&self, mut node: Id, ancestor: Id, res: &mut LSet) {
+    fn get_connections(&self, mut node: Id, ancestor: Id, res: &mut LSet, negate: bool) {
         if node == ancestor {
             return;
         }
@@ -154,19 +154,19 @@ impl<'x, L: Language, D, U> ExplainWith<'x, &'x RawEGraph<L, D, U>> {
             match connection.justification.expand() {
                 EJustification::Lit(l) => {
                     trace!("id{node} = id{next} by {l:?}");
-                    res.insert(l);
-                    self.handle_congruence(pre_congrence, node, res);
+                    res.insert(l ^ negate);
+                    self.handle_congruence(pre_congrence, node, res, negate);
                     pre_congrence = next;
                 }
                 EJustification::NoOp => {
                     trace!("id{node} = id{next} by assumption");
-                    self.handle_congruence(pre_congrence, node, res);
+                    self.handle_congruence(pre_congrence, node, res, negate);
                     pre_congrence = next;
                 }
                 EJustification::Congruence => {}
             }
             if next == ancestor {
-                self.handle_congruence(pre_congrence, next, res);
+                self.handle_congruence(pre_congrence, next, res, negate);
                 return;
             }
             debug_assert_ne!(next, node);
@@ -174,7 +174,7 @@ impl<'x, L: Language, D, U> ExplainWith<'x, &'x RawEGraph<L, D, U>> {
         }
     }
 
-    fn handle_congruence(&self, left: Id, right: Id, res: &mut LSet) {
+    fn handle_congruence(&self, left: Id, right: Id, res: &mut LSet, negate: bool) {
         if left == right {
             return;
         }
@@ -188,16 +188,16 @@ impl<'x, L: Language, D, U> ExplainWith<'x, &'x RawEGraph<L, D, U>> {
             .iter()
             .zip(next_node.children().iter())
         {
-            self.explain_equivalence(*left_child, *right_child, res)
+            self.explain_equivalence(*left_child, *right_child, res, negate)
         }
     }
 
-    pub fn explain_equivalence(&self, left: Id, right: Id, res: &mut LSet) {
+    pub fn explain_equivalence(&self, left: Id, right: Id, res: &mut LSet, negate: bool) {
         debug_assert_eq!(self.raw.find(left), self.raw.find(right));
         trace!("start explain id{left} = id{right}");
         let ancestor = self.common_ancestor(left, right);
-        self.get_connections(left, ancestor, res);
-        self.get_connections(right, ancestor, res);
+        self.get_connections(left, ancestor, res, negate);
+        self.get_connections(right, ancestor, res, negate);
         trace!("end explain id{left} = id{right}");
     }
 }

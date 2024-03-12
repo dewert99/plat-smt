@@ -91,10 +91,10 @@ impl<D> EGraph<D> {
         self.inner.clear();
     }
 
-    pub fn explain_equivalence(&self, id1: Id, id2: Id, res: &mut LSet) {
+    pub fn explain_equivalence(&self, id1: Id, id2: Id, res: &mut LSet, negate: bool) {
         self.explain
             .with_raw_egraph(&self.inner)
-            .explain_equivalence(id1, id2, res)
+            .explain_equivalence(id1, id2, res, negate)
     }
 
     pub fn is_clean(&self) -> bool {
