@@ -85,7 +85,10 @@ impl<D> EGraph<D> {
             // so we do not need to distinguish between nodes that are
             // equivalent modulo ground equalities
             |_, id, _| Some(id),
-            |this, id1, id2| this.explain.union(id1, id2, Justification::CONGRUENCE),
+            |this, existing_id, new_id| {
+                this.explain
+                    .union(existing_id, Justification::CONGRUENCE, existing_id, new_id)
+            },
             |this, id, _| {
                 this.explain.add(id);
                 mk_data(id)
@@ -102,7 +105,12 @@ impl<D> EGraph<D> {
     ) {
         self.inner.raw_union(id1, id2, |info| {
             merge(info.data1, info.data2);
-            self.explain.union(id1, id2, justification)
+            let (old_id, new_id) = if info.swapped_ids {
+                (id1, id2)
+            } else {
+                (id2, id1)
+            };
+            self.explain.union(info.id2, justification, old_id, new_id)
         })
     }
 

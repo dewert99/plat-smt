@@ -1,8 +1,10 @@
+// https://www.cs.upc.edu/~oliveras/rta05.pdf
+// 2.1 Union-find with an O(k log n) Explain operation
 use batsat::Lit;
 use std::fmt::Debug;
-use std::mem;
 use std::ops::Deref;
 
+use crate::approx_bitset::{ApproxBitSet, IdSet};
 use batsat::LSet;
 use egg::raw::RawEGraph;
 use egg::{Id, Language};
@@ -38,26 +40,17 @@ impl Justification {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-struct Connection {
-    next: Id,
-    justification: Justification,
-}
-
-impl Connection {
-    #[inline]
-    fn end(node: Id) -> Self {
-        Connection {
-            next: node,
-            justification: Justification::CONGRUENCE,
-        }
-    }
+#[derive(Debug, Copy, Clone)]
+struct UnionInfo {
+    old_id: Id,
+    new_id: Id,
+    just: Justification,
 }
 
 #[derive(Debug, Clone, Default)]
 pub struct Explain {
-    explainfind: Vec<Connection>,
-    undo_log: UndoLog,
+    union_info: Vec<UnionInfo>,
+    assoc_unions: Vec<u32>, // index into union_info
 }
 
 pub(crate) struct ExplainWith<'a, X> {
@@ -66,39 +59,33 @@ pub(crate) struct ExplainWith<'a, X> {
 }
 
 impl Explain {
+    fn fresh_assoc_union(&mut self, just: Justification, old_id: Id, new_id: Id) -> u32 {
+        let assoc_union = self.union_info.len() as u32;
+        self.union_info.push(UnionInfo {
+            just,
+            old_id,
+            new_id,
+        });
+        assoc_union
+    }
     pub(crate) fn add(&mut self, set: Id) -> Id {
-        debug_assert_eq!(self.explainfind.len(), usize::from(set));
-        self.explainfind.push(Connection::end(set));
+        debug_assert_eq!(self.assoc_unions.len(), usize::from(set));
+        self.assoc_unions.push(u32::MAX);
         set
     }
 
-    // reverse edges recursively to make this node the leader
-    fn set_parent(&mut self, node: Id, parent: Connection) {
-        let mut prev = node;
-        let mut curr = mem::replace(&mut self.explainfind[usize::from(prev)], parent);
-        let mut count = 0;
-        while prev != curr.next {
-            let pconnection = Connection {
-                justification: curr.justification,
-                next: prev,
-            };
-            let next = mem::replace(&mut self.explainfind[usize::from(curr.next)], pconnection);
-            prev = curr.next;
-            curr = next;
-            count += 1;
-            debug_assert!(count < 1000);
-        }
-    }
-
-    pub(crate) fn union(&mut self, node1: Id, node2: Id, justification: Justification) {
-        let pconnection = Connection {
-            justification: justification.clone(),
-            next: node2,
-        };
-
-        self.set_parent(node1, pconnection);
-
-        self.undo_log_union(node1, node2);
+    /// `old_root` is the `id` who was merged into `new_root`
+    /// `old_id` is the node whose root was `old_root` before the union
+    /// `new_id` is the node whose root was `new_root` before the union
+    pub(crate) fn union(
+        &mut self,
+        old_root: Id,
+        justification: Justification,
+        old_id: Id,
+        new_id: Id,
+    ) {
+        let assoc_union = self.fresh_assoc_union(justification, old_id, new_id);
+        self.assoc_unions[usize::from(old_root)] = assoc_union;
     }
 
     pub(crate) fn with_raw_egraph<X>(&self, raw: X) -> ExplainWith<'_, X> {
@@ -114,65 +101,81 @@ impl<'a, X> Deref for ExplainWith<'a, X> {
     }
 }
 
-impl<'x, L: Language, D, U> ExplainWith<'x, &'x RawEGraph<L, D, U>> {
+impl<'x, L: Language, D> ExplainWith<'x, &'x RawEGraph<L, D, egg::raw::semi_persistent1::UndoLog>> {
     pub(crate) fn node(&self, node_id: Id) -> &L {
         self.raw.id_to_node(node_id)
     }
 
-    fn common_ancestor(&self, mut left: Id, mut right: Id) -> Id {
-        let mut seen_left: HashSet<Id> = Default::default();
-        let mut seen_right: HashSet<Id> = Default::default();
-        loop {
-            seen_left.insert(left);
-            if seen_right.contains(&left) {
-                return left;
+    // Requires `left` != `right`
+    // `result.1` is true when the `old_root` from `result.0` corresponds to left
+    fn max_assoc_union_gen<S: IdSet>(
+        &self,
+        orig_left: Id,
+        orig_right: Id,
+        fallback: impl FnOnce(&Self, Id, Id) -> (u32, bool),
+    ) -> (u32, bool) {
+        let mut seen_left = S::empty();
+        let mut seen_right = S::empty();
+        let mut left = orig_left;
+        let mut right = orig_right;
+        seen_left.insert(left);
+        seen_right.insert(right);
+        // base → .. → pred → ancestor
+        //      other → .. -↗
+        let (other_is_left, pred, ancestor, other) = loop {
+            let next_left = self.raw.find_direct_parent(left);
+            if seen_right.may_contain(next_left) && left != next_left {
+                break (false, left, next_left, orig_right);
             }
+            seen_left.insert(next_left);
 
-            seen_right.insert(right);
-            if seen_left.contains(&right) {
-                return right;
+            let next_right = self.raw.find_direct_parent(right);
+            if seen_left.may_contain(next_right) && right != next_right {
+                break (true, right, next_right, orig_left);
             }
+            seen_right.insert(next_right);
 
-            let next_left = self.explainfind[usize::from(left)].next;
-            let next_right = self.explainfind[usize::from(right)].next;
             debug_assert!(next_left != left || next_right != right);
             left = next_left;
             right = next_right;
+        };
+        let base_path_score = self.assoc_unions[usize::from(pred)];
+        debug_assert_ne!(base_path_score, u32::MAX);
+        if ancestor == other {
+            return (base_path_score, !other_is_left);
+        } else {
+            let mut curr = other;
+            loop {
+                if S::might_confuse(curr, ancestor) {
+                    // we may have though we found the ancestor when we actually found `curr`
+                    return fallback(self, orig_left, orig_right);
+                }
+                let next = self.raw.find_direct_parent(curr);
+                if next == ancestor {
+                    //   base → .. → pred → ancestor
+                    // other → .. → curr -↗
+                    let other_path_score = self.assoc_unions[usize::from(curr)];
+                    debug_assert_ne!(other_path_score, u32::MAX);
+                    return if base_path_score > other_path_score {
+                        (base_path_score, !other_is_left)
+                    } else {
+                        (other_path_score, other_is_left)
+                    };
+                }
+                debug_assert_ne!(next, curr);
+                curr = next;
+            }
         }
     }
 
-    // Returns an id that is congruently equivalent to `ancestor` and adds explanation between
-    // `node` and the returned value
-    fn get_connections(&self, mut node: Id, ancestor: Id, res: &mut LSet, negate: bool) -> Id {
-        if node == ancestor {
-            return node;
-        }
+    #[inline(never)]
+    fn max_assoc_union_fallback(&self, left: Id, right: Id) -> (u32, bool) {
+        self.max_assoc_union_gen::<HashSet<Id>>(left, right, |_, _, _| unreachable!())
+    }
 
-        let mut pre_congrence = node;
-
-        loop {
-            let connection = &self.explainfind[usize::from(node)];
-            let next = connection.next;
-            match connection.justification.expand() {
-                EJustification::Lit(l) => {
-                    trace!("id{node} = id{next} by {l:?}");
-                    res.insert(l ^ negate);
-                    self.handle_congruence(pre_congrence, node, res, negate);
-                    pre_congrence = next;
-                }
-                EJustification::NoOp => {
-                    trace!("id{node} = id{next} by assumption");
-                    self.handle_congruence(pre_congrence, node, res, negate);
-                    pre_congrence = next;
-                }
-                EJustification::Congruence => {}
-            }
-            if next == ancestor {
-                return pre_congrence;
-            }
-            debug_assert_ne!(next, node);
-            node = next;
-        }
+    fn max_assoc_union(&self, left: Id, right: Id) -> (u32, bool) {
+        // Try with an `ApproxBitSet` and fallback to using a `HashSet` if it doesn't work
+        self.max_assoc_union_gen::<ApproxBitSet>(left, right, Self::max_assoc_union_fallback)
     }
 
     fn handle_congruence(&self, left: Id, right: Id, res: &mut LSet, negate: bool) {
@@ -193,52 +196,90 @@ impl<'x, L: Language, D, U> ExplainWith<'x, &'x RawEGraph<L, D, U>> {
         }
     }
 
+    // `=?`: unknown equivalence
+    // `===`: congruence
+    // `={just}=` equivalence by `just`
+    //
+    // Explains: `left_congruence` === `left` =? `right`
+    // Given that: `result` === `right`
+    fn explain_equivalence_h(
+        &self,
+        left_congruence: Id,
+        left: Id,
+        right: Id,
+        res: &mut LSet,
+        negate: bool,
+    ) -> Id {
+        // `=?`: unknown equivalence
+        // `===`: congruence
+        // `={just}=` equivalence by `just`
+
+        // left_congruence === left =? right
+        if left == right {
+            // left_congruence === right
+            left_congruence
+        } else {
+            let (assoc_union, left_is_old) = self.max_assoc_union(left, right);
+            let union_info = self.union_info[assoc_union as usize];
+            let just = union_info.just;
+            let (next_left, next_right) = if left_is_old {
+                (union_info.old_id, union_info.new_id)
+            } else {
+                (union_info.new_id, union_info.old_id)
+            };
+            // left_congruence === left =? next_left ={just}= next_right =? right
+            let left_congruence =
+                self.explain_equivalence_h(left_congruence, left, next_left, res, negate);
+            // left_congruence === next_left ={just}= next_right =? right
+            let left_congruence = match just.expand() {
+                EJustification::Lit(just) => {
+                    self.handle_congruence(left_congruence, next_left, res, negate);
+                    // next_left ={just}= next_right =? right
+                    trace!("id{next_left} = id{next_right} by {just:?}");
+                    res.insert(just ^ negate);
+                    // next_right =? right
+                    next_right
+                }
+                EJustification::Congruence => {
+                    // left_congruence === next_left === next_right =? right
+                    left_congruence
+                }
+                EJustification::NoOp => {
+                    self.handle_congruence(left_congruence, next_left, res, negate);
+                    trace!("id{next_left} = id{next_right} by assumption");
+                    next_right
+                }
+            };
+            // left_congruence === next_right =? right
+            self.explain_equivalence_h(left_congruence, next_right, right, res, negate)
+            // left_congruence === right
+        }
+    }
+
     pub fn explain_equivalence(&self, left: Id, right: Id, res: &mut LSet, negate: bool) {
         debug_assert_eq!(self.raw.find(left), self.raw.find(right));
         trace!("start explain id{left} = id{right}");
-        let ancestor = self.common_ancestor(left, right);
-        let c1 = self.get_connections(left, ancestor, res, negate);
-        let c2 = self.get_connections(right, ancestor, res, negate);
-        self.handle_congruence(c1, c2, res, negate);
+        let left_congruence = self.explain_equivalence_h(left, left, right, res, negate);
+        self.handle_congruence(left_congruence, right, res, negate);
         trace!("end explain id{left} = id{right}");
     }
 }
-
-pub(super) type UndoLog = Vec<(Id, Id)>;
 
 #[derive(Default, Clone, Debug)]
 pub(crate) struct PushInfo(usize);
 
 impl Explain {
-    pub(super) fn undo_log_union(&mut self, node1: Id, node2: Id) {
-        self.undo_log.push((node1, node2))
-    }
-
     pub(crate) fn push(&self) -> PushInfo {
-        PushInfo(self.undo_log.len())
+        PushInfo(self.union_info.len())
     }
 
     pub(crate) fn pop(&mut self, info: PushInfo, old_nodes: usize) {
-        for (id1, id2) in self.undo_log.drain(info.0..).rev() {
-            let mut did_something = false;
-
-            let connection1 = &mut self.explainfind[usize::from(id1)];
-            if connection1.next == id2 {
-                *connection1 = Connection::end(id1);
-                did_something = true;
-            }
-            let connection2 = &mut self.explainfind[usize::from(id2)];
-            if connection2.next == id1 {
-                *connection2 = Connection::end(id2);
-                did_something = true;
-            }
-            debug_assert!(did_something)
-        }
-        self.explainfind.truncate(old_nodes);
+        self.union_info.truncate(info.0);
+        self.assoc_unions.truncate(old_nodes);
     }
 
     pub(crate) fn clear(&mut self) {
-        self.undo_log.clear();
-        self.explainfind.clear();
+        self.union_info.clear();
+        self.assoc_unions.clear();
     }
 }
