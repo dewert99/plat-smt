@@ -1,11 +1,38 @@
 use batsat::LSet;
 use egg::raw::{self, semi_persistent1::UndoLog, EGraphResidual, RawEGraph};
-use egg::{Id, Symbol, SymbolLang};
+use egg::{Id, Language, Symbol};
+use smallvec::SmallVec;
 use std::ops::{Deref, Index};
 
 use crate::explain;
 use crate::explain::{Explain, Justification};
-pub type Children = Vec<Id>;
+pub type Children = SmallVec<[Id; 4]>;
+
+#[derive(Clone, Hash, Eq, PartialEq, Debug, Ord, PartialOrd)]
+pub struct SymbolLang {
+    pub(crate) op: Symbol,
+    pub(crate) children: Children,
+}
+
+impl Language for SymbolLang {
+    type Discriminant = Symbol;
+
+    fn discriminant(&self) -> Self::Discriminant {
+        self.op
+    }
+
+    fn matches(&self, other: &Self) -> bool {
+        self.op == other.op
+    }
+
+    fn children(&self) -> &[Id] {
+        &self.children
+    }
+
+    fn children_mut(&mut self) -> &mut [Id] {
+        &mut self.children
+    }
+}
 
 #[derive(Debug)]
 pub struct EGraph<D> {
@@ -41,7 +68,7 @@ impl<D> EGraph<D> {
         RawEGraph::raw_add(
             self,
             |x| &mut x.inner,
-            SymbolLang::new(name, children),
+            SymbolLang { op: name, children },
             // Note unlike the EGraph in egg we only use explanations for clause learning,
             // so we do not need to distinguish between nodes that are
             // equivalent modulo ground equalities
