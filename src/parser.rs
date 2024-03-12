@@ -942,7 +942,7 @@ impl<W: Write> Parser<W> {
         let exp = if ret == self.core.bool_sort() {
             self.core.fresh_bool().into()
         } else {
-            self.core.sorted_fn(name, Children::from_iter([]), ret)
+            self.core.sorted_fn(name, Children::new(), ret)
         };
         debug!("{name} is bound to {exp}");
         self.insert_bound(name, Bound::Const(exp));
