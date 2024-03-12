@@ -1,3 +1,4 @@
+mod approx_bitset;
 mod egraph;
 mod euf;
 mod explain;
