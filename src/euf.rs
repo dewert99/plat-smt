@@ -1,4 +1,4 @@
-use crate::egraph::{children_from_slice, Children, EGraph, PushInfo as EGPushInfo, SymbolLang};
+use crate::egraph::{Children, EGraph, PushInfo as EGPushInfo, SymbolLang};
 use crate::explain::Justification;
 use crate::solver::{BoolExp, Exp, UExp};
 use crate::sort::Sort;
@@ -361,11 +361,11 @@ impl EUF {
             return BoolExp::TRUE;
         }
         let (res, added, id) =
-            self.add_bool_node(self.eq_sym, children_from_slice(&[id1, id2]), fresh_lit);
+            self.add_bool_node(self.eq_sym, Children::from_slice(&[id1, id2]), fresh_lit);
         if added {
             let eq_self = self
                 .egraph
-                .add(self.eq_sym, children_from_slice(&[id1, id1]), |_| {
+                .add(self.eq_sym, Children::from_slice(&[id1, id1]), |_| {
                     EClass::Bool(BoolClass::Const(true))
                 });
             let tid = self.id_for_bool(true);

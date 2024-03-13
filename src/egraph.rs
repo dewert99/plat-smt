@@ -10,13 +10,6 @@ use crate::explain::{Explain, Justification};
 const N: usize = 4;
 pub type Children = SmallVec<[Id; N]>;
 
-#[inline]
-pub(crate) fn children_from_slice(children: &[Id]) -> Children {
-    let mut c = Children::new();
-    c.extend_from_slice(children);
-    c
-}
-
 #[derive(Hash, Eq, PartialEq, Debug, Ord, PartialOrd)]
 pub struct SymbolLang {
     pub(crate) op: Symbol,
@@ -24,10 +17,11 @@ pub struct SymbolLang {
 }
 
 impl Clone for SymbolLang {
+    #[inline]
     fn clone(&self) -> Self {
         SymbolLang {
             op: self.op,
-            children: children_from_slice(&self.children),
+            children: Children::from_slice(&self.children),
         }
     }
 }
