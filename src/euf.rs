@@ -370,7 +370,7 @@ impl EUF {
                 });
             let tid = self.id_for_bool(true);
             self.egraph
-                .union(eq_self, tid, Justification::NOOP, |_, _| {
+                .union(tid, eq_self, Justification::NOOP, |_, _| {
                     self.bool_class_history.push(MergeInfo::Both(true))
                 })
         }
