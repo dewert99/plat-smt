@@ -1,7 +1,9 @@
+use std::cell::Cell;
 // https://www.cs.upc.edu/~oliveras/rta05.pdf
 // 2.1 Union-find with an O(k log n) Explain operation
 use batsat::Lit;
-use std::fmt::Debug;
+use std::fmt::{Debug, Formatter};
+use std::mem;
 use std::ops::Deref;
 
 use crate::approx_bitset::{ApproxBitSet, IdSet};
@@ -10,15 +12,28 @@ use egg::raw::RawEGraph;
 use egg::{Id, Language};
 use hashbrown::HashSet;
 use log::trace;
+use perfect_derive::perfect_derive;
 
-#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+#[derive(Copy, Clone, Eq, PartialEq)]
 pub(crate) struct Justification(Lit);
 
-enum EJustification {
-    Lit(Lit),
-    Congruence,
-    NoOp,
+impl Debug for Justification {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        self.expand().fmt(f)
+    }
 }
+
+mod ejust {
+    use batsat::Lit;
+
+    #[derive(Debug)]
+    pub(super) enum Justification {
+        Lit(Lit),
+        Congruence,
+        NoOp,
+    }
+}
+use ejust::Justification as EJustification;
 
 impl Justification {
     pub fn from_lit(l: Lit) -> Self {
@@ -47,14 +62,60 @@ struct UnionInfo {
     just: Justification,
 }
 
+#[derive(Debug, Clone, Copy)]
+struct StackElem {
+    next_left: Id,
+    just: Justification,
+    next_right: Id,
+    right: Id,
+}
+
+/// Cached `Vec`s that will always be cleared before they are used,
+/// they are used to avoid unnecessary allocations
+#[perfect_derive(Default)]
+struct VecCache<T>(Cell<Vec<T>>);
+
+impl<T> Debug for VecCache<T> {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("VecCache").finish()
+    }
+}
+
+impl<T> Clone for VecCache<T> {
+    fn clone(&self) -> Self {
+        VecCache(Cell::new(Vec::new()))
+    }
+}
+
+impl<T> VecCache<T> {
+    fn take(&self) -> Vec<T> {
+        let mut res = self.0.take();
+        res.clear();
+        res
+    }
+
+    fn set(&self, v: Vec<T>) {
+        self.0.set(v)
+    }
+}
+
 #[derive(Debug, Clone, Default)]
 pub struct Explain {
     union_info: Vec<UnionInfo>,
-    assoc_unions: Vec<u32>, // index into union_info
+    // index into union_info
+    assoc_unions: Vec<u32>,
+    stack_cache: VecCache<StackElem>,
+    deferred_explanations_cache: VecCache<(Id, Id)>,
 }
 
-pub(crate) struct ExplainWith<'a, X> {
+pub(crate) struct ExplainState<'a, X> {
     explain: &'a Explain,
+    out: &'a mut LSet,
+    negate: bool,
+    // we defer congruence explanations to avoid recursive calls
+    deferred_explanations: Vec<(Id, Id)>,
+    // stack explain equivalence
+    stack: Vec<StackElem>,
     raw: X,
 }
 
@@ -88,12 +149,24 @@ impl Explain {
         self.assoc_unions[usize::from(old_root)] = assoc_union;
     }
 
-    pub(crate) fn with_raw_egraph<X>(&self, raw: X) -> ExplainWith<'_, X> {
-        ExplainWith { explain: self, raw }
+    pub(crate) fn promote<'a, X>(
+        &'a self,
+        raw: X,
+        out: &'a mut LSet,
+        negate: bool,
+    ) -> ExplainState<'a, X> {
+        ExplainState {
+            explain: self,
+            raw,
+            negate,
+            deferred_explanations: self.deferred_explanations_cache.take(),
+            out,
+            stack: self.stack_cache.take(),
+        }
     }
 }
 
-impl<'a, X> Deref for ExplainWith<'a, X> {
+impl<'a, X> Deref for ExplainState<'a, X> {
     type Target = Explain;
 
     fn deref(&self) -> &Self::Target {
@@ -101,11 +174,18 @@ impl<'a, X> Deref for ExplainWith<'a, X> {
     }
 }
 
-impl<'x, L: Language, D> ExplainWith<'x, &'x RawEGraph<L, D, egg::raw::semi_persistent1::UndoLog>> {
-    pub(crate) fn node(&self, node_id: Id) -> &L {
-        self.raw.id_to_node(node_id)
+impl<'a, X> Drop for ExplainState<'a, X> {
+    fn drop(&mut self) {
+        let stack = mem::take(&mut self.stack);
+        let deferred_explanations = mem::take(&mut self.deferred_explanations);
+        self.stack_cache.set(stack);
+        self.deferred_explanations_cache.set(deferred_explanations);
     }
+}
 
+impl<'x, L: Language, D>
+    ExplainState<'x, &'x RawEGraph<L, D, egg::raw::semi_persistent1::UndoLog>>
+{
     // Requires `left` != `right`
     // `result.1` is true when the `old_root` from `result.0` corresponds to left
     fn max_assoc_union_gen<S: IdSet>(
@@ -178,90 +258,91 @@ impl<'x, L: Language, D> ExplainWith<'x, &'x RawEGraph<L, D, egg::raw::semi_pers
         self.max_assoc_union_gen::<ApproxBitSet>(left, right, Self::max_assoc_union_fallback)
     }
 
-    fn handle_congruence(&self, left: Id, right: Id, res: &mut LSet, negate: bool) {
+    fn handle_congruence(&mut self, left: Id, right: Id) {
         if left == right {
             return;
         }
         trace!("{left} = {right} by congruence:");
-        let current_node = self.node(left);
-        let next_node = self.node(right);
+        let current_node = self.raw.id_to_node(left);
+        let next_node = self.raw.id_to_node(right);
         debug_assert!(current_node.matches(next_node));
+        let left_children = current_node.children().iter().copied();
+        let right_children = next_node.children().iter().copied();
 
-        for (left_child, right_child) in current_node
-            .children()
-            .iter()
-            .zip(next_node.children().iter())
-        {
-            self.explain_equivalence(*left_child, *right_child, res, negate)
-        }
+        self.deferred_explanations
+            .extend(left_children.zip(right_children))
     }
 
-    // `=?`: unknown equivalence
-    // `===`: congruence
-    // `={just}=` equivalence by `just`
-    //
-    // Explains: `left_congruence` === `left` =? `right`
-    // Given that: `result` === `right`
-    fn explain_equivalence_h(
-        &self,
-        left_congruence: Id,
-        left: Id,
-        right: Id,
-        res: &mut LSet,
-        negate: bool,
-    ) -> Id {
-        // `=?`: unknown equivalence
-        // `===`: congruence
-        // `={just}=` equivalence by `just`
-
-        // left_congruence === left =? right
-        if left == right {
-            // left_congruence === right
-            left_congruence
-        } else {
-            let (assoc_union, left_is_old) = self.max_assoc_union(left, right);
-            let union_info = self.union_info[assoc_union as usize];
-            let just = union_info.just;
-            let (next_left, next_right) = if left_is_old {
-                (union_info.old_id, union_info.new_id)
+    fn explain_equivalence_h(&mut self, left: Id, right: Id) {
+        debug_assert!(self.stack.is_empty());
+        let mut args = (left, right);
+        let mut left_congruence = left;
+        loop {
+            let (left, right) = args;
+            args = if left != right {
+                let (assoc_union, left_is_old) = self.max_assoc_union(left, right);
+                let union_info = self.union_info[assoc_union as usize];
+                let just = union_info.just;
+                let (next_left, next_right) = if left_is_old {
+                    (union_info.old_id, union_info.new_id)
+                } else {
+                    (union_info.new_id, union_info.old_id)
+                };
+                // call
+                self.stack.push(StackElem {
+                    next_left,
+                    just,
+                    next_right,
+                    right,
+                });
+                (left, next_left)
             } else {
-                (union_info.new_id, union_info.old_id)
-            };
-            // left_congruence === left =? next_left ={just}= next_right =? right
-            let left_congruence =
-                self.explain_equivalence_h(left_congruence, left, next_left, res, negate);
-            // left_congruence === next_left ={just}= next_right =? right
-            let left_congruence = match just.expand() {
-                EJustification::Lit(just) => {
-                    self.handle_congruence(left_congruence, next_left, res, negate);
-                    // next_left ={just}= next_right =? right
-                    trace!("id{next_left} = id{next_right} by {just:?}");
-                    res.insert(just ^ negate);
-                    // next_right =? right
-                    next_right
-                }
-                EJustification::Congruence => {
-                    // left_congruence === next_left === next_right =? right
-                    left_congruence
-                }
-                EJustification::NoOp => {
-                    self.handle_congruence(left_congruence, next_left, res, negate);
-                    trace!("id{next_left} = id{next_right} by assumption");
-                    next_right
-                }
-            };
-            // left_congruence === next_right =? right
-            self.explain_equivalence_h(left_congruence, next_right, right, res, negate)
-            // left_congruence === right
+                // return
+                let Some(StackElem {
+                    next_left,
+                    just,
+                    next_right,
+                    right,
+                }) = self.stack.pop()
+                else {
+                    break;
+                };
+                left_congruence = match just.expand() {
+                    EJustification::Lit(just) => {
+                        self.handle_congruence(left_congruence, next_left);
+                        trace!("id{next_left} = id{next_right} by {just:?}");
+                        self.add_just(just);
+                        next_right
+                    }
+                    EJustification::Congruence => left_congruence,
+                    EJustification::NoOp => {
+                        self.handle_congruence(left_congruence, next_left);
+                        trace!("id{next_left} = id{next_right} by assumption");
+                        next_right
+                    }
+                };
+                // tail call
+                (next_right, right)
+            }
         }
+        self.handle_congruence(left_congruence, right);
+        self.stack.clear();
     }
 
-    pub fn explain_equivalence(&self, left: Id, right: Id, res: &mut LSet, negate: bool) {
+    fn add_just(&mut self, just: Lit) {
+        self.out.insert(just ^ self.negate)
+    }
+
+    pub fn explain_equivalence(&mut self, left: Id, right: Id) {
+        debug_assert!(self.deferred_explanations.is_empty());
         debug_assert_eq!(self.raw.find(left), self.raw.find(right));
-        trace!("start explain id{left} = id{right}");
-        let left_congruence = self.explain_equivalence_h(left, left, right, res, negate);
-        self.handle_congruence(left_congruence, right, res, negate);
-        trace!("end explain id{left} = id{right}");
+        self.deferred_explanations.push((left, right));
+        while let Some((left, right)) = self.deferred_explanations.pop() {
+            trace!("start explain id{left} = id{right}");
+            self.explain_equivalence_h(left, right);
+            trace!("end explain id{left} = id{right}");
+        }
+        self.deferred_explanations.clear();
     }
 }
 

@@ -46,7 +46,7 @@ impl Language for SymbolLang {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct EGraph<D> {
     inner: RawEGraph<SymbolLang, D, UndoLog>,
     explain: Explain,
@@ -139,8 +139,8 @@ impl<D> EGraph<D> {
 
     pub fn explain_equivalence(&self, id1: Id, id2: Id, res: &mut LSet, negate: bool) {
         self.explain
-            .with_raw_egraph(&self.inner)
-            .explain_equivalence(id1, id2, res, negate)
+            .promote(&self.inner, res, negate)
+            .explain_equivalence(id1, id2)
     }
 
     pub fn is_clean(&self) -> bool {
