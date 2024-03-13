@@ -361,11 +361,11 @@ impl EUF {
             return BoolExp::TRUE;
         }
         let (res, added, id) =
-            self.add_bool_node(self.eq_sym, Children::from_iter([id1, id2]), fresh_lit);
+            self.add_bool_node(self.eq_sym, Children::from_slice(&[id1, id2]), fresh_lit);
         if added {
             let eq_self = self
                 .egraph
-                .add(self.eq_sym, Children::from_iter([id1, id1]), |_| {
+                .add(self.eq_sym, Children::from_slice(&[id1, id1]), |_| {
                     EClass::Bool(BoolClass::Const(true))
                 });
             let tid = self.id_for_bool(true);
@@ -484,9 +484,9 @@ impl EUF {
         self.prev_len = 0;
         self.bool_class_history.clear();
         for (b, s) in bools.into_iter().zip(bool_syms) {
-            let id = self.egraph.add(s, Children::from_iter([]), |_| {
-                EClass::Bool(BoolClass::Const(b))
-            });
+            let id = self
+                .egraph
+                .add(s, Children::new(), |_| EClass::Bool(BoolClass::Const(b)));
             self.const_bool_ids[b as usize] = id;
         }
     }

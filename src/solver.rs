@@ -323,7 +323,7 @@ impl Solver {
                 let tid = self.id_sort(t).0;
                 let eid = self.id_sort(e).0;
                 let sym = Symbol::new(format!("if|{u:?}|id{tid}|id{eid}"));
-                let fresh = self.sorted_fn(sym, Children::from_iter([]), tsort);
+                let fresh = self.sorted_fn(sym, Children::new(), tsort);
                 let fresh_id = self.id_sort(fresh).0;
                 let eqt = self.raw_eq(fresh_id, tid);
                 let BoolExp::Unknown(eqt) = eqt else {

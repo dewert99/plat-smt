@@ -6,12 +6,24 @@ use std::ops::{Deref, Index};
 
 use crate::explain;
 use crate::explain::{Explain, Justification};
-pub type Children = SmallVec<[Id; 4]>;
 
-#[derive(Clone, Hash, Eq, PartialEq, Debug, Ord, PartialOrd)]
+const N: usize = 4;
+pub type Children = SmallVec<[Id; N]>;
+
+#[derive(Hash, Eq, PartialEq, Debug, Ord, PartialOrd)]
 pub struct SymbolLang {
     pub(crate) op: Symbol,
     pub(crate) children: Children,
+}
+
+impl Clone for SymbolLang {
+    #[inline]
+    fn clone(&self) -> Self {
+        SymbolLang {
+            op: self.op,
+            children: Children::from_slice(&self.children),
+        }
+    }
 }
 
 impl Language for SymbolLang {
