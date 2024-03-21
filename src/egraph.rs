@@ -100,8 +100,8 @@ impl<D> EGraph<D> {
         justification: Justification,
         mut merge: impl FnMut(&mut D, D),
     ) {
-        self.inner.raw_union(id1, id2, |data1, _, _, data2, _, _| {
-            merge(data1, data2);
+        self.inner.raw_union(id1, id2, |info| {
+            merge(info.data1, info.data2);
             self.explain.union(id1, id2, justification)
         })
     }
