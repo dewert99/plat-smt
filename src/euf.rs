@@ -189,12 +189,10 @@ impl<'a, T> Cap<'a> for T {}
 
 impl<'a, 'b: 'a> MergeContext<'a, 'b> {
     fn propagate(&mut self, lits: &[Lit], b: bool) {
-        if !*self.conflict {
-            let lits = lits.iter().map(|l| *l ^ !b);
-            debug!("EUF propagates {:?}", DebugIter(&lits));
-            for lit in lits {
-                self.acts.propagate(lit);
-            }
+        let lits = lits.iter().map(|l| *l ^ !b);
+        debug!("EUF propagates {:?}", DebugIter(&lits));
+        for lit in lits {
+            self.acts.propagate(lit);
         }
     }
     fn merge_bools(&mut self, lbool: &mut BoolClass, rbool: BoolClass) {
