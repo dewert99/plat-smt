@@ -245,21 +245,14 @@ impl EUF {
         debug!("EUF Conflict by {:?}", self.explanation.as_slice());
         acts.raise_conflict(&self.explanation, true)
     }
-    fn rebuild(&mut self, acts: &mut TheoryArg) {
-        let mut conflict = false;
-        let ctx = MergeContext {
-            acts,
-            history: &mut self.bool_class_history,
-            conflict: &mut conflict,
-        };
-        // TODO Ideally rebuilding should early return if it discovers a conflict
-        // but this would require implementing an early returning rebuild in `egg`
-        self.egraph.rebuild(ctx.merge_fn());
-        if conflict {
-            self.tf_conflict(acts);
-        }
+    fn rebuild(&mut self, acts: &mut TheoryArg) -> Result {
+        EGraph::try_rebuild(
+            self,
+            |this| &mut this.egraph,
+            |this, id1, id2| this.union(acts, id1, id2, Justification::CONGRUENCE),
+        )
     }
-    fn union(&mut self, acts: &mut TheoryArg, id1: Id, id2: Id, just: Lit) -> Result {
+    fn union(&mut self, acts: &mut TheoryArg, id1: Id, id2: Id, just: Justification) -> Result {
         debug!("EUF union id{id1:?} with id{id2:?} by {just:?}");
         let mut conflict = false;
         let ctx = MergeContext {
@@ -267,8 +260,7 @@ impl EUF {
             history: &mut self.bool_class_history,
             conflict: &mut conflict,
         };
-        self.egraph
-            .union(id1, id2, Justification::from_lit(just), ctx.merge_fn());
+        self.egraph.union(id1, id2, just, ctx.merge_fn());
         if !acts.is_ok() {
             return Err(());
         }
@@ -282,7 +274,7 @@ impl EUF {
     fn learn(&mut self, acts: &mut TheoryArg, lit: Lit) -> Result {
         debug_assert!(acts.is_ok());
         debug!("EUF learns {lit:?}");
-        let just = lit;
+        let just = Justification::from_lit(lit);
         let tlit = lit.apply_sign(true);
         if let Some(id) = self.lit_ids[tlit] {
             let cid = self.id_for_bool(true);
@@ -308,7 +300,7 @@ impl EUF {
         }
         if acts.model().len() == init_len {
             debug!("Rebuilding EGraph");
-            self.rebuild(acts)
+            self.rebuild(acts)?;
         } else {
             debug!("Skipping rebuild since we already made propagations")
         }

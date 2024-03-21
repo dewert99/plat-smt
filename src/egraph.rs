@@ -106,13 +106,12 @@ impl<D> EGraph<D> {
         })
     }
 
-    pub fn rebuild(&mut self, mut merge: impl FnMut(&mut D, D)) {
-        RawEGraph::raw_rebuild(
-            self,
-            |this| &mut this.inner,
-            |this, id1, id2| this.union(id1, id2, Justification::CONGRUENCE, &mut merge),
-            |_, _, _| {},
-        );
+    pub fn try_rebuild<S, E>(
+        outer: &mut S,
+        get_self: impl Fn(&mut S) -> &mut Self,
+        union: impl FnMut(&mut S, Id, Id) -> Result<(), E>,
+    ) -> Result<(), E> {
+        RawEGraph::try_raw_rebuild(outer, |this| &mut get_self(this).inner, union, |_, _, _| {})
     }
 
     pub fn push(&self) -> PushInfo {
