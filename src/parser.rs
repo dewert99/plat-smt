@@ -108,21 +108,21 @@ macro_rules! enum_str {
         #[derive(Copy, Clone)]
         enum $name {
             $($var,)*
-            Unknown,
+            Unknown(::egg::Symbol),
         }
 
         impl $name {
             fn from_str(s: &str) -> Self {
                 match s {
                     $($s => Self::$var,)*
-                    _ => Self::Unknown,
+                    _ => Self::Unknown(::egg::Symbol::new(s)),
                 }
             }
 
             fn to_str(self) -> &'static str {
                  match self {
                     $(Self::$var => $s,)*
-                    Self::Unknown => "???",
+                    Self::Unknown(s) => s.as_str(),
                 }
             }
         }
@@ -155,35 +155,18 @@ enum_str!(Smt2Command{
     "exit" => Exit,
 });
 
-macro_rules! sym_struct {
-    ($name:ident {$($var:ident = $l:literal,)*}) => {
-        #[derive(Copy, Clone)]
-        struct $name {
-            $($var: ::egg::Symbol,)*
-        }
-
-        impl ::core::default::Default for $name {
-            fn default() -> Self {
-                $name{
-                    $($var: ::egg::Symbol::new($l),)*
-                }
-            }
-        }
-    };
-}
-
-sym_struct! {Syms{
-    and = "and",
-    or = "or",
-    not = "not",
-    imp = "=>",
-    xor = "xor",
-    eq = "=",
-    distinct = "distinct",
-    let_ = "let",
-    ite = "ite",
-    if_ = "if",
-}}
+enum_str!(ExpKind{
+    "and" => And,
+    "or" => Or,
+    "not" => Not,
+    "=>" => Imp,
+    "xor" => Xor,
+    "=" => Eq,
+    "distinct" => Distinct,
+    "let" => Let,
+    "if" => If,
+    "ite" => Ite,
+});
 
 #[derive(Default)]
 enum State {
@@ -205,7 +188,6 @@ struct Parser<W: Write> {
     sort_stack: Vec<Symbol>,
     push_info: Vec<PushInfo>,
     core: Solver,
-    syms: Syms,
     writer: W,
     state: State,
     last_status_info: Option<SolveResult>,
@@ -294,7 +276,6 @@ impl<W: Write> Parser<W> {
             push_info: vec![],
             declared_sorts: Default::default(),
             core: Default::default(),
-            syms: Default::default(),
             writer,
             state: State::Base,
             sort_stack: vec![],
@@ -310,12 +291,12 @@ impl<W: Write> Parser<W> {
         res
     }
 
-    fn handle_as<R: FullBufRead>(&mut self, rest: SexpParser<R>) -> Result<(Symbol, Sort)> {
+    fn handle_as<R: FullBufRead>(&mut self, rest: SexpParser<R>) -> Result<(ExpKind, Sort)> {
         let mut rest = CountingParser::new(rest, "as", 2);
         let SexpToken::Symbol(s) = rest.next()? else {
             return Err(InvalidExp);
         };
-        let s = Symbol::new(s);
+        let s = ExpKind::from_str(s);
         let sort = self.parse_sort(rest.next()?)?;
         rest.finish()?;
         Ok((s, sort))
@@ -324,7 +305,7 @@ impl<W: Write> Parser<W> {
     fn parse_exp<R: FullBufRead>(&mut self, token: SexpToken<R>) -> Result<Exp> {
         match token {
             SexpToken::Symbol(s) => {
-                SexpParser::with_empty(|p| self.parse_fn_exp(Symbol::new(s), p, None))
+                SexpParser::with_empty(|p| self.parse_fn_exp(ExpKind::from_str(s), p, None))
             }
             SexpToken::String(_) => Err(Unsupported("strings")),
             SexpToken::Number(_) => Err(Unsupported("arithmetic")),
@@ -333,7 +314,7 @@ impl<W: Write> Parser<W> {
             SexpToken::List(mut l) => {
                 let status = match l.next().ok_or(InvalidExp)?? {
                     SexpToken::Symbol("as") => None,
-                    SexpToken::Symbol(s) => Some((Symbol::new(s), None)),
+                    SexpToken::Symbol(s) => Some((ExpKind::from_str(s), None)),
                     SexpToken::List(mut l2) => {
                         if matches!(l2.next().ok_or(InvalidExp)??, SexpToken::Symbol("as")) {
                             let (s, sort) = self.handle_as(l2)?;
@@ -411,53 +392,54 @@ impl<W: Write> Parser<W> {
 
     fn parse_fn_exp<R: FullBufRead>(
         &mut self,
-        f: Symbol,
+        f: ExpKind,
         mut rest: SexpParser<R>,
         expect_res: Option<Sort>,
     ) -> Result<Exp> {
         let res = match f {
-            not if not == self.syms.not => {
-                let mut rest = CountingParser::new(rest, "not", 1);
+            ExpKind::Not => {
+                let mut rest = CountingParser::new(rest, f.to_str(), 1);
                 let token = rest.next_full()?;
                 let x = self.parse_bool(token)?;
                 rest.finish()?;
                 (!x).into()
             }
-            and if and == self.syms.and => {
+            ExpKind::And => {
                 let conj = rest
-                    .zip_map(0.., |token, i| self.parse_bool((token?, i, "and")))
+                    .zip_map(0.., |token, i| self.parse_bool((token?, i, f.to_str())))
                     .collect::<Result<Conjunction>>()?;
                 self.core.collapse_bool(conj).into()
             }
-            or if or == self.syms.or => {
+            ExpKind::Or => {
                 let disj = rest
-                    .zip_map(0.., |token, i| self.parse_bool((token?, i, "or")))
+                    .zip_map(0.., |token, i| self.parse_bool((token?, i, f.to_str())))
                     .collect::<Result<Disjunction>>()?;
                 self.core.collapse_bool(disj).into()
             }
-            imp if imp == self.syms.imp => {
-                let mut iter = rest.zip_map(0.., |token, i| self.parse_bool((token?, i, "=>")));
+            ExpKind::Imp => {
+                let mut iter =
+                    rest.zip_map(0.., |token, i| self.parse_bool((token?, i, f.to_str())));
                 let mut last = iter.next().ok_or(ArgumentMismatch {
                     actual: 0,
                     expected: 1,
-                    f: "=>",
+                    f: f.to_str(),
                 })??;
                 let not_last = iter.map(|item| Ok(!std::mem::replace(&mut last, item?)));
                 let res = not_last.collect::<Result<Disjunction>>()? | last;
                 self.core.collapse_bool(res).into()
             }
-            xor if xor == self.syms.xor => {
+            ExpKind::Xor => {
                 let mut res = BoolExp::FALSE;
                 rest.zip_map(0.., |token, i| {
-                    let parsed = self.parse_bool((token?, i, "xor"))?;
+                    let parsed = self.parse_bool((token?, i, f.to_str()))?;
                     res = self.core.xor(res, parsed);
                     Ok(())
                 })
                 .collect::<Result<()>>()?;
                 res.into()
             }
-            eq if eq == self.syms.eq => {
-                let mut rest = CountingParser::new(rest, "=", 1);
+            ExpKind::Eq => {
+                let mut rest = CountingParser::new(rest, f.to_str(), 1);
                 let exp1 = self.parse_exp(rest.next()?)?;
                 let (id1, sort1) = self.core.id_sort(exp1);
                 let conj = rest
@@ -477,8 +459,8 @@ impl<W: Write> Parser<W> {
                     .collect::<Result<Conjunction>>()?;
                 self.core.collapse_bool(conj).into()
             }
-            distinct if distinct == self.syms.distinct => {
-                let mut rest = CountingParser::new(rest, "distinct", 1);
+            ExpKind::Distinct => {
+                let mut rest = CountingParser::new(rest, f.to_str(), 1);
                 let exp1 = self.parse_exp(rest.next()?)?;
                 let (id1, sort1) = self.core.id_sort(exp1);
                 let iter = rest.p.map(|x| {
@@ -502,7 +484,7 @@ impl<W: Write> Parser<W> {
                     .collect();
                 self.core.collapse_bool(conj).into()
             }
-            let_ if let_ == self.syms.let_ => {
+            ExpKind::Let => {
                 let mut rest = CountingParser::new(rest, "let", 2);
                 let old_len = self.bound_stack.len();
                 match rest.next()? {
@@ -524,8 +506,8 @@ impl<W: Write> Parser<W> {
                 self.undo_bindings(old_len);
                 exp
             }
-            ite if ite == self.syms.ite || ite == self.syms.if_ => {
-                let mut rest = CountingParser::new(rest, ite.as_str(), 3);
+            ExpKind::Ite | ExpKind::If => {
+                let mut rest = CountingParser::new(rest, f.to_str(), 3);
                 let i = self.parse_bool(rest.next_full()?)?;
                 let t = self.parse_exp(rest.next()?)?;
                 let e = self.parse_exp(rest.next()?)?;
@@ -533,7 +515,7 @@ impl<W: Write> Parser<W> {
                 let err_m = |(left, right)| IteSortMismatch { left, right };
                 self.core.ite(i, t, e).map_err(err_m)?
             }
-            f => {
+            ExpKind::Unknown(f) => {
                 // Uninterpreted function
                 let sig = *self.bound.get(&f).ok_or(Unbound(f))?;
                 match sig {
@@ -569,7 +551,7 @@ impl<W: Write> Parser<W> {
             let actual = self.core.sort(res);
             if actual != expected {
                 return Err(AsSortMismatch {
-                    f: f.as_str(),
+                    f: f.to_str(),
                     actual,
                     expected,
                 });
