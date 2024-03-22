@@ -2,7 +2,7 @@ use crate::egraph::{Children, EGraph, PushInfo as EGPushInfo, SymbolLang};
 use crate::explain::Justification;
 use crate::solver::{BoolExp, Exp, UExp};
 use crate::sort::Sort;
-use crate::util::DebugIter;
+use crate::util::{Bind, DebugIter};
 use batsat::{LMap, LSet};
 use batsat::{Lit, Theory, TheoryArg, Var};
 use egg::{Id, Language, Symbol};
@@ -83,6 +83,9 @@ pub struct EUF {
     egraph: EGraph<EClass>,
     bool_class_history: Vec<MergeInfo>,
     push_log: Vec<PushInfo>,
+    // 0 means it is not in a conflict state
+    // n + 1 means it is in a conflict state and was pushed n times afterwards
+    in_conflict: usize,
     lit_id_log: Vec<Lit>,
     // push level from smt level push/pop
     base_level: usize,
@@ -116,6 +119,7 @@ impl Default for EUF {
             eq_sym,
             prev_len: 0,
             base_level: 0,
+            in_conflict: 0,
         };
         debug_assert_eq!(tid, res.id_for_bool(true));
         debug!("id{tid:?} is true");
@@ -143,7 +147,7 @@ impl Theory for EUF {
     }
 
     fn n_levels(&self) -> usize {
-        self.push_log.len() - self.base_level
+        self.push_log.len() + (self.in_conflict.saturating_sub(1)) - self.base_level
     }
 
     fn partial_check(&mut self, acts: &mut TheoryArg) {
@@ -177,17 +181,33 @@ impl Theory for EUF {
     }
 }
 
-struct MergeContext<'a, 'b> {
-    acts: &'a mut TheoryArg<'b>,
+pub(crate) trait SatSolver {
+    fn is_ok(&self) -> bool;
+    fn propagate(&mut self, p: Lit) -> bool;
+    fn raise_conflict(&mut self, lits: &[Lit], costly: bool);
+}
+
+impl<'a> SatSolver for TheoryArg<'a> {
+    fn is_ok(&self) -> bool {
+        self.is_ok()
+    }
+
+    fn propagate(&mut self, p: Lit) -> bool {
+        self.propagate(p)
+    }
+
+    fn raise_conflict(&mut self, lits: &[Lit], costly: bool) {
+        self.raise_conflict(lits, costly)
+    }
+}
+
+struct MergeContext<'a, S: SatSolver> {
+    acts: &'a mut S,
     history: &'a mut Vec<MergeInfo>,
     conflict: &'a mut bool,
 }
 
-trait Cap<'a> {}
-
-impl<'a, T> Cap<'a> for T {}
-
-impl<'a, 'b: 'a> MergeContext<'a, 'b> {
+impl<'a, S: 'a + SatSolver> MergeContext<'a, S> {
     fn propagate(&mut self, lits: &[Lit], b: bool) {
         let lits = lits.iter().map(|l| *l ^ !b);
         debug!("EUF propagates {:?}", DebugIter(&lits));
@@ -221,7 +241,7 @@ impl<'a, 'b: 'a> MergeContext<'a, 'b> {
         self.history.push(info);
     }
 
-    fn merge_fn(mut self) -> impl FnMut(&mut EClass, EClass) + Cap<'a> + Cap<'b> {
+    fn merge_fn(mut self) -> impl FnMut(&mut EClass, EClass) + Bind<&'a S> {
         move |lclass, rclass| match (lclass, rclass) {
             (EClass::Uninterpreted(sort), EClass::Uninterpreted(sort2)) if *sort == sort2 => {}
             (EClass::Bool(lbool), EClass::Bool(rbool)) => self.merge_bools(lbool, rbool),
@@ -234,7 +254,7 @@ impl EUF {
     pub(crate) fn find(&self, id: Id) -> Id {
         self.egraph.find(id)
     }
-    fn tf_conflict(&mut self, acts: &mut TheoryArg) {
+    fn tf_conflict(&mut self, acts: &mut impl SatSolver) {
         self.explanation.clear();
         let fid = self.id_for_bool(false);
         let tid = self.id_for_bool(true);
@@ -243,15 +263,22 @@ impl EUF {
         debug!("EUF Conflict by {:?}", self.explanation.as_slice());
         acts.raise_conflict(&self.explanation, true)
     }
-    fn rebuild(&mut self, acts: &mut TheoryArg) -> Result {
+    pub(crate) fn rebuild(&mut self, acts: &mut impl SatSolver) -> Result {
         EGraph::try_rebuild(
             self,
             |this| &mut this.egraph,
             |this, id1, id2| this.union(acts, id1, id2, Justification::CONGRUENCE),
         )
     }
-    fn union(&mut self, acts: &mut TheoryArg, id1: Id, id2: Id, just: Justification) -> Result {
+    pub(crate) fn union(
+        &mut self,
+        acts: &mut impl SatSolver,
+        id1: Id,
+        id2: Id,
+        just: Justification,
+    ) -> Result {
         debug!("EUF union id{id1:?} with id{id2:?} by {just:?}");
+        debug_assert_eq!(self.in_conflict, 0);
         let mut conflict = false;
         let ctx = MergeContext {
             acts,
@@ -260,9 +287,11 @@ impl EUF {
         };
         self.egraph.union(id1, id2, just, ctx.merge_fn());
         if !acts.is_ok() {
+            self.in_conflict = 1;
             return Err(());
         }
         if conflict {
+            self.in_conflict = 1;
             self.tf_conflict(acts);
             return Err(());
         }
@@ -424,17 +453,36 @@ impl EUF {
 
     fn raw_push(&mut self, assert_len: usize) {
         debug!("Push");
-        let v = PushInfo {
-            egraph: self.egraph.push(),
-            prev_len: self.prev_len,
-            lit_log_len: self.lit_id_log.len(),
-            assert_len,
-        };
-        self.push_log.push(v)
+        if self.in_conflict > 0 {
+            self.in_conflict += 1;
+        } else {
+            let v = PushInfo {
+                egraph: self.egraph.push(),
+                prev_len: self.prev_len,
+                lit_log_len: self.lit_id_log.len(),
+                assert_len,
+            };
+            self.push_log.push(v)
+        }
     }
 
-    fn raw_pop(&mut self, n: usize) -> usize {
+    fn raw_pop(&mut self, mut n: usize) -> usize {
+        debug_assert_ne!(n, 0);
         debug!("Pop {n}");
+        if self.in_conflict > 0 {
+            // in a conflict state
+            let conflict_pushes = self.in_conflict - 1;
+            if conflict_pushes >= n {
+                // there have been at least `n` conflict pushes, so we remove `n` of them
+                self.in_conflict -= n;
+                return usize::MAX;
+            }
+            // `n` is more than the number of conflict pushes, so we are no longer in a conflict
+            // state and still the remaining pops
+            self.in_conflict = 0;
+            n -= conflict_pushes;
+        }
+
         let mut info = None;
         for _ in 0..n {
             info = self.push_log.pop();
@@ -469,6 +517,8 @@ impl EUF {
         let bool_syms = bools.map(|b| self.egraph.id_to_node(self.id_for_bool(b)).op);
         self.base_level = 0;
         self.egraph.clear();
+        self.push_log.clear();
+        self.in_conflict = 0;
         self.lit_id_log.clear();
         self.lit_ids.clear();
         self.prev_len = 0;

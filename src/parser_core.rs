@@ -61,6 +61,7 @@ pub enum ParseError {
     #[error("integer overflow")]
     Overflow,
 }
+use crate::util::Bind;
 use ParseError::*;
 
 #[derive(Debug)]
@@ -444,9 +445,6 @@ impl<'a, R: FullBufRead> Debug for SexpParser<'a, R> {
         f.debug_struct("SexpParser").finish()
     }
 }
-
-pub trait Bind<X> {}
-impl<T, X> Bind<X> for T {}
 
 #[derive(Copy, Clone)]
 pub struct SpanRange(usize, usize);
