@@ -1,4 +1,5 @@
 mod approx_bitset;
+mod buffered_solver;
 mod egraph;
 mod euf;
 mod explain;

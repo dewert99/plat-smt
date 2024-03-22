@@ -61,3 +61,7 @@ macro_rules! display_debug {
 }
 
 pub(crate) use display_debug;
+
+pub trait Bind<X> {}
+
+impl<T, X> Bind<X> for T {}

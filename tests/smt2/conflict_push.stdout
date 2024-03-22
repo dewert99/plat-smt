@@ -1,0 +1,13 @@
+unsat
+unsat
+sat
+(
+ (define-fun a () S S!val!2)
+ (define-fun b () S S!val!3)
+ (define-fun f ((x!0 S)) Bool
+  (ite (= x!0 S!val!2) true
+  (ite (= x!0 S!val!3) false
+   f!default)))
+)
+unsat
+unsat

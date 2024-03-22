@@ -1,5 +1,6 @@
+use crate::buffered_solver::BufferedSolver;
 use crate::egraph::Children;
-use crate::euf::{FullFunctionInfo, FunctionInfo, EUF};
+use crate::euf::{FullFunctionInfo, FunctionInfo, SatSolver, EUF};
 use crate::junction::*;
 use crate::sort::{BaseSort, Sort};
 use crate::util::display_debug;
@@ -12,14 +13,14 @@ use std::borrow::BorrowMut;
 use std::fmt::{Debug, Display, Formatter};
 use std::num::NonZeroUsize;
 use std::ops::Not;
+
 /// The main solver structure including the sat solver and egraph.
 ///
 /// It allows constructing and asserting expressions [`Exp`] within the solver
 pub struct Solver {
     euf: EUF,
-    sat: batsat::BasicSolver,
+    sat: BufferedSolver<batsat::BasicSolver>,
     assertions: Conjunction,
-    clause_adder: Vec<Lit>,
     function_info_buf: FunctionInfo,
     bool_sort: Sort,
 }
@@ -30,7 +31,6 @@ impl Default for Solver {
             euf: Default::default(),
             sat: Default::default(),
             assertions: Default::default(),
-            clause_adder: vec![],
             function_info_buf: Default::default(),
             bool_sort: Sort::new(BaseSort {
                 name: Symbol::new("Bool"),
@@ -196,6 +196,21 @@ pub enum SolveResult {
     Unknown,
 }
 
+impl SatSolver for Conjunction {
+    fn is_ok(&self) -> bool {
+        self.0.is_ok()
+    }
+
+    fn propagate(&mut self, p: Lit) -> bool {
+        self.push(BoolExp::Unknown(p));
+        self.is_ok()
+    }
+
+    fn raise_conflict(&mut self, _: &[Lit], _: bool) {
+        self.push(BoolExp::FALSE)
+    }
+}
+
 impl SolveResult {
     pub fn valid_when_expecting(self, oth: SolveResult) -> bool {
         match (self, oth) {
@@ -226,12 +241,6 @@ impl Solver {
         BoolExp::Unknown(Lit::new(self.fresh(), true))
     }
 
-    fn add_clause<const N: usize>(&mut self, clause: [Lit; N]) {
-        self.clause_adder.clear();
-        self.clause_adder.extend(clause);
-        self.sat.add_clause_reuse(&mut self.clause_adder);
-    }
-
     #[inline]
     fn andor_reuse(&mut self, exps: &mut Vec<BLit>, is_and: bool) -> BLit {
         if let [exp] = &**exps {
@@ -240,7 +249,8 @@ impl Solver {
         let fresh = self.fresh();
         let res = Lit::new(fresh, true);
         for lit in &mut *exps {
-            self.add_clause([*lit ^ !is_and, Lit::new(fresh, !is_and)]);
+            self.sat
+                .add_clause([*lit ^ !is_and, Lit::new(fresh, !is_and)]);
             *lit = *lit ^ is_and;
         }
         exps.push(Lit::new(fresh, is_and));
@@ -276,10 +286,10 @@ impl Solver {
             (BoolExp::Unknown(l1), BoolExp::Unknown(l2)) => {
                 let fresh = self.fresh();
                 let fresh = Lit::new(fresh, true);
-                self.add_clause([l1, l2, !fresh]);
-                self.add_clause([!l1, l2, fresh]);
-                self.add_clause([l1, !l2, fresh]);
-                self.add_clause([!l1, !l2, !fresh]);
+                self.sat.add_clause([l1, l2, !fresh]);
+                self.sat.add_clause([!l1, l2, fresh]);
+                self.sat.add_clause([l1, !l2, fresh]);
+                self.sat.add_clause([!l1, !l2, !fresh]);
                 BoolExp::Unknown(fresh)
             }
         };
@@ -334,12 +344,8 @@ impl Solver {
                 let BoolExp::Unknown(eqe) = eqe else {
                     unreachable!()
                 };
-                self.clause_adder.clear();
-                self.clause_adder.extend([!u, eqt]);
-                self.sat.add_clause_reuse(&mut self.clause_adder);
-                self.clause_adder.clear();
-                self.clause_adder.extend([u, eqe]);
-                self.sat.add_clause_reuse(&mut self.clause_adder);
+                self.sat.add_clause([!u, eqt]);
+                self.sat.add_clause([u, eqe]);
                 fresh
             }
         };
@@ -376,16 +382,14 @@ impl Solver {
     /// Assert that `b` is true
     pub fn assert(&mut self, b: BoolExp) {
         debug!("assert {b}");
-        self.clause_adder.clear();
         if self.euf.smt_push_level() == 0 {
             match b {
                 BoolExp::TRUE => {}
                 BoolExp::Unknown(l) => {
-                    self.clause_adder.push(l);
-                    self.sat.add_clause_reuse(&mut self.clause_adder);
+                    self.sat.add_clause([l]);
                 }
                 BoolExp::FALSE => {
-                    self.sat.add_clause_reuse(&mut self.clause_adder);
+                    self.sat.add_clause([]);
                 }
             }
         } else {
@@ -436,11 +440,29 @@ impl Solver {
 
     /// Restores the state after calling `raw_check_sat_assuming`
     pub fn pop_model(&mut self) {
-        self.sat.pop_model(&mut self.euf)
+        self.sat.pop_model(&mut self.euf);
+        if !self.sat.is_ok() {
+            self.assertions.push(BoolExp::FALSE)
+        }
+    }
+
+    /// Rebuild underlying egraph
+    pub fn rebuild(&mut self) {
+        let _ = self.euf.rebuild(&mut self.assertions);
+        if self.euf.smt_push_level() == 0 {
+            // if we are at level 0 these assertions can be added directly to the solver
+            match &self.assertions.0 {
+                Err(_) => self.sat.add_clause([]),
+                Ok(x) => {
+                    x.iter().for_each(|l| self.sat.add_clause([*l]));
+                    self.assertions.clear();
+                }
+            }
+        }
     }
 
     pub fn push(&mut self) {
-        self.check_sat();
+        self.rebuild();
         self.euf.smt_push(self.assertions.len_or_max())
     }
 
