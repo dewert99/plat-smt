@@ -398,6 +398,46 @@ impl ExpParser for BaseExpParser {
     }
 }
 
+struct AssertExpParser {
+    // assert (exp ^ self.polarity)
+    polarity: bool,
+}
+
+impl ExpParser for AssertExpParser {
+    type Out = core::result::Result<(), Sort>;
+
+    fn sort<W: Write>(&self, out: &Self::Out, p: &Parser<W>) -> Sort {
+        match out {
+            Ok(()) => p.core.bool_sort(),
+            Err(s) => *s,
+        }
+    }
+    fn parse<W: Write, R: FullBufRead>(
+        &self,
+        p: &mut Parser<W>,
+        f: ExpKind,
+        mut rest: CountingParser<R>,
+    ) -> Result<Self::Out> {
+        match (f, self.polarity) {
+            (ExpKind::And, pol @ false) | (ExpKind::Or, pol @ true) => {
+                rest.map_full(|token| p.parse_assert(token?, pol))
+                    .collect::<Result<()>>()?;
+            }
+            (ExpKind::Not, pol) => {
+                p.parse_assert(rest.next_full()?, !pol)?;
+            }
+            (_, pol) => {
+                let exp = BaseExpParser.parse(p, f, rest)?;
+                match exp.as_bool() {
+                    None => return Ok(Err(p.core.sort(exp))),
+                    Some(b) => p.core.assert(b ^ pol),
+                }
+            }
+        };
+        Ok(Ok(()))
+    }
+}
+
 impl<W: Write> Parser<W> {
     fn new(writer: W) -> Self {
         let mut res = Parser {
@@ -476,6 +516,21 @@ impl<W: Write> Parser<W> {
             f,
             arg_n,
             actual: self.core.id_sort(exp).1,
+            expected: self.core.bool_sort(),
+        })
+    }
+
+    // assert token ^ polarity
+    fn parse_assert<R: FullBufRead>(
+        &mut self,
+        (token, arg_n, f): InfoToken<R>,
+        polarity: bool,
+    ) -> Result<()> {
+        let exp = self.parse_exp_gen(token, &AssertExpParser { polarity })?;
+        exp.map_err(|actual| SortMismatch {
+            f,
+            arg_n,
+            actual,
             expected: self.core.bool_sort(),
         })
     }
@@ -840,8 +895,7 @@ impl<W: Write> Parser<W> {
                 self.insert_bound(name, Bound::Const(ret));
             }
             Smt2Command::Assert => {
-                let b = self.parse_bool(rest.next_full()?)?;
-                self.core.assert(b);
+                self.parse_assert(rest.next_full()?, false)?;
                 rest.finish()?;
             }
             Smt2Command::CheckSat => {
