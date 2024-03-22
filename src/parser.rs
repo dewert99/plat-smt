@@ -277,6 +277,127 @@ fn pairwise_sym<T>(slice: &[T]) -> impl Iterator<Item = (&T, &T)> {
         .map(|(i, j)| (&slice[i], &slice[j]))
 }
 
+trait ExpParser {
+    type Out;
+
+    fn sort<W: Write>(&self, out: &Self::Out, p: &Parser<W>) -> Sort;
+
+    fn parse<W: Write, R: FullBufRead>(
+        &self,
+        p: &mut Parser<W>,
+        f: ExpKind,
+        rest: CountingParser<R>,
+    ) -> Result<Self::Out>;
+}
+
+struct BaseExpParser;
+
+impl ExpParser for BaseExpParser {
+    type Out = Exp;
+
+    fn sort<W: Write>(&self, out: &Exp, p: &Parser<W>) -> Sort {
+        p.core.sort(*out)
+    }
+    fn parse<W: Write, R: FullBufRead>(
+        &self,
+        p: &mut Parser<W>,
+        f: ExpKind,
+        mut rest: CountingParser<R>,
+    ) -> Result<Exp> {
+        let res = match f {
+            ExpKind::Let => unreachable!(),
+            ExpKind::Not => {
+                let x = p.parse_bool(rest.next_full()?)?;
+                rest.finish()?;
+                (!x).into()
+            }
+            ExpKind::And => {
+                let conj = rest
+                    .map_full(|token| p.parse_bool(token?))
+                    .collect::<Result<Conjunction>>()?;
+                p.core.collapse_bool(conj).into()
+            }
+            ExpKind::Or => {
+                let disj = rest
+                    .map_full(|token| p.parse_bool(token?))
+                    .collect::<Result<Disjunction>>()?;
+                p.core.collapse_bool(disj).into()
+            }
+            ExpKind::Imp => {
+                let mut last = p.parse_bool(rest.next_full()?)?;
+                let not_last = rest.map_full(|token| {
+                    let item = p.parse_bool(token?)?;
+                    Ok(!std::mem::replace(&mut last, item))
+                });
+                let res = not_last.collect::<Result<Disjunction>>()? | last;
+                p.core.collapse_bool(res).into()
+            }
+            ExpKind::Xor => {
+                let mut res = BoolExp::FALSE;
+                rest.map_full(|token| {
+                    let parsed = p.parse_bool(token?)?;
+                    res = p.core.xor(res, parsed);
+                    Ok(())
+                })
+                .collect::<Result<()>>()?;
+                res.into()
+            }
+            ExpKind::Eq => {
+                let exp1 = p.parse_exp(rest.next()?)?;
+                let (id1, sort1) = p.core.id_sort(exp1);
+                let conj = rest
+                    .map_full(|x| {
+                        let id2 = p.parse_id(x?, sort1)?;
+                        Ok(p.core.raw_eq(id1, id2))
+                    })
+                    .collect::<Result<Conjunction>>()?;
+                p.core.collapse_bool(conj).into()
+            }
+            ExpKind::Distinct => {
+                let exp1 = p.parse_exp(rest.next()?)?;
+                let (id1, sort1) = p.core.id_sort(exp1);
+                let iter = rest.map_full(|x| p.parse_id(x?, sort1));
+                let ids = [Ok(id1)]
+                    .into_iter()
+                    .chain(iter)
+                    .collect::<Result<Vec<Id>>>()?;
+                let conj: Conjunction = pairwise_sym(&ids)
+                    .map(|(&id1, &id2)| !p.core.raw_eq(id1, id2))
+                    .collect();
+                p.core.collapse_bool(conj).into()
+            }
+            ExpKind::Ite | ExpKind::If => {
+                let i = p.parse_bool(rest.next_full()?)?;
+                let t = p.parse_exp(rest.next()?)?;
+                let e = p.parse_exp(rest.next()?)?;
+                rest.finish()?;
+                let err_m = |(left, right)| IteSortMismatch { left, right };
+                p.core.ite(i, t, e).map_err(err_m)?
+            }
+            ExpKind::Unknown(f) => {
+                // Uninterpreted function
+                let sig = *p.bound.get(&f).ok_or(Unbound(f))?;
+                match sig {
+                    Bound::Fn(sig) => {
+                        rest.set_minimum_expected(sig.args.len());
+                        let mut children = Children::new();
+                        for sort in sig.args.iter().copied() {
+                            children.push(p.parse_id(rest.next_full()?, sort)?)
+                        }
+                        rest.finish()?;
+                        p.core.sorted_fn(f, children, sig.ret)
+                    }
+                    Bound::Const(c) => {
+                        rest.finish()?;
+                        p.core.canonize(c)
+                    }
+                }
+            }
+        };
+        Ok(res)
+    }
+}
+
 impl<W: Write> Parser<W> {
     fn new(writer: W) -> Self {
         let mut res = Parser {
@@ -311,10 +432,14 @@ impl<W: Write> Parser<W> {
         Ok((s, sort))
     }
 
-    fn parse_exp<R: FullBufRead>(&mut self, token: SexpToken<R>) -> Result<Exp> {
+    fn parse_exp_gen<R: FullBufRead, P: ExpParser>(
+        &mut self,
+        token: SexpToken<R>,
+        p: &P,
+    ) -> Result<P::Out> {
         match token {
             SexpToken::Symbol(s) => {
-                SexpParser::with_empty(|p| self.parse_fn_exp(ExpKind::from_str(s), p, None))
+                SexpParser::with_empty(|l| self.parse_fn_exp_gen(ExpKind::from_str(s), l, None, p))
             }
             SexpToken::String(_) => Err(Unsupported("strings")),
             SexpToken::Number(_) => Err(Unsupported("arithmetic")),
@@ -335,10 +460,10 @@ impl<W: Write> Parser<W> {
                     _ => return Err(InvalidExp),
                 };
                 if let Some((s, sort)) = status {
-                    self.parse_fn_exp(s, l, sort)
+                    self.parse_fn_exp_gen(s, l, sort, p)
                 } else {
                     let (s, sort) = self.handle_as(l)?;
-                    SexpParser::with_empty(|p| self.parse_fn_exp(s, p, Some(sort)))
+                    SexpParser::with_empty(|l| self.parse_fn_exp_gen(s, l, Some(sort), p))
                 }
             }
             SexpToken::Keyword(_) => Err(InvalidExp),
@@ -397,74 +522,15 @@ impl<W: Write> Parser<W> {
         }
     }
 
-    fn parse_fn_exp<R: FullBufRead>(
+    fn parse_fn_exp_gen<R: FullBufRead, P: ExpParser>(
         &mut self,
         f: ExpKind,
         rest: SexpParser<R>,
         expect_res: Option<Sort>,
-    ) -> Result<Exp> {
+        p: &P,
+    ) -> Result<P::Out> {
         let mut rest = f.bind(rest);
         let res = match f {
-            ExpKind::Not => {
-                let x = self.parse_bool(rest.next_full()?)?;
-                rest.finish()?;
-                (!x).into()
-            }
-            ExpKind::And => {
-                let conj = rest
-                    .map_full(|token| self.parse_bool(token?))
-                    .collect::<Result<Conjunction>>()?;
-                self.core.collapse_bool(conj).into()
-            }
-            ExpKind::Or => {
-                let disj = rest
-                    .map_full(|token| self.parse_bool(token?))
-                    .collect::<Result<Disjunction>>()?;
-                self.core.collapse_bool(disj).into()
-            }
-            ExpKind::Imp => {
-                let mut last = self.parse_bool(rest.next_full()?)?;
-                let not_last = rest.map_full(|token| {
-                    let item = self.parse_bool(token?)?;
-                    Ok(!std::mem::replace(&mut last, item))
-                });
-                let res = not_last.collect::<Result<Disjunction>>()? | last;
-                self.core.collapse_bool(res).into()
-            }
-            ExpKind::Xor => {
-                let mut res = BoolExp::FALSE;
-                rest.map_full(|token| {
-                    let parsed = self.parse_bool(token?)?;
-                    res = self.core.xor(res, parsed);
-                    Ok(())
-                })
-                .collect::<Result<()>>()?;
-                res.into()
-            }
-            ExpKind::Eq => {
-                let exp1 = self.parse_exp(rest.next()?)?;
-                let (id1, sort1) = self.core.id_sort(exp1);
-                let conj = rest
-                    .map_full(|x| {
-                        let id2 = self.parse_id(x?, sort1)?;
-                        Ok(self.core.raw_eq(id1, id2))
-                    })
-                    .collect::<Result<Conjunction>>()?;
-                self.core.collapse_bool(conj).into()
-            }
-            ExpKind::Distinct => {
-                let exp1 = self.parse_exp(rest.next()?)?;
-                let (id1, sort1) = self.core.id_sort(exp1);
-                let iter = rest.map_full(|x| self.parse_id(x?, sort1));
-                let ids = [Ok(id1)]
-                    .into_iter()
-                    .chain(iter)
-                    .collect::<Result<Vec<Id>>>()?;
-                let conj: Conjunction = pairwise_sym(&ids)
-                    .map(|(&id1, &id2)| !self.core.raw_eq(id1, id2))
-                    .collect();
-                self.core.collapse_bool(conj).into()
-            }
             ExpKind::Let => {
                 let old_len = self.bound_stack.len();
                 match rest.next()? {
@@ -481,41 +547,15 @@ impl<W: Write> Parser<W> {
                 for (name, bound) in &mut self.bound_stack[old_len..] {
                     *bound = self.bound.insert(*name, bound.unwrap())
                 }
-                let exp = self.parse_exp(body)?;
+                let exp = self.parse_exp_gen(body, p)?;
                 rest.finish()?;
                 self.undo_bindings(old_len);
                 exp
             }
-            ExpKind::Ite | ExpKind::If => {
-                let i = self.parse_bool(rest.next_full()?)?;
-                let t = self.parse_exp(rest.next()?)?;
-                let e = self.parse_exp(rest.next()?)?;
-                rest.finish()?;
-                let err_m = |(left, right)| IteSortMismatch { left, right };
-                self.core.ite(i, t, e).map_err(err_m)?
-            }
-            ExpKind::Unknown(f) => {
-                // Uninterpreted function
-                let sig = *self.bound.get(&f).ok_or(Unbound(f))?;
-                match sig {
-                    Bound::Fn(sig) => {
-                        rest.set_minimum_expected(sig.args.len());
-                        let mut children = Children::new();
-                        for sort in sig.args.iter().copied() {
-                            children.push(self.parse_id(rest.next_full()?, sort)?)
-                        }
-                        rest.finish()?;
-                        self.core.sorted_fn(f, children, sig.ret)
-                    }
-                    Bound::Const(c) => {
-                        rest.finish()?;
-                        self.core.canonize(c)
-                    }
-                }
-            }
+            _ => p.parse(self, f, rest)?,
         };
         if let Some(expected) = expect_res {
-            let actual = self.core.sort(res);
+            let actual = p.sort(&res, &self);
             if actual != expected {
                 return Err(AsSortMismatch {
                     f: f.to_str(),
@@ -525,6 +565,10 @@ impl<W: Write> Parser<W> {
             }
         };
         return Ok(res);
+    }
+
+    fn parse_exp<R: FullBufRead>(&mut self, token: SexpToken<R>) -> Result<Exp> {
+        self.parse_exp_gen(token, &BaseExpParser)
     }
 
     fn parse_sort<R: FullBufRead>(&self, token: SexpToken<R>) -> Result<Sort> {
