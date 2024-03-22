@@ -11,8 +11,7 @@ use hashbrown::HashMap;
 use log::debug;
 use std::borrow::BorrowMut;
 use std::fmt::{Debug, Display, Formatter};
-use std::ops::Not;
-
+use std::ops::{BitXor, Not};
 /// The main solver structure including the sat solver and egraph.
 ///
 /// It allows constructing and asserting expressions [`Exp`] within the solver
@@ -100,6 +99,17 @@ impl Not for BoolExp {
         match self {
             BoolExp::Const(b) => BoolExp::Const(!b),
             BoolExp::Unknown(lit) => BoolExp::Unknown(!lit),
+        }
+    }
+}
+
+impl BitXor<bool> for BoolExp {
+    type Output = BoolExp;
+
+    fn bitxor(self, rhs: bool) -> Self::Output {
+        match self {
+            BoolExp::Const(b) => BoolExp::Const(b ^ rhs),
+            BoolExp::Unknown(lit) => BoolExp::Unknown(lit ^ rhs),
         }
     }
 }
