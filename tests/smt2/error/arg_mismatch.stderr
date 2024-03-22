@@ -1,4 +1,4 @@
-the function `f` expects 0 arguments but got 1 at 2:12
+the function `f` expects at most 0 arguments at 2:12
 (assert (f true))
            ^
 
