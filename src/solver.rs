@@ -232,6 +232,7 @@ impl Solver {
         self.sat.add_clause_reuse(&mut self.clause_adder);
     }
 
+    #[inline]
     fn andor_reuse(&mut self, exps: &mut Vec<BLit>, is_and: bool) -> BLit {
         if let [exp] = &**exps {
             return *exp;
