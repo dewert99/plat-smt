@@ -271,21 +271,9 @@ impl<'a, R: FullBufRead> CountingParser<'a, R> {
     }
 }
 
-fn cross<I1: IntoIterator, I2: IntoIterator + Clone>(
-    iter1: I1,
-    iter2: I2,
-) -> impl Iterator<Item = (I1::Item, I2::Item)>
-where
-    I1::Item: Copy,
-{
-    iter1
-        .into_iter()
-        .flat_map(move |x1| iter2.clone().into_iter().map(move |x2| (x1, x2)))
-}
-
-fn pairwise<T>(slice: &[T]) -> impl Iterator<Item = (&T, &T)> {
-    cross(0..slice.len(), 0..slice.len())
-        .filter(|&(i, j)| i != j)
+fn pairwise_sym<T>(slice: &[T]) -> impl Iterator<Item = (&T, &T)> {
+    (0..slice.len())
+        .flat_map(move |i| (i + 1..slice.len()).map(move |j| (i, j)))
         .map(|(i, j)| (&slice[i], &slice[j]))
 }
 
@@ -472,7 +460,7 @@ impl<W: Write> Parser<W> {
                     .into_iter()
                     .chain(iter)
                     .collect::<Result<Vec<Id>>>()?;
-                let conj: Conjunction = pairwise(&ids)
+                let conj: Conjunction = pairwise_sym(&ids)
                     .map(|(&id1, &id2)| !self.core.raw_eq(id1, id2))
                     .collect();
                 self.core.collapse_bool(conj).into()
