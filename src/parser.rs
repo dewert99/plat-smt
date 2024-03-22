@@ -3,7 +3,7 @@ use crate::euf::FullFunctionInfo;
 use crate::full_buf_read::{FullBufRead, FullBufReader};
 use crate::junction::{Conjunction, Disjunction};
 use crate::parser::Error::*;
-use crate::parser_core::{ParseError, SexpParser, SexpToken, SpanRange};
+use crate::parser_core::{Bind, ParseError, SexpParser, SexpToken, SpanRange};
 use crate::solver::{BoolExp, Exp, SolveResult, Solver, UnsatCoreConjunction, UnsatCoreInfo};
 use crate::sort::{BaseSort, Sort};
 use crate::util::{format_args2, parenthesized};
@@ -33,20 +33,20 @@ enum Error {
         actual: Sort,
         expected: Sort,
     },
-    #[error("the left side of the equality has sort {left} but the right side has sort {right}")]
-    EqSortMismatch { left: Sort, right: Sort },
     #[error(
         "the left side of the ite expression has sort {left} but the right side has sort {right}"
     )]
     IteSortMismatch { left: Sort, right: Sort },
     #[error("the definition had the incorrect sort {0:?}")]
     BindSortMismatch(Sort),
-    #[error("the function `{f}` expects {expected} arguments but got {actual}")]
-    ArgumentMismatch {
+    #[error("the function `{f}` expects at least {expected} arguments but only got {actual}")]
+    MissingArgument {
         f: &'static str,
         actual: usize,
         expected: usize,
     },
+    #[error("the function `{f}` expects at most {expected} arguments")]
+    ExtraArgument { f: &'static str, expected: usize },
     #[error("unknown identifier `{0}`")]
     Unbound(Symbol),
     #[error("unknown sort `{0}`")]
@@ -87,16 +87,6 @@ struct FnSort {
     args: Intern<[Sort]>,
     ret: Sort,
 }
-
-impl FnSort {
-    fn mismatch(&self, name: Symbol, actual: usize) -> Error {
-        ArgumentMismatch {
-            f: name.as_str(),
-            expected: self.args.len(),
-            actual,
-        }
-    }
-}
 #[derive(Copy, Clone)]
 enum Bound {
     Fn(FnSort),
@@ -104,7 +94,7 @@ enum Bound {
 }
 
 macro_rules! enum_str {
-    ($name:ident {$($s:literal => $var:ident,)*}) => {
+    ($name:ident {$($s:literal => $var:ident($min_args:literal),)*}) => {
         #[derive(Copy, Clone)]
         enum $name {
             $($var,)*
@@ -125,6 +115,17 @@ macro_rules! enum_str {
                     Self::Unknown(s) => s.as_str(),
                 }
             }
+
+            fn minimum_arguments(self) -> usize {
+                match self {
+                    $(Self::$var => $min_args,)*
+                    Self::Unknown(_) => 0,
+                }
+            }
+
+            fn bind<'a, R: FullBufRead>(self, p: SexpParser<'a, R>) -> CountingParser<'a, R> {
+                CountingParser::new(p, self.to_str(), self.minimum_arguments())
+            }
         }
 
         impl ::core::fmt::Debug for $name {
@@ -136,36 +137,36 @@ macro_rules! enum_str {
 }
 
 enum_str!(Smt2Command{
-    "declare-sort" => DeclareSort,
-    "declare-fun" => DeclareFn,
-    "declare-const" => DeclareConst,
-    "define-const" => DefineConst,
-    "define-fun" => DefineFn,
-    "get-unsat-core" => GetUnsatCore,
-    "get-value" => GetValue,
-    "get-model" => GetModel,
-    "assert" => Assert,
-    "check-sat" => CheckSat,
-    "check-sat-assuming" => CheckSatAssuming,
-    "push" => Push,
-    "pop" => Pop,
-    "reset" => Reset,
-    "set-logic" => SetLogic,
-    "set-info" => SetInfo,
-    "exit" => Exit,
+    "declare-sort" => DeclareSort(1),
+    "declare-fun" => DeclareFn(3),
+    "declare-const" => DeclareConst(2),
+    "define-const" => DefineConst(3),
+    "define-fun" => DefineFn(4),
+    "get-unsat-core" => GetUnsatCore(0),
+    "get-value" => GetValue(1),
+    "get-model" => GetModel(0),
+    "assert" => Assert(1),
+    "check-sat" => CheckSat(1),
+    "check-sat-assuming" => CheckSatAssuming(1),
+    "push" => Push(0),
+    "pop" => Pop(0),
+    "reset" => Reset(0),
+    "set-logic" => SetLogic(1),
+    "set-info" => SetInfo(2),
+    "exit" => Exit(0),
 });
 
 enum_str!(ExpKind{
-    "and" => And,
-    "or" => Or,
-    "not" => Not,
-    "=>" => Imp,
-    "xor" => Xor,
-    "=" => Eq,
-    "distinct" => Distinct,
-    "let" => Let,
-    "if" => If,
-    "ite" => Ite,
+    "and" => And(0),
+    "or" => Or(0),
+    "not" => Not(1),
+    "=>" => Imp(1),
+    "xor" => Xor(0),
+    "=" => Eq(1),
+    "distinct" => Distinct(1),
+    "let" => Let(2),
+    "if" => If(3),
+    "ite" => Ite(3),
 });
 
 #[derive(Default)]
@@ -197,56 +198,76 @@ struct CountingParser<'a, R: FullBufRead> {
     p: SexpParser<'a, R>,
     name: &'static str,
     actual: usize,
-    expected: usize,
+    minimum_expected: usize,
 }
 
 type InfoToken<'a, R> = (SexpToken<'a, R>, usize, &'static str);
 
 impl<'a, R: FullBufRead> CountingParser<'a, R> {
-    fn new(p: SexpParser<'a, R>, name: &'static str, expected: usize) -> Self {
+    fn new(p: SexpParser<'a, R>, name: &'static str, minimum_expected: usize) -> Self {
         CountingParser {
             p,
             name,
             actual: 0,
-            expected,
+            minimum_expected,
         }
     }
 
-    fn try_next(&mut self) -> Result<Option<SexpToken<'_, R>>> {
-        debug_assert!(self.actual < self.expected);
+    fn try_next_full(&mut self) -> Option<Result<(SexpToken<'_, R>, usize, &'static str)>> {
+        debug_assert!(self.actual >= self.minimum_expected);
+        let actual = self.actual;
         self.actual += 1;
-        match self.p.next() {
-            None => Ok(None),
-            Some(x) => Ok(Some(x?)),
-        }
+        self.p.next().map(|x| Ok((x?, actual, self.name)))
+    }
+
+    fn map_full<U, F: FnMut(Result<(SexpToken<'_, R>, usize, &'static str)>) -> U>(
+        mut self,
+        mut f: F,
+    ) -> impl Iterator<Item = U> + Bind<(F, Self)> {
+        iter::from_fn(move || Some(f(self.try_next_full()?)))
     }
 
     fn next_full(&mut self) -> Result<(SexpToken<'_, R>, usize, &'static str)> {
         let actual = self.actual;
-        let err = ArgumentMismatch {
+        let err = MissingArgument {
             f: self.name,
             actual,
-            expected: self.expected,
+            expected: self.minimum_expected,
         };
-        debug_assert!(self.actual < self.expected);
+        debug_assert!(self.actual < self.minimum_expected);
         self.actual += 1;
         Ok((self.p.next().ok_or(err)??, actual, self.name))
     }
+
     fn next(&mut self) -> Result<SexpToken<'_, R>> {
         Ok(self.next_full()?.0)
     }
 
+    fn try_next_number<N: TryFrom<u128>>(&mut self, default: N) -> Result<N> {
+        match self.try_next_full() {
+            None => Ok(default),
+            Some(x) => match x?.0 {
+                SexpToken::Number(n) => Ok(n.try_into().map_err(|_| ParseError::Overflow)?),
+                _ => Err(InvalidCommand),
+            },
+        }
+    }
+
     fn finish(mut self) -> Result<()> {
-        debug_assert_eq!(self.actual, self.expected);
+        debug_assert!(self.actual >= self.minimum_expected);
         if self.p.next().is_some() {
-            Err(ArgumentMismatch {
+            Err(ExtraArgument {
                 f: self.name,
-                actual: self.expected + 1,
-                expected: self.expected,
+                expected: self.actual,
             })
         } else {
             Ok(())
         }
+    }
+
+    /// Set the minimum expected arguments if it is only known dynamically
+    fn set_minimum_expected(&mut self, minimum_expected: usize) {
+        self.minimum_expected = minimum_expected
     }
 }
 
@@ -348,10 +369,8 @@ impl<W: Write> Parser<W> {
 
     fn parse_id<R: FullBufRead>(
         &mut self,
-        f: Symbol,
-        arg_n: usize,
+        (token, arg_n, f): InfoToken<R>,
         expected: Sort,
-        token: SexpToken<R>,
     ) -> Result<Id> {
         let exp = self.parse_exp(token)?;
         let (id, actual) = self.core.id_sort(exp);
@@ -393,45 +412,41 @@ impl<W: Write> Parser<W> {
     fn parse_fn_exp<R: FullBufRead>(
         &mut self,
         f: ExpKind,
-        mut rest: SexpParser<R>,
+        rest: SexpParser<R>,
         expect_res: Option<Sort>,
     ) -> Result<Exp> {
+        let mut rest = f.bind(rest);
         let res = match f {
             ExpKind::Not => {
-                let mut rest = CountingParser::new(rest, f.to_str(), 1);
-                let token = rest.next_full()?;
-                let x = self.parse_bool(token)?;
+                let x = self.parse_bool(rest.next_full()?)?;
                 rest.finish()?;
                 (!x).into()
             }
             ExpKind::And => {
                 let conj = rest
-                    .zip_map(0.., |token, i| self.parse_bool((token?, i, f.to_str())))
+                    .map_full(|token| self.parse_bool(token?))
                     .collect::<Result<Conjunction>>()?;
                 self.core.collapse_bool(conj).into()
             }
             ExpKind::Or => {
                 let disj = rest
-                    .zip_map(0.., |token, i| self.parse_bool((token?, i, f.to_str())))
+                    .map_full(|token| self.parse_bool(token?))
                     .collect::<Result<Disjunction>>()?;
                 self.core.collapse_bool(disj).into()
             }
             ExpKind::Imp => {
-                let mut iter =
-                    rest.zip_map(0.., |token, i| self.parse_bool((token?, i, f.to_str())));
-                let mut last = iter.next().ok_or(ArgumentMismatch {
-                    actual: 0,
-                    expected: 1,
-                    f: f.to_str(),
-                })??;
-                let not_last = iter.map(|item| Ok(!std::mem::replace(&mut last, item?)));
+                let mut last = self.parse_bool(rest.next_full()?)?;
+                let not_last = rest.map_full(|token| {
+                    let item = self.parse_bool(token?)?;
+                    Ok(!std::mem::replace(&mut last, item))
+                });
                 let res = not_last.collect::<Result<Disjunction>>()? | last;
                 self.core.collapse_bool(res).into()
             }
             ExpKind::Xor => {
                 let mut res = BoolExp::FALSE;
-                rest.zip_map(0.., |token, i| {
-                    let parsed = self.parse_bool((token?, i, f.to_str()))?;
+                rest.map_full(|token| {
+                    let parsed = self.parse_bool(token?)?;
                     res = self.core.xor(res, parsed);
                     Ok(())
                 })
@@ -439,42 +454,20 @@ impl<W: Write> Parser<W> {
                 res.into()
             }
             ExpKind::Eq => {
-                let mut rest = CountingParser::new(rest, f.to_str(), 1);
                 let exp1 = self.parse_exp(rest.next()?)?;
                 let (id1, sort1) = self.core.id_sort(exp1);
                 let conj = rest
-                    .p
-                    .map(|x| {
-                        let parsed = self.parse_exp(x?)?;
-                        let (id2, sort2) = self.core.id_sort(parsed);
-                        if sort1 != sort2 {
-                            return Err(EqSortMismatch {
-                                left: sort1,
-                                right: sort2,
-                            });
-                        } else {
-                            Ok(self.core.raw_eq(id1, id2))
-                        }
+                    .map_full(|x| {
+                        let id2 = self.parse_id(x?, sort1)?;
+                        Ok(self.core.raw_eq(id1, id2))
                     })
                     .collect::<Result<Conjunction>>()?;
                 self.core.collapse_bool(conj).into()
             }
             ExpKind::Distinct => {
-                let mut rest = CountingParser::new(rest, f.to_str(), 1);
                 let exp1 = self.parse_exp(rest.next()?)?;
                 let (id1, sort1) = self.core.id_sort(exp1);
-                let iter = rest.p.map(|x| {
-                    let parsed = self.parse_exp(x?)?;
-                    let (id2, sort2) = self.core.id_sort(parsed);
-                    if sort1 != sort2 {
-                        return Err(EqSortMismatch {
-                            left: sort1,
-                            right: sort2,
-                        });
-                    } else {
-                        Ok(id2)
-                    }
-                });
+                let iter = rest.map_full(|x| self.parse_id(x?, sort1));
                 let ids = [Ok(id1)]
                     .into_iter()
                     .chain(iter)
@@ -485,7 +478,6 @@ impl<W: Write> Parser<W> {
                 self.core.collapse_bool(conj).into()
             }
             ExpKind::Let => {
-                let mut rest = CountingParser::new(rest, "let", 2);
                 let old_len = self.bound_stack.len();
                 match rest.next()? {
                     SexpToken::List(mut l) => l
@@ -507,7 +499,6 @@ impl<W: Write> Parser<W> {
                 exp
             }
             ExpKind::Ite | ExpKind::If => {
-                let mut rest = CountingParser::new(rest, f.to_str(), 3);
                 let i = self.parse_bool(rest.next_full()?)?;
                 let t = self.parse_exp(rest.next()?)?;
                 let e = self.parse_exp(rest.next()?)?;
@@ -520,28 +511,16 @@ impl<W: Write> Parser<W> {
                 let sig = *self.bound.get(&f).ok_or(Unbound(f))?;
                 match sig {
                     Bound::Fn(sig) => {
-                        let arg_iter = sig.args.iter().copied().enumerate();
-                        let children = rest
-                            .zip_map(arg_iter, |token, (i, expect)| {
-                                self.parse_id(f, i, expect, token?)
-                            })
-                            .collect::<Result<Children>>()?;
-                        if rest.next().is_some() {
-                            return Err(sig.mismatch(f, sig.args.len() + 1));
+                        rest.set_minimum_expected(sig.args.len());
+                        let mut children = Children::new();
+                        for sort in sig.args.iter().copied() {
+                            children.push(self.parse_id(rest.next_full()?, sort)?)
                         }
-                        if children.len() < sig.args.len() {
-                            return Err(sig.mismatch(f, children.len()));
-                        }
+                        rest.finish()?;
                         self.core.sorted_fn(f, children, sig.ret)
                     }
                     Bound::Const(c) => {
-                        if rest.next().is_some() {
-                            return Err(ArgumentMismatch {
-                                f: f.as_str(),
-                                actual: 1,
-                                expected: 0,
-                            });
-                        }
+                        rest.finish()?;
                         self.core.canonize(c)
                     }
                 }
@@ -579,10 +558,14 @@ impl<W: Write> Parser<W> {
         let len = res.params.len();
         match self.declared_sorts.get(&res.name) {
             None => Err(UnboundSort(res.name)),
-            Some(x) if *x as usize != len => Err(ArgumentMismatch {
+            Some(x) if (*x as usize) < len => Err(MissingArgument {
                 f: res.name.into(),
                 expected: *x as usize,
                 actual: len,
+            }),
+            Some(x) if *x as usize > len => Err(ExtraArgument {
+                f: res.name.into(),
+                expected: *x as usize,
             }),
             _ => Ok(Sort::new(res)),
         }
@@ -600,9 +583,9 @@ impl<W: Write> Parser<W> {
         name: Smt2Command,
         rest: SexpParser<R>,
     ) -> Result<()> {
+        let mut rest = name.bind(rest);
         match name {
             Smt2Command::DeclareSort => {
-                let mut rest = CountingParser::new(rest, name.to_str(), 2);
                 let SexpToken::Symbol(name) = rest.next()? else {
                     return Err(InvalidCommand);
                 };
@@ -610,15 +593,10 @@ impl<W: Write> Parser<W> {
                 if self.declared_sorts.contains_key(&name) {
                     return Err(Shadow(name));
                 }
-                let args = match rest.try_next()? {
-                    None => 0,
-                    Some(SexpToken::Number(n)) => n,
-                    Some(_) => return Err(InvalidCommand),
-                };
+                let args = rest.try_next_number(0)?;
                 rest.finish()?;
                 self.sort_stack.push(name);
-                self.declared_sorts
-                    .insert(name, args.try_into().map_err(|_| ParseError::Overflow)?);
+                self.declared_sorts.insert(name, args);
             }
             Smt2Command::GetUnsatCore => {
                 let State::Unsat(info) = &self.state else {
@@ -627,7 +605,7 @@ impl<W: Write> Parser<W> {
                 write!(self.writer, "(").unwrap();
                 let mut iter = info
                     .core(self.core.last_unsat_core())
-                    .map(|x| rest.lookup_range(*x));
+                    .map(|x| rest.p.lookup_range(*x));
                 if let Some(x) = iter.next() {
                     write!(self.writer, "{x}").unwrap();
                 }
@@ -635,10 +613,9 @@ impl<W: Write> Parser<W> {
                     write!(self.writer, " {x}").unwrap();
                 }
                 writeln!(self.writer, ")").unwrap();
-                CountingParser::new(rest, name.to_str(), 0).finish()?;
+                rest.finish()?;
             }
             Smt2Command::GetValue => {
-                let mut rest = CountingParser::new(rest, name.to_str(), 1);
                 if !matches!(self.state, State::Model) {
                     return Err(NoModel);
                 }
@@ -661,7 +638,7 @@ impl<W: Write> Parser<W> {
                 rest.finish()?;
             }
             Smt2Command::GetModel => {
-                CountingParser::new(rest, name.to_str(), 0).finish()?;
+                rest.finish()?;
                 if !matches!(self.state, State::Model) {
                     return Err(NoModel);
                 }
@@ -699,7 +676,6 @@ impl<W: Write> Parser<W> {
                 writeln!(self.writer, ")").unwrap();
             }
             Smt2Command::SetLogic => {
-                let mut rest = CountingParser::new(rest, name.to_str(), 1);
                 match rest.next()? {
                     SexpToken::Symbol("QF_UF") => {}
                     SexpToken::Symbol(_) => return Err(Unsupported("logic")),
@@ -708,7 +684,6 @@ impl<W: Write> Parser<W> {
                 rest.finish()?;
             }
             Smt2Command::SetInfo => {
-                let mut rest = CountingParser::new(rest, name.to_str(), 2);
                 let SexpToken::Keyword(key) = rest.next()? else {
                     return Err(InvalidCommand);
                 };
@@ -774,12 +749,11 @@ impl<W: Write> Parser<W> {
     fn parse_destructive_command<R: FullBufRead>(
         &mut self,
         name: Smt2Command,
-        rest: SexpParser<R>,
+        mut rest: CountingParser<R>,
     ) -> Result<()> {
         self.reset_state();
         match name {
             Smt2Command::DeclareFn => {
-                let mut rest = CountingParser::new(rest, name.to_str(), 3);
                 let name = self.parse_fresh_binder(rest.next()?)?;
                 let SexpToken::List(mut l) = rest.next()? else {
                     return Err(InvalidCommand);
@@ -801,14 +775,12 @@ impl<W: Write> Parser<W> {
                 }
             }
             Smt2Command::DeclareConst => {
-                let mut rest = CountingParser::new(rest, name.to_str(), 2);
                 let name = self.parse_fresh_binder(rest.next()?)?;
                 let ret = self.parse_sort(rest.next()?)?;
                 rest.finish()?;
                 self.declare_const(name, ret);
             }
             Smt2Command::DefineConst => {
-                let mut rest = CountingParser::new(rest, name.to_str(), 3);
                 let name = self.parse_fresh_binder(rest.next()?)?;
                 let sort = self.parse_sort(rest.next()?)?;
                 let ret = self.parse_exp(rest.next()?)?;
@@ -819,7 +791,6 @@ impl<W: Write> Parser<W> {
                 self.insert_bound(name, Bound::Const(ret));
             }
             Smt2Command::DefineFn => {
-                let mut rest = CountingParser::new(rest, name.to_str(), 4);
                 let name = self.parse_fresh_binder(rest.next()?)?;
                 let SexpToken::List(mut args) = rest.next()? else {
                     return Err(InvalidCommand);
@@ -837,13 +808,11 @@ impl<W: Write> Parser<W> {
                 self.insert_bound(name, Bound::Const(ret));
             }
             Smt2Command::Assert => {
-                let mut rest = CountingParser::new(rest, name.to_str(), 1);
                 let b = self.parse_bool(rest.next_full()?)?;
                 self.core.assert(b);
                 rest.finish()?;
             }
             Smt2Command::CheckSat => {
-                CountingParser::new(rest, name.to_str(), 0).finish()?;
                 let res = self
                     .core
                     .check_sat_assuming_preserving_trail(&Default::default());
@@ -851,7 +820,6 @@ impl<W: Write> Parser<W> {
                 writeln!(self.writer, "{}", res.as_lower_str()).unwrap()
             }
             Smt2Command::CheckSatAssuming => {
-                let mut rest = CountingParser::new(rest, name.to_str(), 1);
                 let SexpToken::List(mut l) = rest.next()? else {
                     return Err(InvalidCommand);
                 };
@@ -867,14 +835,7 @@ impl<W: Write> Parser<W> {
                 writeln!(self.writer, "{}", res.as_lower_str()).unwrap()
             }
             Smt2Command::Push => {
-                let mut rest = CountingParser::new(rest, name.to_str(), 1);
-                let n = match rest.try_next()? {
-                    None => 1,
-                    Some(SexpToken::Number(x)) => {
-                        usize::try_from(x).map_err(|_| ParseError::Overflow)?
-                    }
-                    Some(_) => return Err(InvalidCommand),
-                };
+                let n = rest.try_next_number(1)?;
                 for _ in 0..n {
                     self.core.push();
                     let info = PushInfo {
@@ -885,14 +846,7 @@ impl<W: Write> Parser<W> {
                 }
             }
             Smt2Command::Pop => {
-                let mut rest = CountingParser::new(rest, name.to_str(), 1);
-                let n = match rest.try_next()? {
-                    None => 1,
-                    Some(SexpToken::Number(x)) => {
-                        usize::try_from(x).map_err(|_| ParseError::Overflow)?
-                    }
-                    Some(_) => return Err(InvalidCommand),
-                };
+                let n = rest.try_next_number(1)?;
                 if n > self.push_info.len() {
                     self.clear()
                 } else if n > 0 {
