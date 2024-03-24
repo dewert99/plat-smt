@@ -87,7 +87,13 @@ impl<const IS_AND: bool> Junction<IS_AND> {
     }
 
     pub fn clear(&mut self) {
-        self.truncate(0)
+        match &mut self.0 {
+            Err(x) => {
+                x.clear();
+                self.0 = Ok(mem::take(x));
+            }
+            Ok(x) => x.clear(),
+        }
     }
 
     pub fn combine(&mut self, other: &Junction<IS_AND>) {
@@ -96,25 +102,6 @@ impl<const IS_AND: bool> Junction<IS_AND> {
             (Ok(_), Err(_)) => {}
             (Err(_), Ok(xs)) => self.0 = Err(mem::take(xs)),
             (Err(_), Err(_)) => {}
-        }
-    }
-
-    pub(crate) fn len_or_max(&self) -> usize {
-        match &self.0 {
-            Ok(x) => x.len(),
-            Err(_) => usize::MAX,
-        }
-    }
-
-    pub(crate) fn truncate(&mut self, len_or_max: usize) {
-        if len_or_max != usize::MAX {
-            match &mut self.0 {
-                Err(x) => {
-                    x.truncate(len_or_max);
-                    self.0 = Ok(mem::take(x));
-                }
-                Ok(x) => x.truncate(len_or_max),
-            }
         }
     }
 }
