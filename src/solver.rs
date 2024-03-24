@@ -4,6 +4,7 @@ use crate::euf::{FullFunctionInfo, FunctionInfo, SatSolver, EUF};
 use crate::junction::*;
 use crate::sort::{BaseSort, Sort};
 use crate::util::display_debug;
+use batsat::intmap::AsIndex;
 use batsat::{lbool, Lit, SolverInterface, Var};
 use egg::{Id, Symbol};
 use either::Either;
@@ -11,7 +12,6 @@ use hashbrown::HashMap;
 use log::debug;
 use std::borrow::BorrowMut;
 use std::fmt::{Debug, Display, Formatter};
-use std::num::NonZeroUsize;
 use std::ops::Not;
 
 /// The main solver structure including the sat solver and egraph.
@@ -20,7 +20,6 @@ use std::ops::Not;
 pub struct Solver {
     euf: EUF,
     sat: BufferedSolver<batsat::BasicSolver>,
-    assertions: Conjunction,
     function_info_buf: FunctionInfo,
     bool_sort: Sort,
 }
@@ -30,7 +29,6 @@ impl Default for Solver {
         Solver {
             euf: Default::default(),
             sat: Default::default(),
-            assertions: Default::default(),
             function_info_buf: Default::default(),
             bool_sort: Sort::new(BaseSort {
                 name: Symbol::new("Bool"),
@@ -196,18 +194,18 @@ pub enum SolveResult {
     Unknown,
 }
 
-impl SatSolver for Conjunction {
+struct AssertNoProp;
+impl SatSolver for AssertNoProp {
     fn is_ok(&self) -> bool {
-        self.0.is_ok()
+        true
     }
 
-    fn propagate(&mut self, p: Lit) -> bool {
-        self.push(BoolExp::Unknown(p));
-        self.is_ok()
+    fn propagate(&mut self, _: Lit) -> bool {
+        unreachable!()
     }
 
     fn raise_conflict(&mut self, _: &[Lit], _: bool) {
-        self.push(BoolExp::FALSE)
+        unreachable!()
     }
 }
 
@@ -382,18 +380,14 @@ impl Solver {
     /// Assert that `b` is true
     pub fn assert(&mut self, b: BoolExp) {
         debug!("assert {b}");
-        if self.euf.smt_push_level() == 0 {
-            match b {
-                BoolExp::TRUE => {}
-                BoolExp::Unknown(l) => {
-                    self.sat.add_clause([l]);
-                }
-                BoolExp::FALSE => {
-                    self.sat.add_clause([]);
-                }
+        match b {
+            BoolExp::TRUE => {}
+            BoolExp::Unknown(l) => {
+                self.sat.add_clause([l]);
             }
-        } else {
-            self.assertions.push(b)
+            BoolExp::FALSE => {
+                self.sat.add_clause([]);
+            }
         }
     }
 
@@ -405,15 +399,12 @@ impl Solver {
     /// Check if the current assertions combined with the assertions in `c` are satisfiable
     /// Leave the solver in a state representing the model
     pub fn check_sat_assuming_preserving_trail(&mut self, c: &Conjunction) -> SolveResult {
-        let old_len = self.assertions.len_or_max();
-        self.assertions.combine(&c);
-        let res = match &self.assertions.0 {
+        let res = match &c.0 {
             Err(_) => lbool::FALSE,
             Ok(x) => self
                 .sat
                 .solve_limited_preserving_trail_th(&mut self.euf, &x),
         };
-        self.assertions.truncate(old_len);
         if res == lbool::FALSE {
             debug!(
                 "check-sat {c:?} returned unsat, core:\n{:?}",
@@ -441,43 +432,64 @@ impl Solver {
     /// Restores the state after calling `raw_check_sat_assuming`
     pub fn pop_model(&mut self) {
         self.sat.pop_model(&mut self.euf);
-        if !self.sat.is_ok() {
-            self.assertions.push(BoolExp::FALSE)
-        }
     }
 
     /// Rebuild underlying egraph
-    pub fn rebuild(&mut self) {
-        let _ = self.euf.rebuild(&mut self.assertions);
-        if self.euf.smt_push_level() == 0 {
-            // if we are at level 0 these assertions can be added directly to the solver
-            match &self.assertions.0 {
-                Err(_) => self.sat.add_clause([]),
-                Ok(x) => {
-                    x.iter().for_each(|l| self.sat.add_clause([*l]));
-                    self.assertions.clear();
-                }
-            }
+    fn rebuild(&mut self) {
+        if self.sat.is_ok() {
+            let _ = self.euf.rebuild(&mut AssertNoProp);
         }
     }
 
     pub fn push(&mut self) {
+        // The implementation of push/pop is somewhat unexpected
+        //
+        // We call push on the sat solver, but it is implemented by adding an implicit assumption
+        // to future check-sat calls, and making future clauses implicitly depend on this assumption
+        // It crucially doesn't increase the decision level of the solver and expects the theory,
+        // in this case EUF, to stay at the same level as well. To work around this EUF keeps track
+        // of a base level and "pretends" that this is level 0 when implementing Theory. Because of
+        // this "pretending" any propagations made at the base level/decision level 0 are treated
+        // as if they are always true independent of the assertion level. In other words the levels
+        // below the base level can only be used to store terms from each assertion-level but not
+        // equalities. This is also the reason there no `assert_eq` method.
+        //
+        // The root cause of all of this is that batsat uses non-chronological backtracking, so it
+        // may backtrack to level 0 while running (check-sat) after a (push), and try to ask EUF
+        // for propagations that are independent of the assertions that came after that push.
+        //
+        // An alternative implementation may be EUF be more honest about its level but suppress
+        // calls to go below its base level (the smt assertion level), and instead enter a shadow
+        // state where it ignores calls to partial_check (final_check should be impossible) until it
+        // is asked to go back above its base level. This approach would also need to deal with
+        // https://github.com/c-cube/batsat/issues/16, possibly by adding extra literals to
+        // explanations.
+
         self.rebuild();
-        self.euf.smt_push(self.assertions.len_or_max())
+
+        self.euf
+            .reserve(Var::from_index(self.sat.num_vars() as usize));
+        self.sat.push();
+
+        if self.sat.is_ok() {
+            self.euf.smt_push();
+        }
     }
 
     pub fn pop(&mut self, n: usize) {
         if n > self.euf.smt_push_level() {
             self.clear();
-        } else if let Ok(n) = NonZeroUsize::try_from(n) {
-            self.assertions.truncate(self.euf.smt_pop(n))
+        } else if n > 0 {
+            self.sat.pop(n as u32);
+            if self.sat.is_ok() {
+                self.euf.smt_pop_to(self.sat.assertion_level() as usize);
+            }
         }
     }
 
     pub fn clear(&mut self) {
         self.sat.reset();
         self.euf.clear();
-        self.assertions.clear();
     }
 
     /// Like [`check_sat_assuming`](Solver::check_sat_assuming) but takes in an

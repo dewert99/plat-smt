@@ -10,7 +10,6 @@ use hashbrown::HashMap;
 use log::{debug, trace};
 use perfect_derive::perfect_derive;
 use std::mem;
-use std::num::NonZeroUsize;
 use std::ops::Range;
 
 #[derive(Debug, Clone)]
@@ -70,12 +69,11 @@ enum MergeInfo {
     Neither(Vec<Lit>),
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 struct PushInfo {
     egraph: EGPushInfo,
     prev_len: usize,
     lit_log_len: usize,
-    assert_len: usize,
 }
 
 #[derive(Debug)]
@@ -83,9 +81,6 @@ pub struct EUF {
     egraph: EGraph<EClass>,
     bool_class_history: Vec<MergeInfo>,
     push_log: Vec<PushInfo>,
-    // 0 means it is not in a conflict state
-    // n + 1 means it is in a conflict state and was pushed n times afterwards
-    in_conflict: usize,
     lit_id_log: Vec<Lit>,
     // push level from smt level push/pop
     base_level: usize,
@@ -119,7 +114,6 @@ impl Default for EUF {
             eq_sym,
             prev_len: 0,
             base_level: 0,
-            in_conflict: 0,
         };
         debug_assert_eq!(tid, res.id_for_bool(true));
         debug!("id{tid:?} is true");
@@ -138,16 +132,15 @@ impl Theory for EUF {
     }
 
     fn create_level(&mut self) {
-        self.raw_push(usize::MAX)
+        self.raw_push()
     }
 
     fn pop_levels(&mut self, n: usize) {
-        let res = self.raw_pop(n);
-        debug_assert_eq!(res, usize::MAX)
+        self.raw_pop_to(self.push_log.len() - n);
     }
 
     fn n_levels(&self) -> usize {
-        self.push_log.len() + (self.in_conflict.saturating_sub(1)) - self.base_level
+        self.push_log.len() - self.base_level
     }
 
     fn partial_check(&mut self, acts: &mut TheoryArg) {
@@ -278,7 +271,6 @@ impl EUF {
         just: Justification,
     ) -> Result {
         debug!("EUF union id{id1:?} with id{id2:?} by {just:?}");
-        debug_assert_eq!(self.in_conflict, 0);
         let mut conflict = false;
         let ctx = MergeContext {
             acts,
@@ -287,11 +279,9 @@ impl EUF {
         };
         self.egraph.union(id1, id2, just, ctx.merge_fn());
         if !acts.is_ok() {
-            self.in_conflict = 1;
             return Err(());
         }
         if conflict {
-            self.in_conflict = 1;
             self.tf_conflict(acts);
             return Err(());
         }
@@ -451,43 +441,21 @@ impl EUF {
         self.base_level
     }
 
-    fn raw_push(&mut self, assert_len: usize) {
+    fn raw_push(&mut self) {
         debug!("Push");
-        if self.in_conflict > 0 {
-            self.in_conflict += 1;
-        } else {
-            let v = PushInfo {
-                egraph: self.egraph.push(),
-                prev_len: self.prev_len,
-                lit_log_len: self.lit_id_log.len(),
-                assert_len,
-            };
-            self.push_log.push(v)
-        }
+        let v = PushInfo {
+            egraph: self.egraph.push(),
+            prev_len: self.prev_len,
+            lit_log_len: self.lit_id_log.len(),
+        };
+        self.push_log.push(v)
     }
 
-    fn raw_pop(&mut self, mut n: usize) -> usize {
-        debug_assert_ne!(n, 0);
-        debug!("Pop {n}");
-        if self.in_conflict > 0 {
-            // in a conflict state
-            let conflict_pushes = self.in_conflict - 1;
-            if conflict_pushes >= n {
-                // there have been at least `n` conflict pushes, so we remove `n` of them
-                self.in_conflict -= n;
-                return usize::MAX;
-            }
-            // `n` is more than the number of conflict pushes, so we are no longer in a conflict
-            // state and still the remaining pops
-            self.in_conflict = 0;
-            n -= conflict_pushes;
-        }
+    fn raw_pop_to(&mut self, target_level: usize) {
+        debug!("Pop to level {target_level}");
 
-        let mut info = None;
-        for _ in 0..n {
-            info = self.push_log.pop();
-        }
-        let info = info.unwrap();
+        let info = self.push_log[target_level].clone();
+        self.push_log.truncate(target_level);
         self.prev_len = info.prev_len;
         for lit in self.lit_id_log.drain(info.lit_log_len..) {
             self.lit_ids[lit] = None
@@ -499,17 +467,17 @@ impl EUF {
             }
         });
         trace!("\n{:?}", self.egraph.dump_uncanonical());
-        info.assert_len
     }
 
-    pub fn smt_push(&mut self, assert_len: usize) {
+    pub fn smt_push(&mut self) {
         self.base_level += 1;
-        self.raw_push(assert_len);
+        self.raw_push();
     }
 
-    pub fn smt_pop(&mut self, n: NonZeroUsize) -> usize {
-        self.base_level -= usize::from(n);
-        self.raw_pop(n.into())
+    pub fn smt_pop_to(&mut self, target_level: usize) {
+        debug_assert_eq!(self.n_levels(), 0);
+        self.base_level = target_level;
+        self.raw_pop_to(target_level)
     }
 
     pub fn clear(&mut self) {
@@ -518,7 +486,6 @@ impl EUF {
         self.base_level = 0;
         self.egraph.clear();
         self.push_log.clear();
-        self.in_conflict = 0;
         self.lit_id_log.clear();
         self.lit_ids.clear();
         self.prev_len = 0;
