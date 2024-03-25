@@ -1,4 +1,4 @@
-use crate::egraph::{Children, EGraph, PushInfo as EGPushInfo, SymbolLang};
+use crate::egraph::{Children, EGraph, Op, PushInfo as EGPushInfo, SymbolLang};
 use crate::explain::Justification;
 use crate::solver::{BoolExp, Exp, UExp};
 use crate::sort::Sort;
@@ -97,10 +97,10 @@ impl Default for EUF {
         let false_sym = Symbol::new("false");
         let eq_sym = Symbol::new("=");
         let mut egraph = EGraph::default();
-        let tid = egraph.add(true_sym, Children::new(), |_| {
+        let tid = egraph.add(SymbolLang::new(true_sym, Children::new()), |_| {
             EClass::Bool(BoolClass::Const(true))
         });
-        let fid = egraph.add(false_sym, Children::new(), |_| {
+        let fid = egraph.add(SymbolLang::new(false_sym, Children::new()), |_| {
             EClass::Bool(BoolClass::Const(false))
         });
         let res = EUF {
@@ -297,7 +297,7 @@ impl EUF {
             let cid = self.id_for_bool(true);
             self.union(acts, cid, id, just)?;
             let node = self.egraph.id_to_node(id);
-            if node.op == self.eq_sym {
+            if matches!(node.op, Op::Eq) {
                 self.union(acts, node.children[0], node.children[1], just)?;
             }
         }
@@ -332,10 +332,17 @@ impl EUF {
         &mut self,
         sym: Symbol,
         children: Children,
+        fresh_lit: impl FnMut() -> Lit,
+    ) -> (BoolExp, bool, Id) {
+        self.add_bool_node_h(SymbolLang::new(sym, children), fresh_lit)
+    }
+    fn add_bool_node_h(
+        &mut self,
+        s: SymbolLang,
         mut fresh_lit: impl FnMut() -> Lit,
     ) -> (BoolExp, bool, Id) {
         let mut added = None;
-        let id = self.egraph.add(sym, children, |_| {
+        let id = self.egraph.add(s, |_| {
             let lit = fresh_lit();
             added = Some(lit);
             EClass::Bool(BoolClass::Unknown(vec![lit]))
@@ -369,14 +376,11 @@ impl EUF {
         if self.egraph.find(id1) == self.egraph.find(id2) {
             return BoolExp::TRUE;
         }
-        let (res, added, id) =
-            self.add_bool_node(self.eq_sym, Children::from_slice(&[id1, id2]), fresh_lit);
+        let (res, added, id) = self.add_bool_node_h(SymbolLang::new_eq(id1, id2), fresh_lit);
         if added {
-            let eq_self = self
-                .egraph
-                .add(self.eq_sym, Children::from_slice(&[id1, id1]), |_| {
-                    EClass::Bool(BoolClass::Const(true))
-                });
+            let eq_self = self.egraph.add(SymbolLang::new_eq(id1, id1), |_| {
+                EClass::Bool(BoolClass::Const(true))
+            });
             let tid = self.id_for_bool(true);
             self.egraph
                 .union(tid, eq_self, Justification::NOOP, |_, _| {
@@ -393,8 +397,9 @@ impl EUF {
         children: Children,
         sort: Sort,
     ) -> Id {
-        self.egraph
-            .add(sym, children, |_| EClass::Uninterpreted(sort))
+        self.egraph.add(SymbolLang::new(sym, children), |_| {
+            EClass::Uninterpreted(sort)
+        })
     }
 
     pub fn id_for_lit(&mut self, lit: Lit) -> Id {
@@ -424,12 +429,16 @@ impl EUF {
             let mut last_idx = i;
             for (i, x) in iter {
                 if x.op != last_symbol {
-                    buf.indices.insert(last_symbol, last_idx..i);
+                    buf.indices
+                        .insert(last_symbol.sym().unwrap_or(self.eq_sym), last_idx..i);
                     last_idx = i;
                     last_symbol = x.op;
                 }
             }
-            buf.indices.insert(last_symbol, last_idx..buf.data.len());
+            buf.indices.insert(
+                last_symbol.sym().unwrap_or(self.eq_sym),
+                last_idx..buf.data.len(),
+            );
         }
     }
 
@@ -482,7 +491,7 @@ impl EUF {
 
     pub fn clear(&mut self) {
         let bools = [true, false];
-        let bool_syms = bools.map(|b| self.egraph.id_to_node(self.id_for_bool(b)).op);
+        let bools_nodes = bools.map(|b| self.egraph.id_to_node(self.id_for_bool(b)).clone());
         self.base_level = 0;
         self.egraph.clear();
         self.push_log.clear();
@@ -490,10 +499,8 @@ impl EUF {
         self.lit_ids.clear();
         self.prev_len = 0;
         self.bool_class_history.clear();
-        for (b, s) in bools.into_iter().zip(bool_syms) {
-            let id = self
-                .egraph
-                .add(s, Children::new(), |_| EClass::Bool(BoolClass::Const(b)));
+        for (b, node) in bools.into_iter().zip(bools_nodes) {
+            let id = self.egraph.add(node, |_| EClass::Bool(BoolClass::Const(b)));
             self.const_bool_ids[b as usize] = id;
         }
     }

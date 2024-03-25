@@ -2,6 +2,7 @@ use batsat::LSet;
 use egg::raw::{self, semi_persistent1::UndoLog, EGraphResidual, RawEGraph};
 use egg::{Id, Language, Symbol};
 use smallvec::SmallVec;
+use std::mem;
 use std::ops::{Deref, Index};
 
 use crate::explain;
@@ -10,9 +11,31 @@ use crate::explain::{Explain, Justification};
 const N: usize = 4;
 pub type Children = SmallVec<[Id; N]>;
 
+#[derive(Eq, PartialEq, Ord, PartialOrd, Hash, Copy, Clone, Debug)]
+pub enum Op {
+    Eq,
+    Other(Symbol),
+}
+
+impl Op {
+    pub(crate) fn sym(self) -> Option<Symbol> {
+        match self {
+            Op::Eq => None,
+            Op::Other(s) => Some(s),
+        }
+    }
+}
+
+#[test]
+fn test_op_size() {
+    use core::mem::size_of;
+    assert_eq!(size_of::<Op>(), size_of::<Symbol>());
+}
+
 #[derive(Hash, Eq, PartialEq, Debug, Ord, PartialOrd)]
+// Invariant: matches!(self.op, Op::Eq) => self.children.is_sorted()
 pub struct SymbolLang {
-    pub(crate) op: Symbol,
+    pub(crate) op: Op,
     pub(crate) children: Children,
 }
 
@@ -27,7 +50,7 @@ impl Clone for SymbolLang {
 }
 
 impl Language for SymbolLang {
-    type Discriminant = Symbol;
+    type Discriminant = Op;
 
     fn discriminant(&self) -> Self::Discriminant {
         self.op
@@ -42,7 +65,43 @@ impl Language for SymbolLang {
     }
 
     fn children_mut(&mut self) -> &mut [Id] {
-        &mut self.children
+        unreachable!("We are using a hack that requires `children_mut` is never called directly")
+    }
+
+    fn for_each_mut<F: FnMut(&mut Id)>(&mut self, f: F) {
+        self.children.iter_mut().for_each(f);
+        // Ensure that the children of equality nodes are always sorted
+        if matches!(self.op, Op::Eq) {
+            match &mut *self.children {
+                [id1, id2] => {
+                    if *id1 > *id2 {
+                        mem::swap(id1, id2)
+                    }
+                }
+                _ => unreachable!(),
+            }
+        }
+    }
+}
+
+impl SymbolLang {
+    pub(crate) fn new(op: Symbol, children: Children) -> Self {
+        SymbolLang {
+            op: Op::Other(op),
+            children,
+        }
+    }
+
+    pub(crate) fn new_eq(id1: Id, id2: Id) -> Self {
+        let children = if id1 < id2 {
+            Children::from_slice(&[id1, id2])
+        } else {
+            Children::from_slice(&[id2, id1])
+        };
+        SymbolLang {
+            op: Op::Eq,
+            children,
+        }
     }
 }
 
@@ -71,16 +130,11 @@ impl<D> Deref for EGraph<D> {
 }
 
 impl<D> EGraph<D> {
-    pub fn add(
-        &mut self,
-        name: Symbol,
-        children: Children,
-        mut mk_data: impl FnMut(Id) -> D,
-    ) -> Id {
+    pub fn add(&mut self, node: SymbolLang, mut mk_data: impl FnMut(Id) -> D) -> Id {
         RawEGraph::raw_add(
             self,
             |x| &mut x.inner,
-            SymbolLang { op: name, children },
+            node,
             // Note unlike the EGraph in egg we only use explanations for clause learning,
             // so we do not need to distinguish between nodes that are
             // equivalent modulo ground equalities
