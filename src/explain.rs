@@ -33,6 +33,7 @@ mod ejust {
         NoOp,
     }
 }
+use crate::egraph::{Op, SymbolLang};
 use ejust::Justification as EJustification;
 
 impl Justification {
@@ -183,9 +184,7 @@ impl<'a, X> Drop for ExplainState<'a, X> {
     }
 }
 
-impl<'x, L: Language, D>
-    ExplainState<'x, &'x RawEGraph<L, D, egg::raw::semi_persistent1::UndoLog>>
-{
+impl<'x, D> ExplainState<'x, &'x RawEGraph<SymbolLang, D, egg::raw::semi_persistent1::UndoLog>> {
     // Requires `left` != `right`
     // `result.1` is true when the `old_root` from `result.0` corresponds to left
     fn max_assoc_union_gen<S: IdSet>(
@@ -266,15 +265,34 @@ impl<'x, L: Language, D>
         let current_node = self.raw.id_to_node(left);
         let next_node = self.raw.id_to_node(right);
         debug_assert!(current_node.matches(next_node));
-        let left_children = current_node.children().iter().copied();
-        let right_children = next_node.children().iter().copied();
+        if matches!(current_node.op, Op::Eq)
+            && self.raw.find(current_node.children[1]) != self.raw.find(next_node.children[1])
+        {
+            // The children of eq nodes are sorted so the equivalent children might not be in the same positions
+            debug_assert_eq!(
+                self.raw.find(current_node.children[0]),
+                self.raw.find(next_node.children[1])
+            );
+            self.deferred_explanations
+                .push((current_node.children[0], next_node.children[1]));
+            debug_assert_eq!(
+                self.raw.find(current_node.children[1]),
+                self.raw.find(next_node.children[0])
+            );
+            self.deferred_explanations
+                .push((current_node.children[1], next_node.children[0]));
+        } else {
+            let left_children = current_node.children().iter().copied();
+            let right_children = next_node.children().iter().copied();
 
-        self.deferred_explanations
-            .extend(left_children.zip(right_children))
+            self.deferred_explanations
+                .extend(left_children.zip(right_children));
+        }
     }
 
     fn explain_equivalence_h(&mut self, left: Id, right: Id) {
         debug_assert!(self.stack.is_empty());
+        debug_assert_eq!(self.raw.find(left), self.raw.find(right));
         let mut args = (left, right);
         let mut left_congruence = left;
         loop {
