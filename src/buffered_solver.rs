@@ -25,6 +25,13 @@ impl<S: SolverInterface> BufferedSolver<S> {
     pub fn add_clause(&mut self, clause: impl IntoIterator<Item = Lit>) {
         self.buffer.clear();
         self.buffer.extend(clause);
+        self.buffer
+            .extend(self.solver.assumptions().last().map(|x| !*x));
         self.solver.add_clause_reuse(&mut self.buffer);
+    }
+
+    pub fn add_clause_reuse_lv(&mut self, clause: &mut Vec<Lit>) {
+        clause.extend(self.solver.assumptions().last().map(|x| !*x));
+        self.solver.add_clause_reuse(clause);
     }
 }

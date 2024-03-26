@@ -4,7 +4,6 @@ use crate::euf::{FullFunctionInfo, FunctionInfo, SatSolver, EUF};
 use crate::junction::*;
 use crate::sort::{BaseSort, Sort};
 use crate::util::display_debug;
-use batsat::intmap::AsIndex;
 use batsat::{lbool, Lit, SolverInterface, Var};
 use egg::{Id, Symbol};
 use either::Either;
@@ -252,7 +251,7 @@ impl Solver {
             *lit = *lit ^ is_and;
         }
         exps.push(Lit::new(fresh, is_and));
-        self.sat.add_clause_reuse(exps);
+        self.sat.add_clause_reuse_lv(exps);
         res
     }
 
@@ -467,9 +466,9 @@ impl Solver {
 
         self.rebuild();
 
-        self.euf
-            .reserve(Var::from_index(self.sat.num_vars() as usize));
-        self.sat.push();
+        let var = self.sat.new_var(lbool::UNDEF, false);
+        self.euf.reserve(var);
+        self.sat.assumptions_mut().push(Lit::new(var, true));
 
         if self.sat.is_ok() {
             self.euf.smt_push();
@@ -480,9 +479,14 @@ impl Solver {
         if n > self.euf.smt_push_level() {
             self.clear();
         } else if n > 0 {
-            self.sat.pop(n as u32);
+            let new_level = self.sat.assumptions().len() - n;
+            let old_num_vars = self.sat.assumptions()[new_level].var().idx();
+            for v in (old_num_vars..self.sat.num_vars()).map(Var::unsafe_from_idx) {
+                self.sat.set_decision_var(v, false);
+            }
+            self.sat.assumptions_mut().truncate(new_level);
             if self.sat.is_ok() {
-                self.euf.smt_pop_to(self.sat.assertion_level() as usize);
+                self.euf.smt_pop_to(new_level);
             }
         }
     }
