@@ -80,7 +80,7 @@ dependencies = [
 [[package]]
 name = "batsat"
 version = "0.5.0"
-source = "git+https://github.com/dewert99/batsat?branch=assertion-level#6491f044927a896f7df5672f5ab1a6dd6d129cde"
+source = "git+https://github.com/dewert99/batsat?branch=assumption-access#d8e4a4c42ffc38dc898fcce41064eb8ee8929f2c"
 dependencies = [
  "bit-vec",
  "log",
