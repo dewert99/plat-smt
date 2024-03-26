@@ -13,7 +13,7 @@ use std::cmp::max;
 use std::mem;
 use std::ops::Range;
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Eq, PartialEq)]
 pub(crate) enum BoolClass {
     Const(bool),
     Unknown(Vec<Lit>),
@@ -28,7 +28,7 @@ impl BoolClass {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Eq, PartialEq)]
 pub(crate) enum EClass {
     Uninterpreted(Sort),
     Bool(BoolClass),
@@ -51,13 +51,13 @@ impl BoolClass {
     fn split(&mut self, info: MergeInfo) -> BoolClass {
         match (&mut *self, info) {
             (BoolClass::Const(_), MergeInfo::Both(b)) => BoolClass::Const(b),
-            (BoolClass::Const(_), MergeInfo::Left(lits)) => BoolClass::Unknown(lits),
+            (BoolClass::Const(_), MergeInfo::LeftOrNeither(lits)) => BoolClass::Unknown(lits),
             (BoolClass::Const(b), MergeInfo::Right(lits)) => {
                 let res = BoolClass::Const(*b);
                 *self = BoolClass::Unknown(lits);
                 res
             }
-            (BoolClass::Unknown(lits), MergeInfo::Neither(rlits)) => {
+            (BoolClass::Unknown(lits), MergeInfo::LeftOrNeither(rlits)) => {
                 lits.truncate(lits.len() - rlits.len());
                 BoolClass::Unknown(rlits)
             }
@@ -69,9 +69,8 @@ impl BoolClass {
 #[derive(Debug)]
 enum MergeInfo {
     Both(bool),
-    Left(Vec<Lit>),
+    LeftOrNeither(Vec<Lit>),
     Right(Vec<Lit>),
-    Neither(Vec<Lit>),
 }
 
 #[derive(Debug, Clone)]
@@ -240,7 +239,7 @@ impl<'a, S: 'a + SatSolver> MergeContext<'a, S> {
             }
             (BoolClass::Const(b), BoolClass::Unknown(lits)) => {
                 self.propagate(&lits, *b);
-                MergeInfo::Left(lits)
+                MergeInfo::LeftOrNeither(lits)
             }
             (BoolClass::Unknown(lits), BoolClass::Const(b)) => {
                 self.propagate(&lits, b);
@@ -250,7 +249,7 @@ impl<'a, S: 'a + SatSolver> MergeContext<'a, S> {
             }
             (BoolClass::Unknown(lits1), BoolClass::Unknown(lits2)) => {
                 lits1.extend(&lits2);
-                MergeInfo::Neither(lits2)
+                MergeInfo::LeftOrNeither(lits2)
             }
         };
         self.history.push(info);
@@ -417,6 +416,20 @@ impl EUF {
             self.egraph
                 .union(tid, eq_self, Justification::NOOP, |_, _| {
                     self.bool_class_history.push(MergeInfo::Both(true))
+                });
+            // add with dummy eclass
+            let sym_id = self
+                .egraph
+                .add(self.eq_sym, Children::from_slice(&[id2, id1]), |_| {
+                    EClass::Bool(BoolClass::Unknown(vec![]))
+                });
+            self.egraph
+                .union(id, sym_id, Justification::NOOP, |_, sym_class| {
+                    // assert we are merging in the dummy eclass we just created
+                    debug_assert_eq!(sym_class, EClass::Bool(BoolClass::Unknown(vec![])));
+                    // keep merge info in sync
+                    self.bool_class_history
+                        .push(MergeInfo::LeftOrNeither(vec![]));
                 })
         }
         debug!("{res:?} is defined as (= id{id1:?} id{id2:?}) and given id{id:?}");

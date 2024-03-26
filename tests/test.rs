@@ -105,7 +105,7 @@ fn test_sequential_reset_clear() {
 
 #[test]
 fn test_sequential_push_pop() {
-    test_sequential("(push)", "(pop) (push)", true)
+    test_sequential("(push)", "(pop) (push)", false)
 }
 
 #[cfg(not(debug_assertions))]
