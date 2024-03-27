@@ -123,7 +123,8 @@ fn test_smtlib_benchmarks() {
         if path.extension() == Some("smt2".as_ref()) {
             use std::io::Write;
             writeln!(stderr(), "Testing file {:?}", path).unwrap();
-            let z3_child = Command::new("z3")
+            let z3_child = Command::new("./yices-smt2")
+                .arg("--incremental")
                 .arg(path)
                 .stdout(Stdio::piped())
                 .spawn()
