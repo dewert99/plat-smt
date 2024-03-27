@@ -345,6 +345,13 @@ impl Solver {
         }
     }
 
+    /// Assert that no pair of `Id`s from `ids` are equal to each other
+    pub fn assert_distinct(&mut self, ids: impl IntoIterator<Item = Id>) {
+        if let Err(()) = self.euf.make_distinct(ids) {
+            self.sat.add_clause([]);
+        }
+    }
+
     /// Produce an expression representing that is equivalent to `t` if `i` is true or `e` otherwise
     ///
     /// If `t` and `e` have different sorts returns an error containing both sorts

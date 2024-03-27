@@ -32,6 +32,9 @@ impl BoolClass {
 pub(crate) enum EClass {
     Uninterpreted(Sort),
     Bool(BoolClass),
+    /// EClass that creates a conflict whenever it is merged
+    /// Not used for top level expressions, but used to implement `distinct`
+    Singleton,
 }
 
 impl EClass {
@@ -39,6 +42,7 @@ impl EClass {
         match self {
             EClass::Bool(b) => b.to_exp().into(),
             EClass::Uninterpreted(s) => UExp { id, sort: *s }.into(),
+            EClass::Singleton => unreachable!(),
         }
     }
 }
@@ -95,6 +99,7 @@ pub struct EUF {
     const_bool_ids: [Id; 2],
     eq_sym: Symbol,
     prev_len: usize,
+    distinct_gensym: u32,
 }
 
 impl Default for EUF {
@@ -122,6 +127,7 @@ impl Default for EUF {
             assertion_level: 0,
             sat_level: 0,
             assertion_level_lit: Lit::UNDEF,
+            distinct_gensym: 0,
         };
         debug_assert_eq!(tid, res.id_for_bool(true));
         debug!("id{tid:?} is true");
@@ -212,7 +218,8 @@ impl<'a> SatSolver for TheoryArg<'a> {
 struct MergeContext<'a, S: SatSolver> {
     acts: &'a mut S,
     history: &'a mut Vec<MergeInfo>,
-    conflict: &'a mut bool,
+    const_ids: [Id; 2],
+    conflict: &'a mut Option<[Id; 2]>,
 }
 
 impl<'a, S: 'a + SatSolver> MergeContext<'a, S> {
@@ -227,7 +234,7 @@ impl<'a, S: 'a + SatSolver> MergeContext<'a, S> {
         let info = match (&mut *lbool, rbool) {
             (BoolClass::Const(b1), BoolClass::Const(b2)) => {
                 if *b1 != b2 {
-                    *self.conflict = true
+                    *self.conflict = Some(self.const_ids)
                 }
                 MergeInfo::Both(b2)
             }
@@ -249,10 +256,11 @@ impl<'a, S: 'a + SatSolver> MergeContext<'a, S> {
         self.history.push(info);
     }
 
-    fn merge_fn(mut self) -> impl FnMut(&mut EClass, EClass) + Bind<&'a S> {
+    fn merge_fn(mut self, id1: Id, id2: Id) -> impl FnMut(&mut EClass, EClass) + Bind<&'a S> {
         move |lclass, rclass| match (lclass, rclass) {
             (EClass::Uninterpreted(sort), EClass::Uninterpreted(sort2)) if *sort == sort2 => {}
             (EClass::Bool(lbool), EClass::Bool(rbool)) => self.merge_bools(lbool, rbool),
+            (EClass::Singleton, EClass::Singleton) => *self.conflict = Some([id1, id2]),
             (l, r) => unreachable!("merging eclasses with different sorts {:?} {:?}", l, r),
         }
     }
@@ -273,11 +281,9 @@ impl EUF {
         self.explanation.as_slice()
     }
 
-    fn tf_conflict(&mut self, acts: &mut impl SatSolver) {
+    fn conflict(&mut self, acts: &mut impl SatSolver, id1: Id, id2: Id) {
         self.explanation.clear();
-        let fid = self.id_for_bool(false);
-        let tid = self.id_for_bool(true);
-        let res = self.explain(fid, tid, true);
+        let res = self.explain(id1, id2, true);
         debug!("EUF Conflict by {res:?}");
         acts.raise_conflict(res, true)
     }
@@ -298,18 +304,20 @@ impl EUF {
         just: Justification,
     ) -> Result {
         debug!("EUF union id{id1:?} with id{id2:?} by {just:?}");
-        let mut conflict = false;
+        let mut conflict = None;
         let ctx = MergeContext {
             acts,
             history: &mut self.bool_class_history,
+            const_ids: self.const_bool_ids,
             conflict: &mut conflict,
         };
-        self.egraph.union(id1, id2, just, ctx.merge_fn());
+        self.egraph.union(id1, id2, just, ctx.merge_fn(id1, id2));
         if !acts.is_ok() {
             return Err(());
         }
-        if conflict {
-            self.tf_conflict(acts);
+
+        if let Some([id1, id2]) = conflict {
+            self.conflict(acts, id1, id2);
             return Err(());
         }
         return Ok(());
@@ -382,6 +390,7 @@ impl EUF {
                     unreachable!("merging eclasses with different sorts {}, Bool", x)
                 }
                 EClass::Bool(b) => b.to_exp(),
+                _ => unreachable!(),
             };
             (b, false, id)
         }
@@ -422,6 +431,22 @@ impl EUF {
     ) -> Id {
         self.egraph
             .add(sym, children, |_| EClass::Uninterpreted(sort))
+    }
+
+    pub(crate) fn make_distinct(&mut self, ids: impl IntoIterator<Item = Id>) -> Result {
+        let s = Symbol::new(format!("distinct|{}", self.distinct_gensym));
+        self.distinct_gensym += 1;
+        for id in ids {
+            let mut added = false;
+            self.egraph.add(s, Children::from_slice(&[id]), |_| {
+                added = true;
+                EClass::Singleton
+            });
+            if !added {
+                return Err(());
+            }
+        }
+        Ok(())
     }
 
     pub fn id_for_lit(&mut self, lit: Lit) -> Id {
@@ -471,7 +496,7 @@ impl EUF {
     /// Returns false when `self` has been popped below the assertion level
     /// In this case `self` will not produce any propagations or conflicts
     fn is_active(&self) -> bool {
-        self.sat_level as u32 >= self.assertion_level
+        self.sat_level >= self.assertion_level
     }
 
     fn raw_push(&mut self) {
@@ -500,6 +525,7 @@ impl EUF {
             EClass::Bool(class) => {
                 EClass::Bool(class.split(self.bool_class_history.pop().unwrap()))
             }
+            EClass::Singleton => EClass::Singleton,
         });
         trace!("\n{:?}", self.egraph.dump_uncanonical());
     }
