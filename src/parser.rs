@@ -399,8 +399,8 @@ impl ExpParser for BaseExpParser {
 }
 
 struct AssertExpParser {
-    // assert (exp ^ self.polarity)
-    polarity: bool,
+    // assert (exp ^ self.negate)
+    negate: bool,
 }
 
 impl ExpParser for AssertExpParser {
@@ -418,13 +418,13 @@ impl ExpParser for AssertExpParser {
         f: ExpKind,
         mut rest: CountingParser<R>,
     ) -> Result<Self::Out> {
-        match (f, self.polarity) {
-            (ExpKind::And, pol @ false) | (ExpKind::Or, pol @ true) => {
-                rest.map_full(|token| p.parse_assert(token?, pol))
+        match (f, self.negate) {
+            (ExpKind::And, neg @ false) | (ExpKind::Or, neg @ true) => {
+                rest.map_full(|token| p.parse_assert(token?, neg))
                     .collect::<Result<()>>()?;
             }
-            (ExpKind::Not, pol) => {
-                p.parse_assert(rest.next_full()?, !pol)?;
+            (ExpKind::Not, neg) => {
+                p.parse_assert(rest.next_full()?, !neg)?;
             }
             (ExpKind::Eq, false) => {
                 let exp1 = p.parse_exp(rest.next()?)?;
@@ -435,11 +435,11 @@ impl ExpParser for AssertExpParser {
                 })
                 .collect::<Result<()>>()?;
             }
-            (_, pol) => {
+            (_, neg) => {
                 let exp = BaseExpParser.parse(p, f, rest)?;
                 match exp.as_bool() {
                     None => return Ok(Err(p.core.sort(exp))),
-                    Some(b) => p.core.assert(b ^ pol),
+                    Some(b) => p.core.assert(b ^ neg),
                 }
             }
         };
@@ -529,13 +529,13 @@ impl<W: Write> Parser<W> {
         })
     }
 
-    // assert token ^ polarity
+    // assert token ^ negate
     fn parse_assert<R: FullBufRead>(
         &mut self,
         (token, arg_n, f): InfoToken<R>,
-        polarity: bool,
+        negate: bool,
     ) -> Result<()> {
-        let exp = self.parse_exp_gen(token, &AssertExpParser { polarity })?;
+        let exp = self.parse_exp_gen(token, &AssertExpParser { negate })?;
         exp.map_err(|actual| SortMismatch {
             f,
             arg_n,
