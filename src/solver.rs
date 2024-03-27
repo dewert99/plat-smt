@@ -433,50 +433,34 @@ impl Solver {
         self.sat.pop_model(&mut self.euf);
     }
 
-    /// Rebuild underlying egraph
-    fn rebuild(&mut self) {
-        if self.sat.is_ok() {
-            let _ = self.euf.rebuild(&mut AssertNoProp);
-        }
-    }
-
     pub fn push(&mut self) {
         // The implementation of push/pop is somewhat unexpected
         //
-        // We call push on the sat solver, but it is implemented by adding an implicit assumption
-        // to future check-sat calls, and making future clauses implicitly depend on this assumption
-        // It crucially doesn't increase the decision level of the solver and expects the theory,
-        // in this case EUF, to stay at the same level as well. To work around this EUF keeps track
-        // of a base level and "pretends" that this is level 0 when implementing Theory. Because of
-        // this "pretending" any propagations made at the base level/decision level 0 are treated
-        // as if they are always true independent of the assertion level. In other words the levels
-        // below the base level can only be used to store terms from each assertion-level but not
-        // equalities. This is also the reason there no `assert_eq` method.
-        //
-        // The root cause of all of this is that batsat uses non-chronological backtracking, so it
-        // may backtrack to level 0 while running (check-sat) after a (push), and try to ask EUF
-        // for propagations that are independent of the assertions that came after that push.
-        //
-        // An alternative implementation may be EUF be more honest about its level but suppress
-        // calls to go below its base level (the smt assertion level), and instead enter a shadow
-        // state where it ignores calls to partial_check (final_check should be impossible) until it
-        // is asked to go back above its base level. This approach would also need to deal with
-        // https://github.com/c-cube/batsat/issues/16, possibly by adding extra literals to
-        // explanations.
-
-        self.rebuild();
+        // Since `batsat` uses non-chronological backtracking in can try to get EUF to pop to earlier
+        // assertion levels during a check-sat. To work around this EUF keeps track of the
+        // assertion level, and suppresses calls from `batsat` that would have it pop too far.
+        // Instead, it enters a state where it doesn't make any propagations or raise any conflicts,
+        // since it has access to information `batsat` assumes it shouldn't have access to yet.
+        // Since `batsat` requires proportions to be made as soon as possible
+        // (https://github.com/c-cube/batsat/issues/16), EUF always includes a literal representing
+        // the current assertion level to its explanations, which makes them appear as though the
+        // proportions couldn't have happened any sooner.
 
         let var = self.sat.new_var(lbool::UNDEF, false);
         self.euf.reserve(var);
         self.sat.assumptions_mut().push(Lit::new(var, true));
-
-        if self.sat.is_ok() {
-            self.euf.smt_push();
-        }
+        // Run propagations at this level and then return Unsat because of the assumptions
+        let res =
+            self.check_sat_assuming_preserving_trail(&Junction::from_iter([BoolExp::Unknown(
+                Lit::new(var, false),
+            )]));
+        debug_assert!(matches!(res, SolveResult::Unsat));
+        self.euf.smt_push(Lit::new(var, true));
+        self.pop_model()
     }
 
     pub fn pop(&mut self, n: usize) {
-        if n > self.euf.smt_push_level() {
+        if n > self.euf.assertion_level() {
             self.clear();
         } else if n > 0 {
             let new_level = self.sat.assumptions().len() - n;
@@ -485,9 +469,8 @@ impl Solver {
                 self.sat.set_decision_var(v, false);
             }
             self.sat.assumptions_mut().truncate(new_level);
-            if self.sat.is_ok() {
-                self.euf.smt_pop_to(new_level);
-            }
+            self.euf
+                .smt_pop_to(new_level, self.sat.assumptions().last().copied());
         }
     }
 
