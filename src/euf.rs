@@ -9,6 +9,7 @@ use egg::{Id, Language, Symbol};
 use hashbrown::HashMap;
 use log::{debug, trace};
 use perfect_derive::perfect_derive;
+use std::cmp::max;
 use std::mem;
 use std::ops::Range;
 
@@ -83,7 +84,12 @@ pub struct EUF {
     push_log: Vec<PushInfo>,
     lit_id_log: Vec<Lit>,
     // push level from smt level push/pop
-    base_level: usize,
+    assertion_level: u32,
+    // decision level of the sat solver
+    sat_level: u32,
+    // a literal representing the current assertion level that will be included in all explanations
+    // or Lit::UNDEF at level 0
+    pub(crate) assertion_level_lit: Lit,
     explanation: LSet,
     lit_ids: LMap<Option<Id>>,
     const_bool_ids: [Id; 2],
@@ -113,7 +119,9 @@ impl Default for EUF {
             const_bool_ids: [fid, tid],
             eq_sym,
             prev_len: 0,
-            base_level: 0,
+            assertion_level: 0,
+            sat_level: 0,
+            assertion_level_lit: Lit::UNDEF,
         };
         debug_assert_eq!(tid, res.id_for_bool(true));
         debug!("id{tid:?} is true");
@@ -132,43 +140,50 @@ impl Theory for EUF {
     }
 
     fn create_level(&mut self) {
-        self.raw_push()
+        if self.is_active() {
+            self.raw_push();
+        } else {
+            self.push_log[self.sat_level as usize].prev_len = self.prev_len;
+        }
+        self.sat_level += 1;
     }
 
     fn pop_levels(&mut self, n: usize) {
-        self.raw_pop_to(self.push_log.len() - n);
+        let target_sat_level = self.n_levels() - n;
+        self.sat_level = target_sat_level as u32;
+        self.prev_len = self.push_log[target_sat_level].prev_len;
+        let target_level = max(self.assertion_level as usize, target_sat_level);
+        self.raw_pop_to(target_level);
     }
 
     fn n_levels(&self) -> usize {
-        self.push_log.len() - self.base_level
+        self.sat_level as usize
     }
 
     fn partial_check(&mut self, acts: &mut TheoryArg) {
-        let _ = self.partial_check_r(acts);
+        if self.is_active() {
+            let _ = self.partial_check_r(acts);
+        }
     }
 
     fn explain_propagation(&mut self, p: Lit) -> &[Lit] {
-        self.explanation.clear();
         if let Some(id) = self.lit_ids[p] {
             let const_bool = self.id_for_bool(true);
             if self.egraph.find(id) == self.egraph.find(const_bool) {
-                self.egraph
-                    .explain_equivalence(id, const_bool, &mut self.explanation, false);
-                if self.explanation.as_slice() != &[p] {
-                    debug!("EUF explains {:?} by {:?}", p, self.explanation.as_slice());
-                    return self.explanation.as_slice();
+                let res = self.explain(id, const_bool, false);
+                if !res.contains(&p) {
+                    debug!("EUF explains {p:?} by {res:?}");
+                    return &self.explanation;
                 } else {
-                    self.explanation.clear();
                     trace!("Skipping incorrect explanation");
                 }
             }
         }
         if let Some(id) = self.lit_ids[!p] {
             let const_bool = self.id_for_bool(false);
-            self.egraph
-                .explain_equivalence(id, const_bool, &mut self.explanation, false);
-            debug!("EUF explains {:?} by {:?}", p, self.explanation.as_slice());
-            return self.explanation.as_slice();
+            let res = self.explain(id, const_bool, false);
+            debug!("EUF explains {p:?} by {res:?}");
+            return res;
         }
         unreachable!()
     }
@@ -247,15 +262,26 @@ impl EUF {
     pub(crate) fn find(&self, id: Id) -> Id {
         self.egraph.find(id)
     }
+
+    fn explain(&mut self, id1: Id, id2: Id, negate: bool) -> &[Lit] {
+        self.explanation.clear();
+        if self.assertion_level_lit != Lit::UNDEF {
+            self.explanation.insert(self.assertion_level_lit ^ negate);
+        }
+        self.egraph
+            .explain_equivalence(id1, id2, &mut self.explanation, negate);
+        self.explanation.as_slice()
+    }
+
     fn tf_conflict(&mut self, acts: &mut impl SatSolver) {
         self.explanation.clear();
         let fid = self.id_for_bool(false);
         let tid = self.id_for_bool(true);
-        self.egraph
-            .explain_equivalence(fid, tid, &mut self.explanation, true);
-        debug!("EUF Conflict by {:?}", self.explanation.as_slice());
-        acts.raise_conflict(&self.explanation, true)
+        let res = self.explain(fid, tid, true);
+        debug!("EUF Conflict by {res:?}");
+        acts.raise_conflict(res, true)
     }
+
     pub(crate) fn rebuild(&mut self, acts: &mut impl SatSolver) -> Result {
         EGraph::try_rebuild(
             self,
@@ -263,6 +289,7 @@ impl EUF {
             |this, id1, id2| this.union(acts, id1, id2, Justification::CONGRUENCE),
         )
     }
+
     pub(crate) fn union(
         &mut self,
         acts: &mut impl SatSolver,
@@ -437,8 +464,14 @@ impl EUF {
         self.egraph[id].to_exp(id)
     }
 
-    pub fn smt_push_level(&self) -> usize {
-        self.base_level
+    pub fn assertion_level(&self) -> usize {
+        self.assertion_level as usize
+    }
+
+    /// Returns false when `self` has been popped below the assertion level
+    /// In this case `self` will not produce any propagations or conflicts
+    fn is_active(&self) -> bool {
+        self.sat_level as u32 >= self.assertion_level
     }
 
     fn raw_push(&mut self) {
@@ -453,10 +486,12 @@ impl EUF {
 
     fn raw_pop_to(&mut self, target_level: usize) {
         debug!("Pop to level {target_level}");
+        if target_level >= self.push_log.len() {
+            return;
+        }
 
         let info = self.push_log[target_level].clone();
         self.push_log.truncate(target_level);
-        self.prev_len = info.prev_len;
         for lit in self.lit_id_log.drain(info.lit_log_len..) {
             self.lit_ids[lit] = None
         }
@@ -469,21 +504,24 @@ impl EUF {
         trace!("\n{:?}", self.egraph.dump_uncanonical());
     }
 
-    pub fn smt_push(&mut self) {
-        self.base_level += 1;
-        self.raw_push();
+    pub fn smt_push(&mut self, level_lit: Lit) {
+        self.assertion_level += 1;
+        self.assertion_level_lit = level_lit;
     }
 
-    pub fn smt_pop_to(&mut self, target_level: usize) {
+    pub fn smt_pop_to(&mut self, target_level: usize, level_lit: Option<Lit>) {
         debug_assert_eq!(self.n_levels(), 0);
-        self.base_level = target_level;
-        self.raw_pop_to(target_level)
+        if target_level < self.push_log.len() {
+            self.raw_pop_to(target_level);
+        }
+        self.assertion_level = target_level as u32;
+        self.assertion_level_lit = level_lit.unwrap_or(Lit::UNDEF);
     }
 
     pub fn clear(&mut self) {
         let bools = [true, false];
         let bool_syms = bools.map(|b| self.egraph.id_to_node(self.id_for_bool(b)).op);
-        self.base_level = 0;
+        self.assertion_level = 0;
         self.egraph.clear();
         self.push_log.clear();
         self.lit_id_log.clear();
