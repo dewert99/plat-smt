@@ -1,6 +1,7 @@
 use crate::buffered_solver::BufferedSolver;
 use crate::egraph::Children;
 use crate::euf::{FullFunctionInfo, FunctionInfo, SatSolver, EUF};
+use crate::explain::Justification;
 use crate::junction::*;
 use crate::sort::{BaseSort, Sort};
 use crate::util::display_debug;
@@ -11,12 +12,14 @@ use hashbrown::HashMap;
 use log::debug;
 use std::borrow::BorrowMut;
 use std::fmt::{Debug, Display, Formatter};
-use std::ops::{BitXor, Not};
+use std::ops::{BitXor, Deref, Not};
+
 /// The main solver structure including the sat solver and egraph.
 ///
 /// It allows constructing and asserting expressions [`Exp`] within the solver
 pub struct Solver {
     euf: EUF,
+    pending_equalities: Vec<(Id, Id)>,
     sat: BufferedSolver<batsat::BasicSolver>,
     function_info_buf: FunctionInfo,
     bool_sort: Sort,
@@ -26,6 +29,7 @@ impl Default for Solver {
     fn default() -> Self {
         Solver {
             euf: Default::default(),
+            pending_equalities: vec![],
             sat: Default::default(),
             function_info_buf: Default::default(),
             bool_sort: Sort::new(BaseSort {
@@ -203,18 +207,18 @@ pub enum SolveResult {
     Unknown,
 }
 
-struct AssertNoProp;
-impl SatSolver for AssertNoProp {
+impl SatSolver for BufferedSolver<batsat::BasicSolver> {
     fn is_ok(&self) -> bool {
-        true
+        self.deref().is_ok()
     }
 
-    fn propagate(&mut self, _: Lit) -> bool {
-        unreachable!()
+    fn propagate(&mut self, l: Lit) -> bool {
+        self.add_clause([l]);
+        self.is_ok()
     }
 
     fn raise_conflict(&mut self, _: &[Lit], _: bool) {
-        unreachable!()
+        self.add_clause([])
     }
 }
 
@@ -312,6 +316,10 @@ impl Solver {
         res
     }
 
+    pub(crate) fn assert_raw_eq(&mut self, id1: Id, id2: Id) {
+        self.pending_equalities.push((id1, id2));
+    }
+
     /// Produce a boolean expression representing the equality of the two expressions
     ///
     /// If the two expressions have different sorts returns an error containing both sorts
@@ -322,6 +330,18 @@ impl Solver {
             Err((sort1, sort2))
         } else {
             Ok(self.raw_eq(id1, id2))
+        }
+    }
+
+    /// Equivalent to `self.`[`assert`](Self::assert)`(self.`[`eq`](Self::eq)`(exp1, exp2)?)` but
+    /// more efficient
+    pub fn assert_eq(&mut self, exp1: Exp, exp2: Exp) -> Result<(), (Sort, Sort)> {
+        let (id1, sort1) = self.id_sort(exp1);
+        let (id2, sort2) = self.id_sort(exp2);
+        if sort1 != sort2 {
+            Err((sort1, sort2))
+        } else {
+            Ok(self.assert_raw_eq(id1, id2))
         }
     }
 
@@ -400,6 +420,14 @@ impl Solver {
         }
     }
 
+    fn flush_pending(&mut self) {
+        let _ = self.pending_equalities.iter().try_for_each(|(id1, id2)| {
+            self.euf
+                .union(&mut self.sat, *id1, *id2, Justification::NOOP)
+        });
+        self.pending_equalities.clear();
+    }
+
     /// Check if the current assertions are satisfiable
     pub fn check_sat(&mut self) -> SolveResult {
         self.check_sat_assuming(&Default::default())
@@ -408,6 +436,7 @@ impl Solver {
     /// Check if the current assertions combined with the assertions in `c` are satisfiable
     /// Leave the solver in a state representing the model
     pub fn check_sat_assuming_preserving_trail(&mut self, c: &Conjunction) -> SolveResult {
+        self.flush_pending();
         let res = match &c.0 {
             Err(_) => lbool::FALSE,
             Ok(x) => self
@@ -455,7 +484,7 @@ impl Solver {
         // (https://github.com/c-cube/batsat/issues/16), EUF always includes a literal representing
         // the current assertion level to its explanations, which makes them appear as though the
         // proportions couldn't have happened any sooner.
-
+        self.flush_pending();
         let var = self.sat.new_var(lbool::UNDEF, false);
         self.euf.reserve(var);
         self.sat.assumptions_mut().push(Lit::new(var, true));

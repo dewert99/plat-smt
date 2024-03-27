@@ -426,6 +426,15 @@ impl ExpParser for AssertExpParser {
             (ExpKind::Not, pol) => {
                 p.parse_assert(rest.next_full()?, !pol)?;
             }
+            (ExpKind::Eq, false) => {
+                let exp1 = p.parse_exp(rest.next()?)?;
+                let (id1, sort1) = p.core.id_sort(exp1);
+                rest.map_full(|x| {
+                    let id2 = p.parse_id(x?, sort1)?;
+                    Ok(p.core.assert_raw_eq(id1, id2))
+                })
+                .collect::<Result<()>>()?;
+            }
             (_, pol) => {
                 let exp = BaseExpParser.parse(p, f, rest)?;
                 match exp.as_bool() {
