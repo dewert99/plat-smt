@@ -1,0 +1,7 @@
+sat
+(
+ (define-fun a () D D!val!2)
+ (define-fun b () D D!val!3)
+ (define-fun c () D D!val!2)
+)
+unsat

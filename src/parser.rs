@@ -435,6 +435,16 @@ impl ExpParser for AssertExpParser {
                 })
                 .collect::<Result<()>>()?;
             }
+            (ExpKind::Distinct, false) => {
+                let exp1 = p.parse_exp(rest.next()?)?;
+                let (id1, sort1) = p.core.id_sort(exp1);
+                let iter = rest.map_full(|x| p.parse_id(x?, sort1));
+                let ids = [Ok(id1)]
+                    .into_iter()
+                    .chain(iter)
+                    .collect::<Result<Vec<Id>>>()?;
+                p.core.assert_distinct(ids)
+            }
             (_, neg) => {
                 let exp = BaseExpParser.parse(p, f, rest)?;
                 match exp.as_bool() {
