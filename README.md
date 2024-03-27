@@ -27,3 +27,6 @@ The binary (produced by `cargo build`) takes in a list of `.smt2` files
 and evaluates sequentially as if they were a single concatenated file.
 This list can optionally be followed by `-i` which enters interactive mode
 after the files are evaluated
+
+## Misc
+The `yices-smt2` file is from `https://yices.csl.sri.com/` and is only included for testing
