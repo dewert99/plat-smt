@@ -9,6 +9,7 @@ mod parser;
 pub mod parser_core;
 mod solver;
 mod sort;
+mod theory;
 mod util;
 
 #[doc(inline)]
