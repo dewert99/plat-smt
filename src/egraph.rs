@@ -142,10 +142,6 @@ impl<D> EGraph<D> {
             .promote(&self.inner, res, negate)
             .explain_equivalence(id1, id2)
     }
-
-    pub fn is_clean(&self) -> bool {
-        self.inner.is_clean()
-    }
 }
 
 impl<D> Index<Id> for EGraph<D> {

@@ -123,7 +123,7 @@ fn test_smtlib_benchmarks() {
         if path.extension() == Some("smt2".as_ref()) {
             use std::io::Write;
             writeln!(stderr(), "Testing file {:?}", path).unwrap();
-            let z3_child = Command::new("./yices-smt2")
+            let yices_child = Command::new("./yices-smt2")
                 .arg("--incremental")
                 .arg(path)
                 .stdout(Stdio::piped())
@@ -134,8 +134,11 @@ fn test_smtlib_benchmarks() {
                 .read_to_end(&mut file_buf)
                 .unwrap();
             interp_smt2(&file_buf, &mut out, stderr());
-            let z3_out = z3_child.wait_with_output().unwrap();
-            assert_eq!(from_utf8(&out).unwrap(), from_utf8(&z3_out.stdout).unwrap());
+            let yices_out = yices_child.wait_with_output().unwrap();
+            assert_eq!(
+                from_utf8(&out).unwrap(),
+                from_utf8(&yices_out.stdout).unwrap()
+            );
             file_buf.clear();
             out.clear();
         }

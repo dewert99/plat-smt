@@ -2,14 +2,14 @@ use crate::egraph::{Children, EGraph, PushInfo as EGPushInfo, SymbolLang};
 use crate::explain::Justification;
 use crate::solver::{BoolExp, Exp, UExp};
 use crate::sort::Sort;
+use crate::theory::Theory;
 use crate::util::{Bind, DebugIter};
 use batsat::{LMap, LSet};
-use batsat::{Lit, Theory, TheoryArg, Var};
+use batsat::{Lit, TheoryArg, Var};
 use egg::{Id, Language, Symbol};
 use hashbrown::HashMap;
 use log::{debug, trace};
 use perfect_derive::perfect_derive;
-use std::cmp::max;
 use std::mem;
 use std::ops::Range;
 
@@ -75,30 +75,21 @@ enum MergeInfo {
 }
 
 #[derive(Debug, Clone)]
-struct PushInfo {
+pub struct PushInfo {
     egraph: EGPushInfo,
-    prev_len: usize,
-    lit_log_len: usize,
+    lit_log_len: u32,
 }
 
 #[derive(Debug)]
 pub struct EUF {
     egraph: EGraph<EClass>,
     bool_class_history: Vec<MergeInfo>,
-    push_log: Vec<PushInfo>,
     lit_id_log: Vec<Lit>,
-    // push level from smt level push/pop
-    assertion_level: u32,
-    // decision level of the sat solver
-    sat_level: u32,
-    // a literal representing the current assertion level that will be included in all explanations
-    // or Lit::UNDEF at level 0
-    pub(crate) assertion_level_lit: Lit,
+    assertion_level_lit: Lit,
     explanation: LSet,
     lit_ids: LMap<Option<Id>>,
     const_bool_ids: [Id; 2],
     eq_sym: Symbol,
-    prev_len: usize,
     distinct_gensym: u32,
 }
 
@@ -117,15 +108,11 @@ impl Default for EUF {
         let res = EUF {
             egraph,
             bool_class_history: vec![],
-            push_log: vec![],
             explanation: Default::default(),
             lit_id_log: vec![],
             lit_ids: Default::default(),
             const_bool_ids: [fid, tid],
             eq_sym,
-            prev_len: 0,
-            assertion_level: 0,
-            sat_level: 0,
             assertion_level_lit: Lit::UNDEF,
             distinct_gensym: 0,
         };
@@ -140,36 +127,54 @@ impl Default for EUF {
 type Result = core::result::Result<(), ()>;
 
 impl Theory for EUF {
-    fn final_check(&mut self, acts: &mut TheoryArg) {
-        let _ = self.partial_check_r(acts);
-        debug_assert!(self.egraph.is_clean())
-    }
+    type LevelMarker = PushInfo;
 
-    fn create_level(&mut self) {
-        if self.is_active() {
-            self.raw_push();
-        } else {
-            self.push_log[self.sat_level as usize].prev_len = self.prev_len;
+    fn create_level(&mut self) -> PushInfo {
+        debug!("Push");
+        PushInfo {
+            egraph: self.egraph.push(),
+            lit_log_len: self.lit_id_log.len() as u32,
         }
-        self.sat_level += 1;
     }
 
-    fn pop_levels(&mut self, n: usize) {
-        let target_sat_level = self.n_levels() - n;
-        self.sat_level = target_sat_level as u32;
-        self.prev_len = self.push_log[target_sat_level].prev_len;
-        let target_level = max(self.assertion_level as usize, target_sat_level);
-        self.raw_pop_to(target_level);
-    }
+    fn pop_to_level(&mut self, info: PushInfo) {
+        debug!("Pop");
 
-    fn n_levels(&self) -> usize {
-        self.sat_level as usize
-    }
-
-    fn partial_check(&mut self, acts: &mut TheoryArg) {
-        if self.is_active() {
-            let _ = self.partial_check_r(acts);
+        for lit in self.lit_id_log.drain(info.lit_log_len as usize..) {
+            self.lit_ids[lit] = None
         }
+        self.egraph.pop(info.egraph, |class| match class {
+            EClass::Uninterpreted(x) => EClass::Uninterpreted(*x),
+            EClass::Bool(class) => {
+                EClass::Bool(class.split(self.bool_class_history.pop().unwrap()))
+            }
+            EClass::Singleton => EClass::Singleton,
+        });
+        trace!("\n{:?}", self.egraph.dump_uncanonical());
+    }
+
+    fn learn(&mut self, lit: Lit, acts: &mut TheoryArg) -> Result {
+        debug_assert!(acts.is_ok());
+        debug!("EUF learns {lit:?}");
+        let just = Justification::from_lit(lit);
+        let tlit = lit.apply_sign(true);
+        if let Some(id) = self.lit_ids[tlit] {
+            let cid = self.id_for_bool(true);
+            self.union(acts, cid, id, just)?;
+            let node = self.egraph.id_to_node(id);
+            if node.op == self.eq_sym {
+                self.union(acts, node.children[0], node.children[1], just)?;
+            }
+        }
+        if let Some(id) = self.lit_ids[!tlit] {
+            let cid = self.id_for_bool(false);
+            self.union(acts, cid, id, just)?;
+        }
+        Ok(())
+    }
+
+    fn pre_decision_check(&mut self, acts: &mut TheoryArg) -> Result {
+        self.rebuild(acts)
     }
 
     fn explain_propagation(&mut self, p: Lit) -> &[Lit] {
@@ -192,6 +197,25 @@ impl Theory for EUF {
             return res;
         }
         unreachable!()
+    }
+
+    fn set_assertion_level_lit(&mut self, l: Option<Lit>) {
+        self.assertion_level_lit = l.unwrap_or(Lit::UNDEF)
+    }
+
+    fn clear(&mut self) {
+        let bools = [true, false];
+        let bool_syms = bools.map(|b| self.egraph.id_to_node(self.id_for_bool(b)).op);
+        self.egraph.clear();
+        self.lit_id_log.clear();
+        self.lit_ids.clear();
+        self.bool_class_history.clear();
+        for (b, s) in bools.into_iter().zip(bool_syms) {
+            let id = self
+                .egraph
+                .add(s, Children::new(), |_| EClass::Bool(BoolClass::Const(b)));
+            self.const_bool_ids[b as usize] = id;
+        }
     }
 }
 
@@ -289,6 +313,7 @@ impl EUF {
     }
 
     pub(crate) fn rebuild(&mut self, acts: &mut impl SatSolver) -> Result {
+        debug!("Rebuilding EGraph");
         EGraph::try_rebuild(
             self,
             |this| &mut this.egraph,
@@ -321,42 +346,6 @@ impl EUF {
             return Err(());
         }
         return Ok(());
-    }
-
-    fn learn(&mut self, acts: &mut TheoryArg, lit: Lit) -> Result {
-        debug_assert!(acts.is_ok());
-        debug!("EUF learns {lit:?}");
-        let just = Justification::from_lit(lit);
-        let tlit = lit.apply_sign(true);
-        if let Some(id) = self.lit_ids[tlit] {
-            let cid = self.id_for_bool(true);
-            self.union(acts, cid, id, just)?;
-            let node = self.egraph.id_to_node(id);
-            if node.op == self.eq_sym {
-                self.union(acts, node.children[0], node.children[1], just)?;
-            }
-        }
-        if let Some(id) = self.lit_ids[!tlit] {
-            let cid = self.id_for_bool(false);
-            self.union(acts, cid, id, just)?;
-        }
-        Ok(())
-    }
-
-    fn partial_check_r(&mut self, acts: &mut TheoryArg) -> Result {
-        debug!("Starting EUF check");
-        let init_len = acts.model().len();
-        while self.prev_len < acts.model().len() {
-            self.learn(acts, acts.model()[self.prev_len])?;
-            self.prev_len += 1;
-        }
-        if acts.model().len() == init_len {
-            debug!("Rebuilding EGraph");
-            self.rebuild(acts)?;
-        } else {
-            debug!("Skipping rebuild since we already made propagations")
-        }
-        Ok(())
     }
 
     pub fn reserve(&mut self, v: Var) {
@@ -487,79 +476,6 @@ impl EUF {
 
     pub fn id_to_exp(&self, id: Id) -> Exp {
         self.egraph[id].to_exp(id)
-    }
-
-    pub fn assertion_level(&self) -> usize {
-        self.assertion_level as usize
-    }
-
-    /// Returns false when `self` has been popped below the assertion level
-    /// In this case `self` will not produce any propagations or conflicts
-    fn is_active(&self) -> bool {
-        self.sat_level >= self.assertion_level
-    }
-
-    fn raw_push(&mut self) {
-        debug!("Push");
-        let v = PushInfo {
-            egraph: self.egraph.push(),
-            prev_len: self.prev_len,
-            lit_log_len: self.lit_id_log.len(),
-        };
-        self.push_log.push(v)
-    }
-
-    fn raw_pop_to(&mut self, target_level: usize) {
-        debug!("Pop to level {target_level}");
-        if target_level >= self.push_log.len() {
-            return;
-        }
-
-        let info = self.push_log[target_level].clone();
-        self.push_log.truncate(target_level);
-        for lit in self.lit_id_log.drain(info.lit_log_len..) {
-            self.lit_ids[lit] = None
-        }
-        self.egraph.pop(info.egraph, |class| match class {
-            EClass::Uninterpreted(x) => EClass::Uninterpreted(*x),
-            EClass::Bool(class) => {
-                EClass::Bool(class.split(self.bool_class_history.pop().unwrap()))
-            }
-            EClass::Singleton => EClass::Singleton,
-        });
-        trace!("\n{:?}", self.egraph.dump_uncanonical());
-    }
-
-    pub fn smt_push(&mut self, level_lit: Lit) {
-        self.assertion_level += 1;
-        self.assertion_level_lit = level_lit;
-    }
-
-    pub fn smt_pop_to(&mut self, target_level: usize, level_lit: Option<Lit>) {
-        debug_assert_eq!(self.n_levels(), 0);
-        if target_level < self.push_log.len() {
-            self.raw_pop_to(target_level);
-        }
-        self.assertion_level = target_level as u32;
-        self.assertion_level_lit = level_lit.unwrap_or(Lit::UNDEF);
-    }
-
-    pub fn clear(&mut self) {
-        let bools = [true, false];
-        let bool_syms = bools.map(|b| self.egraph.id_to_node(self.id_for_bool(b)).op);
-        self.assertion_level = 0;
-        self.egraph.clear();
-        self.push_log.clear();
-        self.lit_id_log.clear();
-        self.lit_ids.clear();
-        self.prev_len = 0;
-        self.bool_class_history.clear();
-        for (b, s) in bools.into_iter().zip(bool_syms) {
-            let id = self
-                .egraph
-                .add(s, Children::new(), |_| EClass::Bool(BoolClass::Const(b)));
-            self.const_bool_ids[b as usize] = id;
-        }
     }
 }
 
