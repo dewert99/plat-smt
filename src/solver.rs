@@ -400,7 +400,9 @@ impl Solver {
         if sort == self.bool_sort {
             self.bool_fn(fn_name, children).into()
         } else {
-            let id = self.euf.add_uninterpreted_node(fn_name, children, sort);
+            let id = self
+                .euf
+                .add_uninterpreted_node(fn_name.into(), children, sort);
             UExp { id, sort }.into()
         }
     }
@@ -409,7 +411,7 @@ impl Solver {
     /// a [`BoolExp`] instead of an [`Exp`]
     pub fn bool_fn(&mut self, fn_name: Symbol, children: Children) -> BoolExp {
         self.euf
-            .add_bool_node(fn_name, children, || {
+            .add_bool_node(fn_name.into(), children, || {
                 Lit::new(self.sat.new_var_default(), true)
             })
             .0

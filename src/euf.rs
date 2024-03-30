@@ -1,4 +1,4 @@
-use crate::egraph::{Children, EGraph, PushInfo as EGPushInfo, SymbolLang};
+use crate::egraph::{Children, EGraph, Op, PushInfo as EGPushInfo, SymbolLang};
 use crate::explain::Justification;
 use crate::solver::{BoolExp, Exp, UExp};
 use crate::sort::Sort;
@@ -89,15 +89,15 @@ pub struct EUF {
     explanation: LSet,
     lit_ids: LMap<Option<Id>>,
     const_bool_ids: [Id; 2],
-    eq_sym: Symbol,
+    eq_op: Op,
     distinct_gensym: u32,
 }
 
 impl Default for EUF {
     fn default() -> Self {
-        let true_sym = Symbol::new("true");
-        let false_sym = Symbol::new("false");
-        let eq_sym = Symbol::new("=");
+        let true_sym = Symbol::new("true").into();
+        let false_sym = Symbol::new("false").into();
+        let eq_op = Op::new(Symbol::new("="), true);
         let mut egraph = EGraph::default();
         let tid = egraph.add(true_sym, Children::new(), |_| {
             EClass::Bool(BoolClass::Const(true))
@@ -112,7 +112,7 @@ impl Default for EUF {
             lit_id_log: vec![],
             lit_ids: Default::default(),
             const_bool_ids: [fid, tid],
-            eq_sym,
+            eq_op,
             assertion_level_lit: Lit::UNDEF,
             distinct_gensym: 0,
         };
@@ -162,8 +162,8 @@ impl Theory for EUF {
             let cid = self.id_for_bool(true);
             self.union(acts, cid, id, just)?;
             let node = self.egraph.id_to_node(id);
-            if node.op == self.eq_sym {
-                self.union(acts, node.children[0], node.children[1], just)?;
+            if node.op() == self.eq_op {
+                self.union(acts, node.children()[0], node.children()[1], just)?;
             }
         }
         if let Some(id) = self.lit_ids[!tlit] {
@@ -205,7 +205,7 @@ impl Theory for EUF {
 
     fn clear(&mut self) {
         let bools = [true, false];
-        let bool_syms = bools.map(|b| self.egraph.id_to_node(self.id_for_bool(b)).op);
+        let bool_syms = bools.map(|b| self.egraph.id_to_node(self.id_for_bool(b)).op());
         self.egraph.clear();
         self.lit_id_log.clear();
         self.lit_ids.clear();
@@ -317,7 +317,7 @@ impl EUF {
         EGraph::try_rebuild(
             self,
             |this| &mut this.egraph,
-            |this, id1, id2| this.union(acts, id1, id2, Justification::CONGRUENCE),
+            |this, just, id1, id2| this.union(acts, id1, id2, just),
         )
     }
 
@@ -354,12 +354,12 @@ impl EUF {
 
     pub(crate) fn add_bool_node(
         &mut self,
-        sym: Symbol,
+        sym: Op,
         children: Children,
         mut fresh_lit: impl FnMut() -> Lit,
     ) -> (BoolExp, bool, Id) {
         let mut added = None;
-        let id = self.egraph.add(sym, children, |_| {
+        let id = self.egraph.add(sym.into(), children, |_| {
             let lit = fresh_lit();
             added = Some(lit);
             EClass::Bool(BoolClass::Unknown(vec![lit]))
@@ -395,11 +395,11 @@ impl EUF {
             return BoolExp::TRUE;
         }
         let (res, added, id) =
-            self.add_bool_node(self.eq_sym, Children::from_slice(&[id1, id2]), fresh_lit);
+            self.add_bool_node(self.eq_op, Children::from_slice(&[id1, id2]), fresh_lit);
         if added {
             let eq_self = self
                 .egraph
-                .add(self.eq_sym, Children::from_slice(&[id1, id1]), |_| {
+                .add(self.eq_op, Children::from_slice(&[id1, id1]), |_| {
                     EClass::Bool(BoolClass::Const(true))
                 });
             let tid = self.id_for_bool(true);
@@ -412,12 +412,7 @@ impl EUF {
         res
     }
 
-    pub(crate) fn add_uninterpreted_node(
-        &mut self,
-        sym: Symbol,
-        children: Children,
-        sort: Sort,
-    ) -> Id {
+    pub(crate) fn add_uninterpreted_node(&mut self, sym: Op, children: Children, sort: Sort) -> Id {
         self.egraph
             .add(sym, children, |_| EClass::Uninterpreted(sort))
     }
@@ -427,7 +422,7 @@ impl EUF {
         self.distinct_gensym += 1;
         for id in ids {
             let mut added = false;
-            self.egraph.add(s, Children::from_slice(&[id]), |_| {
+            self.egraph.add(s.into(), Children::from_slice(&[id]), |_| {
                 added = true;
                 EClass::Singleton
             });
@@ -443,7 +438,7 @@ impl EUF {
             Some(id) => *id,
             None => {
                 let sym = Symbol::new(format!("bool|lit|{lit:?}"));
-                self.add_bool_node(sym, Children::new(), || lit).2
+                self.add_bool_node(sym.into(), Children::new(), || lit).2
             }
         }
     }
@@ -461,16 +456,17 @@ impl EUF {
         buf.data.dedup_by(|x, y| x.0 == y.0);
         let mut iter = buf.data.iter().map(|x| &x.0).enumerate();
         if let Some((i, x)) = iter.next() {
-            let mut last_symbol = x.op;
+            let mut last_symbol = x.op();
             let mut last_idx = i;
             for (i, x) in iter {
-                if x.op != last_symbol {
-                    buf.indices.insert(last_symbol, last_idx..i);
+                if x.op() != last_symbol {
+                    buf.indices.insert(last_symbol.sym(), last_idx..i);
                     last_idx = i;
-                    last_symbol = x.op;
+                    last_symbol = x.op();
                 }
             }
-            buf.indices.insert(last_symbol, last_idx..buf.data.len());
+            buf.indices
+                .insert(last_symbol.sym(), last_idx..buf.data.len());
         }
     }
 
