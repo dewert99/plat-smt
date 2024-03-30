@@ -1,6 +1,7 @@
 use std::cell::Cell;
 // https://www.cs.upc.edu/~oliveras/rta05.pdf
 // 2.1 Union-find with an O(k log n) Explain operation
+use batsat::intmap::AsIndex;
 use batsat::Lit;
 use std::fmt::{Debug, Formatter};
 use std::mem;
@@ -15,7 +16,7 @@ use log::trace;
 use perfect_derive::perfect_derive;
 
 #[derive(Copy, Clone, Eq, PartialEq)]
-pub(crate) struct Justification(Lit);
+pub(crate) struct Justification(u32);
 
 impl Debug for Justification {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
@@ -27,30 +28,36 @@ mod ejust {
     use batsat::Lit;
 
     #[derive(Debug)]
-    pub(super) enum Justification {
+    pub(crate) enum Justification {
         Lit(Lit),
-        Congruence,
+        Congruence(bool),
         NoOp,
     }
 }
-use ejust::Justification as EJustification;
+use crate::egraph::SymbolLang;
+pub(crate) use ejust::Justification as EJustification;
 
 impl Justification {
     pub fn from_lit(l: Lit) -> Self {
         debug_assert!(l != Lit::UNDEF);
         debug_assert!(l != Lit::ERROR);
-        Justification(l)
+        Justification(l.idx())
     }
 
-    pub const CONGRUENCE: Self = Justification(Lit::ERROR);
+    pub const fn congruence(flip: u32) -> Self {
+        debug_assert!(flip <= 1);
+        Justification((!1) ^ flip)
+    }
 
-    pub const NOOP: Self = Justification(Lit::UNDEF);
+    pub const NOOP: Self = Justification(!2u32);
 
-    fn expand(self) -> EJustification {
-        match self.0 {
-            Lit::ERROR => EJustification::Congruence,
-            Lit::UNDEF => EJustification::NoOp,
-            l => EJustification::Lit(l),
+    pub(crate) fn expand(self) -> EJustification {
+        const C: u32 = !1;
+        const N: u32 = !3;
+        match self.0 & !1 {
+            C => EJustification::Congruence((self.0 & 1) != 0),
+            N => EJustification::NoOp,
+            _ => EJustification::Lit(Lit::from_index(self.0 as usize)),
         }
     }
 }
@@ -183,9 +190,7 @@ impl<'a, X> Drop for ExplainState<'a, X> {
     }
 }
 
-impl<'x, L: Language, D>
-    ExplainState<'x, &'x RawEGraph<L, D, egg::raw::semi_persistent1::UndoLog>>
-{
+impl<'x, D> ExplainState<'x, &'x RawEGraph<SymbolLang, D, egg::raw::semi_persistent1::UndoLog>> {
     // Requires `left` != `right`
     // `result.1` is true when the `old_root` from `result.0` corresponds to left
     fn max_assoc_union_gen<S: IdSet>(
@@ -258,7 +263,7 @@ impl<'x, L: Language, D>
         self.max_assoc_union_gen::<ApproxBitSet>(left, right, Self::max_assoc_union_fallback)
     }
 
-    fn handle_congruence(&mut self, left: Id, right: Id) {
+    fn handle_congruence(&mut self, left: Id, right: Id, flip: bool) {
         if left == right {
             return;
         }
@@ -267,16 +272,25 @@ impl<'x, L: Language, D>
         let next_node = self.raw.id_to_node(right);
         debug_assert!(current_node.matches(next_node));
         let left_children = current_node.children().iter().copied();
-        let right_children = next_node.children().iter().copied();
+        if flip {
+            let right_children = [next_node.children()[1], next_node.children()[0]];
 
-        self.deferred_explanations
-            .extend(left_children.zip(right_children))
+            self.deferred_explanations
+                .extend(left_children.zip(right_children))
+        } else {
+            let right_children = next_node.children().iter().copied();
+
+            self.deferred_explanations
+                .extend(left_children.zip(right_children))
+        }
     }
 
     fn explain_equivalence_h(&mut self, left: Id, right: Id) {
         debug_assert!(self.stack.is_empty());
+        debug_assert_eq!(self.raw.find(left), self.raw.find(right));
         let mut args = (left, right);
         let mut left_congruence = left;
+        let mut flip = false;
         loop {
             let (left, right) = args;
             args = if left != right {
@@ -309,14 +323,19 @@ impl<'x, L: Language, D>
                 };
                 left_congruence = match just.expand() {
                     EJustification::Lit(just) => {
-                        self.handle_congruence(left_congruence, next_left);
+                        self.handle_congruence(left_congruence, next_left, flip);
+                        flip = false;
                         trace!("id{next_left} = id{next_right} by {just:?}");
                         self.add_just(just);
                         next_right
                     }
-                    EJustification::Congruence => left_congruence,
+                    EJustification::Congruence(f) => {
+                        flip ^= f;
+                        left_congruence
+                    }
                     EJustification::NoOp => {
-                        self.handle_congruence(left_congruence, next_left);
+                        self.handle_congruence(left_congruence, next_left, flip);
+                        flip = false;
                         trace!("id{next_left} = id{next_right} by assumption");
                         next_right
                     }
@@ -325,7 +344,7 @@ impl<'x, L: Language, D>
                 (next_right, right)
             }
         }
-        self.handle_congruence(left_congruence, right);
+        self.handle_congruence(left_congruence, right, flip);
         self.stack.clear();
     }
 
