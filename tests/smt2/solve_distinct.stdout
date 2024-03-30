@@ -1,8 +1,8 @@
 sat
 (
- (define-fun a () T T!val!2)
- (define-fun b () T T!val!3)
- (define-fun c () T T!val!4)
- (define-fun d () T T!val!3)
+ (define-fun a () T T!val!3)
+ (define-fun b () T T!val!4)
+ (define-fun c () T T!val!5)
+ (define-fun d () T T!val!4)
 )
 unsat

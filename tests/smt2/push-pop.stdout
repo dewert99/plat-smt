@@ -1,33 +1,33 @@
 sat
 (
- (define-fun a () S S!val!2)
- (define-fun b () S S!val!2)
+ (define-fun a () S S!val!3)
+ (define-fun b () S S!val!3)
  (define-fun f ((x!0 S)) Bool
-  (ite (= x!0 S!val!2) true
+  (ite (= x!0 S!val!3) true
    f!default))
 )
 sat
 (
- (define-fun a () S S!val!2)
- (define-fun b () S S!val!2)
- (define-fun c () S2 S2!val!5)
+ (define-fun a () S S!val!3)
+ (define-fun b () S S!val!3)
+ (define-fun c () S2 S2!val!6)
  (define-fun f ((x!0 S)) Bool
-  (ite (= x!0 S!val!2) true
+  (ite (= x!0 S!val!3) true
    f!default))
  (define-fun g ((x!0 S2)) S
-  (ite (= x!0 S2!val!5) S!val!6
+  (ite (= x!0 S2!val!6) S!val!7
    g!default))
 )
 unsat
 ()
 sat
 (
- (define-fun a () S S!val!2)
- (define-fun b () S S!val!2)
- (define-fun c () S S!val!5)
+ (define-fun a () S S!val!3)
+ (define-fun b () S S!val!3)
+ (define-fun c () S S!val!6)
  (define-fun f ((x!0 S)) Bool
-  (ite (= x!0 S!val!2) true
-  (ite (= x!0 S!val!5) false
+  (ite (= x!0 S!val!3) true
+  (ite (= x!0 S!val!6) false
    f!default)))
 )
 unsat

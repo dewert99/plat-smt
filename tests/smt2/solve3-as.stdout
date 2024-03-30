@@ -1,10 +1,10 @@
 sat
-((a S1!val!2)
- (b S1!val!2)
+((a S1!val!3)
+ (b S1!val!3)
  (x true))
 (
- (define-fun a () S1 S1!val!2)
- (define-fun b () S1 S1!val!2)
+ (define-fun a () S1 S1!val!3)
+ (define-fun b () S1 S1!val!3)
  (define-fun x () Bool true)
 )
 unsat

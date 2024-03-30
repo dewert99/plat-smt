@@ -6,8 +6,8 @@ sat
  ((f false) true))
 (
  (define-fun f ((x!0 Bool)) Bool
-  (ite (= x!0 false) true
   (ite (= x!0 true) true
+  (ite (= x!0 false) true
    f!default)))
  (define-fun x () Bool true)
 )
