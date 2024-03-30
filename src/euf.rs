@@ -105,7 +105,7 @@ impl Default for EUF {
         let fid = egraph.add(false_sym, Children::new(), |_| {
             EClass::Bool(BoolClass::Const(false))
         });
-        let res = EUF {
+        let mut res = EUF {
             egraph,
             bool_class_history: vec![],
             explanation: Default::default(),
@@ -116,6 +116,7 @@ impl Default for EUF {
             assertion_level_lit: Lit::UNDEF,
             distinct_gensym: 0,
         };
+        res.init();
         debug_assert_eq!(tid, res.id_for_bool(true));
         debug!("id{tid:?} is true");
         debug_assert_eq!(fid, res.id_for_bool(false));
@@ -216,6 +217,7 @@ impl Theory for EUF {
                 .add(s, Children::new(), |_| EClass::Bool(BoolClass::Const(b)));
             self.const_bool_ids[b as usize] = id;
         }
+        self.init();
     }
 }
 
@@ -291,6 +293,22 @@ impl<'a, S: 'a + SatSolver> MergeContext<'a, S> {
 }
 
 impl EUF {
+    fn init(&mut self) {
+        let t_eq_f = self.egraph.add(
+            self.eq_op,
+            Children::from_slice(&self.const_bool_ids),
+            |_| EClass::Bool(BoolClass::Const(false)),
+        );
+        self.egraph.union(
+            t_eq_f,
+            self.id_for_bool(false),
+            Justification::NOOP,
+            |d1, d2| {
+                debug_assert!(matches!(d1, EClass::Bool(BoolClass::Const(false))));
+                debug_assert!(matches!(d2, EClass::Bool(BoolClass::Const(false))));
+            },
+        )
+    }
     pub(crate) fn find(&self, id: Id) -> Id {
         self.egraph.find(id)
     }
