@@ -10,8 +10,41 @@ use egg::{Id, Language, Symbol};
 use hashbrown::HashMap;
 use log::{debug, trace};
 use perfect_derive::perfect_derive;
+use std::fmt::{Debug, Formatter};
 use std::mem;
 use std::ops::Range;
+
+#[derive(Copy, Clone, Eq, PartialEq)]
+struct OpId(u32);
+
+impl OpId {
+    const NONE: Self = OpId(u32::MAX);
+
+    fn some(id: Id) -> Self {
+        let x = usize::from(id) as u32;
+        debug_assert_ne!(x, u32::MAX);
+        OpId(x)
+    }
+
+    fn expand(self) -> Option<Id> {
+        match self.0 {
+            u32::MAX => None,
+            x => Some(Id::from(x as usize)),
+        }
+    }
+}
+
+impl Debug for OpId {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        self.expand().fmt(f)
+    }
+}
+
+impl Default for OpId {
+    fn default() -> Self {
+        OpId::NONE
+    }
+}
 
 #[derive(Debug, Clone)]
 pub(crate) enum BoolClass {
@@ -87,7 +120,7 @@ pub struct EUF {
     lit_id_log: Vec<Lit>,
     assertion_level_lit: Lit,
     explanation: LSet,
-    lit_ids: LMap<Option<Id>>,
+    lit_ids: LMap<OpId>,
     const_bool_ids: [Id; 2],
     eq_op: Op,
     distinct_gensym: u32,
@@ -142,7 +175,7 @@ impl Theory for EUF {
         debug!("Pop");
 
         for lit in self.lit_id_log.drain(info.lit_log_len as usize..) {
-            self.lit_ids[lit] = None
+            self.lit_ids[lit] = OpId::NONE;
         }
         self.egraph.pop(info.egraph, |class| match class {
             EClass::Uninterpreted(x) => EClass::Uninterpreted(*x),
@@ -159,7 +192,7 @@ impl Theory for EUF {
         debug!("EUF learns {lit:?}");
         let just = Justification::from_lit(lit);
         let tlit = lit.apply_sign(true);
-        if let Some(id) = self.lit_ids[tlit] {
+        if let Some(id) = self.lit_ids[tlit].expand() {
             let cid = self.id_for_bool(true);
             self.union(acts, cid, id, just)?;
             let node = self.egraph.id_to_node(id);
@@ -167,7 +200,7 @@ impl Theory for EUF {
                 self.union(acts, node.children()[0], node.children()[1], just)?;
             }
         }
-        if let Some(id) = self.lit_ids[!tlit] {
+        if let Some(id) = self.lit_ids[!tlit].expand() {
             let cid = self.id_for_bool(false);
             self.union(acts, cid, id, just)?;
         }
@@ -179,7 +212,7 @@ impl Theory for EUF {
     }
 
     fn explain_propagation(&mut self, p: Lit) -> &[Lit] {
-        if let Some(id) = self.lit_ids[p] {
+        if let Some(id) = self.lit_ids[p].expand() {
             let const_bool = self.id_for_bool(true);
             if self.egraph.find(id) == self.egraph.find(const_bool) {
                 let res = self.explain(id, const_bool, false);
@@ -191,7 +224,7 @@ impl Theory for EUF {
                 }
             }
         }
-        if let Some(id) = self.lit_ids[!p] {
+        if let Some(id) = self.lit_ids[!p].expand() {
             let const_bool = self.id_for_bool(false);
             let res = self.explain(id, const_bool, false);
             debug!("EUF explains {p:?} by {res:?}");
@@ -384,7 +417,7 @@ impl EUF {
         });
         if let Some(l) = added {
             self.reserve(l.var());
-            self.lit_ids[l] = Some(id);
+            self.lit_ids[l] = OpId::some(id);
             self.lit_id_log.push(l);
             debug!(
                 "{l:?} is defined as {:?} and given id{id:?}",
@@ -452,7 +485,7 @@ impl EUF {
     }
 
     pub fn id_for_lit(&mut self, lit: Lit) -> Id {
-        match &mut self.lit_ids[lit] {
+        match &mut self.lit_ids[lit].expand() {
             Some(id) => *id,
             None => {
                 let sym = Symbol::new(format!("bool|lit|{lit:?}"));
