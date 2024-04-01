@@ -445,6 +445,30 @@ impl ExpParser for AssertExpParser {
                     .collect::<Result<Vec<Id>>>()?;
                 p.core.assert_distinct(ids)
             }
+            (ExpKind::Unknown(f), neg) => {
+                let sig = *p.bound.get(&f).ok_or(Unbound(f))?;
+                match sig {
+                    Bound::Fn(sig) => {
+                        rest.set_minimum_expected(sig.args.len());
+                        let mut children = Children::new();
+                        for sort in sig.args.iter().copied() {
+                            children.push(p.parse_id(rest.next_full()?, sort)?)
+                        }
+                        rest.finish()?;
+                        if sig.ret != p.core.bool_sort() {
+                            return Ok(Err(sig.ret));
+                        }
+                        p.core.assert_bool_fn(f, children, neg);
+                    }
+                    Bound::Const(exp) => {
+                        rest.finish()?;
+                        match exp.as_bool() {
+                            None => return Ok(Err(p.core.sort(exp))),
+                            Some(b) => p.core.assert(b ^ neg),
+                        }
+                    }
+                }
+            }
             (_, neg) => {
                 let exp = BaseExpParser.parse(p, f, rest)?;
                 match exp.as_bool() {

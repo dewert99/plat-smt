@@ -436,6 +436,17 @@ impl EUF {
         }
     }
 
+    /// add a boolean node with the intention to immediately union it to another bool node
+    /// returns the id and whether it is new
+    pub(crate) fn add_blank_bool_node(&mut self, op: Op, children: Children) -> (Id, bool) {
+        let mut added = false;
+        let id = self.egraph.add(op, children, |_| {
+            added = true;
+            EClass::Bool(BoolClass::Unknown(Vec::new()))
+        });
+        (id, added)
+    }
+
     pub(crate) fn add_eq_node(
         &mut self,
         id1: Id,

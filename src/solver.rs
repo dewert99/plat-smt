@@ -354,6 +354,18 @@ impl Solver {
         }
     }
 
+    /// Equivalent to `self.`[`assert`](Self::assert)`(self.`[`bool_fn`](Self::bool_fn)`(f, children) ^ negate)`
+    /// but more efficient
+    pub fn assert_bool_fn(&mut self, f: Symbol, children: Children, negate: bool) {
+        let (id1, new) = self.euf.add_blank_bool_node(f.into(), children);
+        let id2 = self.euf.id_for_bool(!negate);
+        if new {
+            let _ = self.euf.union(&mut self.sat, id1, id2, Justification::NOOP);
+        } else {
+            self.assert_raw_eq(id1, id2);
+        }
+    }
+
     /// Produce an expression representing that is equivalent to `t` if `i` is true or `e` otherwise
     ///
     /// If `t` and `e` have different sorts returns an error containing both sorts
