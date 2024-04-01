@@ -1,6 +1,6 @@
 use crate::buffered_solver::BufferedSolver;
 use crate::egraph::Children;
-use crate::euf::{FullFunctionInfo, FunctionInfo, SatSolver};
+use crate::euf::{FullFunctionInfo, FunctionInfo, SatSolver, EUF};
 use crate::explain::Justification;
 use crate::junction::*;
 use crate::sort::{BaseSort, Sort};
@@ -13,8 +13,6 @@ use log::debug;
 use std::borrow::BorrowMut;
 use std::fmt::{Debug, Display, Formatter};
 use std::ops::{BitXor, Deref, Not};
-
-type EUF = crate::theory::IncrementalWrapper<crate::euf::EUF>;
 
 /// The main solver structure including the sat solver and egraph.
 ///

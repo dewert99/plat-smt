@@ -10,7 +10,7 @@ use std::mem;
 use std::num::NonZeroU32;
 use std::ops::{Deref, Index};
 
-use crate::explain::{Explain, Justification};
+use crate::explain::{EqIds, Explain, Justification};
 
 const N: usize = 4;
 pub type Children = SmallVec<[Id; N]>;
@@ -277,9 +277,25 @@ impl<D> EGraph<D> {
         self.inner.clear();
     }
 
-    pub fn explain_equivalence(&self, id1: Id, id2: Id, res: &mut LSet, negate: bool) {
+    pub fn explain_equivalence(
+        &self,
+        id1: Id,
+        id2: Id,
+        res: &mut LSet,
+        negate: bool,
+        base_unions: usize,
+        last_unions: usize,
+        eq_ids: &EqIds,
+    ) {
         self.explain
-            .promote(&self.inner, res, negate)
+            .promote(
+                &self.inner,
+                res,
+                negate,
+                base_unions as u32,
+                last_unions as u32,
+                eq_ids,
+            )
             .explain_equivalence(id1, id2)
     }
 }

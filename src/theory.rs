@@ -19,7 +19,7 @@ use std::ops::{Deref, DerefMut};
 // proportions couldn't have happened any sooner.
 
 /// Theory that parametrizes the solver and can react on events.
-pub trait Theory {
+pub trait Theory<Wrap: DerefMut<Target = Self>> {
     type LevelMarker: Clone;
 
     /// Create a new backtracking level, and return a marker that can be used to backtrack to it
@@ -29,7 +29,7 @@ pub trait Theory {
     fn pop_to_level(&mut self, marker: Self::LevelMarker);
 
     /// Add a literal to the model, return `Err` if there is a conflict
-    fn learn(&mut self, lit: Lit, acts: &mut TheoryArg) -> Result<(), ()>;
+    fn learn(this: &mut Wrap, lit: Lit, acts: &mut TheoryArg) -> Result<(), ()>;
 
     /// Check partial model before a decision is made
     ///
@@ -37,14 +37,14 @@ pub trait Theory {
     /// but all literals in the model will have already been passed to `learn`
     ///
     /// return `Err` if there is a conflict
-    fn pre_decision_check(&mut self, acts: &mut TheoryArg) -> Result<(), ()>;
+    fn pre_decision_check(this: &mut Wrap, acts: &mut TheoryArg) -> Result<(), ()>;
 
     /// If the theory uses `TheoryArgument::propagate`, it must implement
     /// this function to explain the propagations.
     ///
     /// `p` is the literal that has been propagated by the theory in a prefix
     /// of the current trail.
-    fn explain_propagation(&mut self, p: Lit) -> &[Lit];
+    fn explain_propagation(this: &mut Wrap, p: Lit) -> &[Lit];
 
     /// Sets the "assertion_level_lit"
     ///
@@ -66,7 +66,7 @@ struct PushInfo<X> {
 }
 
 #[perfect_derive(Default, Debug)]
-pub struct IncrementalWrapper<Th: Theory> {
+pub struct IncrementalWrapper<Th: Theory<IncrementalWrapper<Th>>> {
     th: Th,
     prev_len: u32,
     push_log: Vec<PushInfo<Th::LevelMarker>>,
@@ -80,7 +80,7 @@ pub struct IncrementalWrapper<Th: Theory> {
     assertion_level: u32,
 }
 
-impl<Th: Theory> IncrementalWrapper<Th> {
+impl<Th: Theory<IncrementalWrapper<Th>>> IncrementalWrapper<Th> {
     /// Returns false when `self` has been popped below the assertion level
     /// In this case `self` will not produce any propagations or conflicts
     fn is_active(&self) -> bool {
@@ -122,9 +122,19 @@ impl<Th: Theory> IncrementalWrapper<Th> {
         self.prev_len = 0;
         self.assertion_level = 0;
     }
+
+    pub fn base_marker(&self) -> Option<&Th::LevelMarker> {
+        self.push_log
+            .get(self.assertion_level as usize)
+            .map(|x| &x.th)
+    }
+
+    pub fn last_marker(&self) -> Option<&Th::LevelMarker> {
+        self.push_log.last().map(|x| &x.th)
+    }
 }
 
-impl<Th: Theory> BatTheory for IncrementalWrapper<Th> {
+impl<Th: Theory<IncrementalWrapper<Th>>> BatTheory for IncrementalWrapper<Th> {
     fn final_check(&mut self, _: &mut TheoryArg) {}
 
     fn create_level(&mut self) {
@@ -180,11 +190,11 @@ impl<Th: Theory> BatTheory for IncrementalWrapper<Th> {
         let init_len = acts.model().len();
         let _ = (|| {
             while (self.prev_len as usize) < acts.model().len() {
-                self.th.learn(acts.model()[self.prev_len as usize], acts)?;
+                Th::learn(self, acts.model()[self.prev_len as usize], acts)?;
                 self.prev_len += 1;
             }
             if acts.model().len() == init_len {
-                self.th.pre_decision_check(acts)
+                Th::pre_decision_check(self, acts)
             } else {
                 debug!("Skipping extra checks since we already made propagations");
                 Ok(())
@@ -200,15 +210,17 @@ impl<Th: Theory> BatTheory for IncrementalWrapper<Th> {
     }
 
     fn explain_propagation(&mut self, p: Lit) -> &[Lit] {
-        if let Some(x) = self.prop_explain.get(&p) {
+        if let Some(_x) = self.prop_explain.get(&p) {
+            // todo delete if the borrow checker improves
+            let x = self.prop_explain.get(&p).unwrap();
             core::slice::from_ref(x)
         } else {
-            self.th.explain_propagation(p)
+            Th::explain_propagation(self, p)
         }
     }
 }
 
-impl<Th: Theory> Deref for IncrementalWrapper<Th> {
+impl<Th: Theory<IncrementalWrapper<Th>>> Deref for IncrementalWrapper<Th> {
     type Target = Th;
 
     fn deref(&self) -> &Self::Target {
@@ -216,7 +228,7 @@ impl<Th: Theory> Deref for IncrementalWrapper<Th> {
     }
 }
 
-impl<Th: Theory> DerefMut for IncrementalWrapper<Th> {
+impl<Th: Theory<IncrementalWrapper<Th>>> DerefMut for IncrementalWrapper<Th> {
     fn deref_mut(&mut self) -> &mut Self::Target {
         &mut self.th
     }
