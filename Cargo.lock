@@ -288,7 +288,7 @@ checksum = "7a81dae078cea95a014a339291cec439d2f232ebe854a9d672b796c6afafa9b7"
 [[package]]
 name = "egg"
 version = "0.9.5"
-source = "git+https://github.com/dewert99/egg?branch=extras#88df63495c20dd063533fa1af6e3a53baf8d9331"
+source = "git+https://github.com/dewert99/egg?branch=extras#5894d5ba98cbbe54ee7b8d1b69271071dd1948d6"
 dependencies = [
  "env_logger 0.9.3",
  "fxhash",

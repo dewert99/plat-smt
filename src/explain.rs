@@ -11,9 +11,11 @@ use crate::approx_bitset::{ApproxBitSet, IdSet};
 use batsat::LSet;
 use egg::raw::RawEGraph;
 use egg::{Id, Language};
-use hashbrown::HashSet;
+use hashbrown::{HashMap, HashSet};
 use log::trace;
 use perfect_derive::perfect_derive;
+
+pub(crate) type EqIds = HashMap<[Id; 2], Lit>;
 
 #[derive(Copy, Clone, Eq, PartialEq)]
 pub(crate) struct Justification(u32);
@@ -35,6 +37,7 @@ mod ejust {
     }
 }
 use crate::egraph::SymbolLang;
+use crate::util::minmax;
 pub(crate) use ejust::Justification as EJustification;
 
 impl Justification {
@@ -124,6 +127,12 @@ pub(crate) struct ExplainState<'a, X> {
     // stack explain equivalence
     stack: Vec<StackElem>,
     raw: X,
+    // unions in union_info before base_unions are proved at the base decision level
+    base_unions: u32,
+    // unions in union_info before last_unions are proved at an earlier
+    // decision level than the current one
+    last_unions: u32,
+    eq_ids: &'a EqIds,
 }
 
 impl Explain {
@@ -161,14 +170,20 @@ impl Explain {
         raw: X,
         out: &'a mut LSet,
         negate: bool,
+        base_unions: u32,
+        last_unions: u32,
+        eq_ids: &'a EqIds,
     ) -> ExplainState<'a, X> {
         ExplainState {
             explain: self,
             raw,
+            base_unions,
             negate,
             deferred_explanations: self.deferred_explanations_cache.take(),
             out,
             stack: self.stack_cache.take(),
+            eq_ids,
+            last_unions,
         }
     }
 }
@@ -295,6 +310,26 @@ impl<'x, D> ExplainState<'x, &'x RawEGraph<SymbolLang, D, egg::raw::semi_persist
             let (left, right) = args;
             args = if left != right {
                 let (assoc_union, left_is_old) = self.max_assoc_union(left, right);
+                if assoc_union < self.base_unions && left_congruence == left {
+                    trace!("id{left} = id{right} at base level");
+                    // left = right at base level, so we can skip this subtree
+                    left_congruence = right;
+                    // tail call with to equal ids to force a return
+                    args = (right, right);
+                    continue;
+                } else if assoc_union < self.last_unions && left_congruence == left {
+                    if let Some(lit) = self.eq_ids.get(&minmax(left, right)) {
+                        trace!("id{left} = id{right} by found {lit:?}");
+                        // lit explains left = right, and it is at a lower decision level, so
+                        // UIP would use it in the learned clause
+                        self.add_just(*lit);
+                        left_congruence = right;
+
+                        // tail call with to equal ids to force a return
+                        args = (right, right);
+                        continue;
+                    }
+                }
                 let union_info = self.union_info[assoc_union as usize];
                 let just = union_info.just;
                 let (next_left, next_right) = if left_is_old {
