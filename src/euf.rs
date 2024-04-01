@@ -425,7 +425,7 @@ impl EUF {
             );
             (BoolExp::Unknown(l), true, id)
         } else {
-            let b = match &self.egraph[id] {
+            let b = match &*self.egraph[id] {
                 EClass::Uninterpreted(x) => {
                     unreachable!("merging eclasses with different sorts {}, Bool", x)
                 }
@@ -534,6 +534,10 @@ impl EUF {
 
     pub fn id_to_exp(&self, id: Id) -> Exp {
         self.egraph[id].to_exp(id)
+    }
+
+    pub fn has_parents(&self, id: Id) -> bool {
+        self.egraph[id].parents().len() > 0
     }
 }
 

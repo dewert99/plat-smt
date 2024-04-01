@@ -319,7 +319,11 @@ impl Solver {
     }
 
     pub(crate) fn assert_raw_eq(&mut self, id1: Id, id2: Id) {
-        self.pending_equalities.push((id1, id2));
+        if !self.euf.has_parents(id1) || !self.euf.has_parents(id2) {
+            let _ = self.euf.union(&mut self.sat, id1, id2, Justification::NOOP);
+        } else {
+            self.pending_equalities.push((id1, id2));
+        }
     }
 
     /// Produce a boolean expression representing the equality of the two expressions
@@ -357,13 +361,9 @@ impl Solver {
     /// Equivalent to `self.`[`assert`](Self::assert)`(self.`[`bool_fn`](Self::bool_fn)`(f, children) ^ negate)`
     /// but more efficient
     pub fn assert_bool_fn(&mut self, f: Symbol, children: Children, negate: bool) {
-        let (id1, new) = self.euf.add_blank_bool_node(f.into(), children);
+        let (id1, _) = self.euf.add_blank_bool_node(f.into(), children);
         let id2 = self.euf.id_for_bool(!negate);
-        if new {
-            let _ = self.euf.union(&mut self.sat, id1, id2, Justification::NOOP);
-        } else {
-            self.assert_raw_eq(id1, id2);
-        }
+        self.assert_raw_eq(id1, id2);
     }
 
     /// Produce an expression representing that is equivalent to `t` if `i` is true or `e` otherwise
