@@ -1,6 +1,6 @@
 use batsat::LSet;
 pub use egg::raw::semi_persistent1::PushInfo;
-use egg::raw::{semi_persistent1::UndoLog, EGraphResidual, RawEGraph};
+use egg::raw::{semi_persistent1::UndoLog, EGraphResidual, RawEClass, RawEGraph};
 use egg::{Id, Language, Symbol};
 use smallvec::SmallVec;
 use std::cmp::Ordering;
@@ -213,7 +213,7 @@ impl<D> Deref for EGraph<D> {
 
 impl<D> EGraph<D> {
     pub fn add(&mut self, op: Op, children: Children, mut mk_data: impl FnMut(Id) -> D) -> Id {
-        RawEGraph::raw_add(
+        let id = RawEGraph::raw_add(
             self,
             |x| &mut x.inner,
             SymbolLang::new(op, children),
@@ -226,7 +226,8 @@ impl<D> EGraph<D> {
                 this.explain.add(id);
                 mk_data(id)
             },
-        )
+        );
+        self.inner.find_mut(id)
     }
 
     pub fn union(
@@ -284,7 +285,7 @@ impl<D> EGraph<D> {
 }
 
 impl<D> Index<Id> for EGraph<D> {
-    type Output = D;
+    type Output = RawEClass<D>;
 
     fn index(&self, id: Id) -> &Self::Output {
         self.inner.get_class(id)
