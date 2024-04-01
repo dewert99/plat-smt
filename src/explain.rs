@@ -365,16 +365,9 @@ impl<'x, D> ExplainState<'x, &'x RawEGraph<SymbolLang, D, egg::raw::semi_persist
     }
 }
 
-#[derive(Default, Clone, Debug)]
-pub(crate) struct PushInfo(usize);
-
 impl Explain {
-    pub(crate) fn push(&self) -> PushInfo {
-        PushInfo(self.union_info.len())
-    }
-
-    pub(crate) fn pop(&mut self, info: PushInfo, old_nodes: usize) {
-        self.union_info.truncate(info.0);
+    pub(crate) fn pop(&mut self, old_nodes: usize, old_unions: usize) {
+        self.union_info.truncate(old_unions);
         self.assoc_unions.truncate(old_nodes);
     }
 

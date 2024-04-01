@@ -1,5 +1,6 @@
 use batsat::LSet;
-use egg::raw::{self, semi_persistent1::UndoLog, EGraphResidual, RawEGraph};
+pub use egg::raw::semi_persistent1::PushInfo;
+use egg::raw::{semi_persistent1::UndoLog, EGraphResidual, RawEGraph};
 use egg::{Id, Language, Symbol};
 use smallvec::SmallVec;
 use std::cmp::Ordering;
@@ -9,7 +10,6 @@ use std::mem;
 use std::num::NonZeroU32;
 use std::ops::{Deref, Index};
 
-use crate::explain;
 use crate::explain::{Explain, Justification};
 
 const N: usize = 4;
@@ -202,7 +202,6 @@ impl<D> Default for EGraph<D> {
         }
     }
 }
-pub type PushInfo = (raw::semi_persistent1::PushInfo, explain::PushInfo);
 
 impl<D> Deref for EGraph<D> {
     type Target = EGraphResidual<SymbolLang>;
@@ -263,13 +262,13 @@ impl<D> EGraph<D> {
     }
 
     pub fn push(&self) -> PushInfo {
-        (self.inner.push1(), self.explain.push())
+        self.inner.push1()
     }
 
     pub fn pop(&mut self, info: PushInfo, mut split: impl FnMut(&mut D) -> D) {
         self.explain
-            .pop(info.1, info.0.number_of_uncanonical_nodes());
-        self.inner.raw_pop1(info.0, |data, _, _| split(data))
+            .pop(info.number_of_uncanonical_nodes(), info.number_of_unions());
+        self.inner.raw_pop1(info, |data, _, _| split(data))
     }
 
     pub fn clear(&mut self) {
