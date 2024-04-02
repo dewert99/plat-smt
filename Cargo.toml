@@ -6,7 +6,7 @@ edition = "2021"
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
-batsat = { git = "https://github.com/dewert99/batsat", branch = "allow_empty_theory_conflict", features = ["logging"] }
+batsat = { git = "https://github.com/dewert99/batsat", branch = "optimize_theory_lemma", features = ["logging"] }
 egg = {git = "https://github.com/dewert99/egg", branch = "extras"}
 hashbrown = "0.14.3"
 log = "0.4.20"

@@ -80,7 +80,7 @@ dependencies = [
 [[package]]
 name = "batsat"
 version = "0.5.0"
-source = "git+https://github.com/dewert99/batsat?branch=allow_empty_theory_conflict#41aba49998166186590f72606d0553c8f172a575"
+source = "git+https://github.com/dewert99/batsat?branch=optimize_theory_lemma#715c83db9a7c5acbb3bca93d6301b07ef187b1ed"
 dependencies = [
  "bit-vec",
  "log",
