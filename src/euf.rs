@@ -216,8 +216,8 @@ impl Theory for EUF {
             let const_bool = self.id_for_bool(true);
             if self.egraph.find(id) == self.egraph.find(const_bool) {
                 let res = self.explain(id, const_bool, false);
-                if !res.contains(&p) {
-                    debug!("EUF explains {p:?} by {res:?}");
+                if !res.has(p) {
+                    debug!("EUF explains {p:?} by {:?}", res.as_slice());
                     return &self.explanation;
                 } else {
                     trace!("Skipping incorrect explanation");
@@ -227,7 +227,7 @@ impl Theory for EUF {
         if let Some(id) = self.lit_ids[!p].expand() {
             let const_bool = self.id_for_bool(false);
             let res = self.explain(id, const_bool, false);
-            debug!("EUF explains {p:?} by {res:?}");
+            debug!("EUF explains {p:?} by {:?}", res.as_slice());
             return res;
         }
         unreachable!()
@@ -235,6 +235,10 @@ impl Theory for EUF {
 
     fn set_assertion_level_lit(&mut self, l: Option<Lit>) {
         self.assertion_level_lit = l.unwrap_or(Lit::UNDEF)
+    }
+
+    fn assertion_level_lit(&self) -> Option<Lit> {
+        (self.assertion_level_lit != Lit::UNDEF).then_some(self.assertion_level_lit)
     }
 
     fn clear(&mut self) {
@@ -346,20 +350,20 @@ impl EUF {
         self.egraph.find(id)
     }
 
-    fn explain(&mut self, id1: Id, id2: Id, negate: bool) -> &[Lit] {
+    fn explain(&mut self, id1: Id, id2: Id, negate: bool) -> &LSet {
         self.explanation.clear();
         if self.assertion_level_lit != Lit::UNDEF {
             self.explanation.insert(self.assertion_level_lit ^ negate);
         }
         self.egraph
             .explain_equivalence(id1, id2, &mut self.explanation, negate);
-        self.explanation.as_slice()
+        &self.explanation
     }
 
     fn conflict(&mut self, acts: &mut impl SatSolver, id1: Id, id2: Id) {
         self.explanation.clear();
         let res = self.explain(id1, id2, true);
-        debug!("EUF Conflict by {res:?}");
+        debug!("EUF Conflict by {:?}", res.as_slice());
         acts.raise_conflict(res, true)
     }
 

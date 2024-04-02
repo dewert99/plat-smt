@@ -1,6 +1,7 @@
 use batsat::theory::Theory as BatTheory;
 use batsat::{Lit, TheoryArg};
-use log::debug;
+use hashbrown::HashMap;
+use log::{debug, trace};
 use perfect_derive::perfect_derive;
 use std::cmp::max;
 use std::ops::{Deref, DerefMut};
@@ -51,14 +52,30 @@ pub trait Theory {
     /// and have its negation included in all conflicts
     fn set_assertion_level_lit(&mut self, l: Option<Lit>);
 
+    /// Return the "assertion_level_lit"
+    fn assertion_level_lit(&self) -> Option<Lit>;
+
     fn clear(&mut self);
+}
+
+#[derive(Clone)]
+struct PushInfo<X> {
+    th: X,
+    prop_log: u32,
+    model_len: u32,
 }
 
 #[perfect_derive(Default, Debug)]
 pub struct IncrementalWrapper<Th: Theory> {
     th: Th,
     prev_len: u32,
-    push_log: Vec<(u32, Th::LevelMarker)>,
+    push_log: Vec<PushInfo<Th::LevelMarker>>,
+    // propagations done at levels at or below the assertion level
+    prop_log: Vec<Lit>,
+    // explanations for lits in prop_log (always the appropriate assertion level lit)
+    prop_explain: HashMap<Lit, Lit>,
+    // whether we've handled prop_log since the last push or pop
+    done_prop_log: bool,
     sat_level: u32,
     assertion_level: u32,
 }
@@ -78,7 +95,13 @@ impl<Th: Theory> IncrementalWrapper<Th> {
     pub fn smt_pop_to(&mut self, target_level: usize, level_lit: Option<Lit>) {
         debug_assert_eq!(self.n_levels(), 0);
         if target_level < self.push_log.len() {
-            self.th.pop_to_level(self.push_log[target_level].clone().1);
+            self.th.pop_to_level(self.push_log[target_level].clone().th);
+            for l in self
+                .prop_log
+                .drain(self.push_log[target_level].prop_log as usize..)
+            {
+                self.prop_explain.remove(&l);
+            }
             self.push_log.truncate(target_level);
         }
         self.assertion_level = target_level as u32;
@@ -92,6 +115,9 @@ impl<Th: Theory> IncrementalWrapper<Th> {
     pub fn clear(&mut self) {
         self.th.clear();
         self.push_log.clear();
+        self.prop_log.clear();
+        self.prop_explain.clear();
+        self.done_prop_log = false;
         self.sat_level = 0;
         self.prev_len = 0;
         self.assertion_level = 0;
@@ -102,21 +128,28 @@ impl<Th: Theory> BatTheory for IncrementalWrapper<Th> {
     fn final_check(&mut self, _: &mut TheoryArg) {}
 
     fn create_level(&mut self) {
+        self.done_prop_log = false;
         if self.is_active() {
-            self.push_log.push((self.prev_len, self.th.create_level()))
+            let info = PushInfo {
+                th: self.th.create_level(),
+                model_len: self.prev_len,
+                prop_log: self.prop_log.len() as u32,
+            };
+            self.push_log.push(info)
         } else {
-            self.push_log[self.sat_level as usize].0 = self.prev_len;
+            self.push_log[self.sat_level as usize].model_len = self.prev_len;
         }
         self.sat_level += 1;
     }
 
     fn pop_levels(&mut self, n: usize) {
+        self.done_prop_log = false;
         let target_sat_level = self.n_levels() - n;
         self.sat_level = target_sat_level as u32;
-        self.prev_len = self.push_log[target_sat_level].0;
+        self.prev_len = self.push_log[target_sat_level].model_len;
         let target_level = max(self.assertion_level as usize, target_sat_level);
         if target_level < self.push_log.len() {
-            self.th.pop_to_level(self.push_log[target_level].clone().1);
+            self.th.pop_to_level(self.push_log[target_level].th.clone());
             self.push_log.truncate(target_level);
         }
     }
@@ -127,11 +160,25 @@ impl<Th: Theory> BatTheory for IncrementalWrapper<Th> {
 
     fn partial_check(&mut self, acts: &mut TheoryArg) {
         debug!("Starting EUF check");
+        if self.sat_level <= self.assertion_level && !self.done_prop_log && self.sat_level > 0 {
+            self.done_prop_log = true;
+            let start = self.push_log[self.sat_level as usize - 1].prop_log as usize;
+            let end = self
+                .push_log
+                .get(self.sat_level as usize)
+                .map_or(self.prop_log.len(), |x| x.prop_log as usize);
+            for l in &self.prop_log[start..end] {
+                trace!("reassert {l:?}");
+                if !acts.propagate(*l) {
+                    return;
+                }
+            }
+        }
         if !self.is_active() {
             return;
         }
+        let init_len = acts.model().len();
         let _ = (|| {
-            let init_len = acts.model().len();
             while (self.prev_len as usize) < acts.model().len() {
                 self.th.learn(acts.model()[self.prev_len as usize], acts)?;
                 self.prev_len += 1;
@@ -143,10 +190,21 @@ impl<Th: Theory> BatTheory for IncrementalWrapper<Th> {
                 Ok(())
             }
         })();
+        if self.assertion_level == self.sat_level && self.assertion_level != 0 {
+            self.prop_log.extend(&acts.model()[init_len..]);
+            let all = self.th.assertion_level_lit().unwrap();
+            for l in &acts.model()[init_len..] {
+                self.prop_explain.insert(*l, all);
+            }
+        }
     }
 
     fn explain_propagation(&mut self, p: Lit) -> &[Lit] {
-        self.th.explain_propagation(p)
+        if let Some(x) = self.prop_explain.get(&p) {
+            core::slice::from_ref(x)
+        } else {
+            self.th.explain_propagation(p)
+        }
     }
 }
 
