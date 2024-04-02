@@ -2,10 +2,10 @@ use crate::egraph::{Children, EGraph, Op, PushInfo as EGPushInfo, SymbolLang};
 use crate::explain::Justification;
 use crate::solver::{BoolExp, Exp, UExp};
 use crate::sort::Sort;
-use crate::theory::Theory;
+use crate::theory::{Theory, TheoryArg};
 use crate::util::{Bind, DebugIter};
 use batsat::{LMap, LSet};
-use batsat::{Lit, TheoryArg, Var};
+use batsat::{Lit, Var};
 use egg::{Id, Language, Symbol};
 use hashbrown::HashMap;
 use log::{debug, trace};
@@ -237,6 +237,11 @@ impl Theory for EUF {
         self.assertion_level_lit = l.unwrap_or(Lit::UNDEF)
     }
 
+    fn assertion_level_lit(&self) -> Lit {
+        debug_assert_ne!(self.assertion_level_lit, Lit::UNDEF);
+        self.assertion_level_lit
+    }
+
     fn clear(&mut self) {
         let bools = [true, false];
         let bool_syms = bools.map(|b| self.egraph.id_to_node(self.id_for_bool(b)).op());
@@ -260,7 +265,7 @@ pub(crate) trait SatSolver {
     fn raise_conflict(&mut self, lits: &[Lit], costly: bool);
 }
 
-impl<'a> SatSolver for TheoryArg<'a> {
+impl<'a, 'b> SatSolver for TheoryArg<'a, 'b> {
     fn is_ok(&self) -> bool {
         self.is_ok()
     }

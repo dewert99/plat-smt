@@ -1,5 +1,5 @@
 use batsat::theory::Theory as BatTheory;
-use batsat::{Lit, TheoryArg};
+use batsat::Lit;
 use log::debug;
 use perfect_derive::perfect_derive;
 use std::cmp::max;
@@ -51,6 +51,10 @@ pub trait Theory {
     /// and have its negation included in all conflicts
     fn set_assertion_level_lit(&mut self, l: Option<Lit>);
 
+    /// Returns the "assertion_level_lit"
+    /// Will only be called after it has been most recently set to Some(_)
+    fn assertion_level_lit(&self) -> Lit;
+
     fn clear(&mut self);
 }
 
@@ -63,11 +67,74 @@ pub struct IncrementalWrapper<Th: Theory> {
     assertion_level: u32,
 }
 
+pub struct TheoryArg<'a, 'b> {
+    acts: &'a mut batsat::TheoryArg<'b>,
+    lemma_lit: Lit,
+}
+
+impl<'a, 'b> TheoryArg<'a, 'b> {
+    /// Is the state of the solver still potentially satisfiable?
+    ///
+    /// `is_ok() == false` means UNSAT was found.
+    #[inline]
+    pub fn is_ok(&self) -> bool {
+        self.acts.is_ok()
+    }
+
+    /// Propagate the literal `p`, which is theory-implied by the current trail.
+    ///
+    /// This will add `p` on the trail. The theory must be ready to
+    /// provide an explanation via `Theory::explain_prop(p)` if asked to
+    /// during conflict resolution.
+    ///
+    /// Returns `true` if propagation succeeded (or did nothing), `false`
+    /// if the propagation results in an immediate conflict.
+    /// If this returns `false`, the theory should avoid doing more work and
+    /// return as early as reasonably possible.
+    pub fn propagate(&mut self, p: Lit) -> bool {
+        if !self.is_ok() {
+            return false;
+        }
+
+        if self.lemma_lit != Lit::UNDEF {
+            self.acts.add_theory_lemma(&[self.lemma_lit, p])
+        }
+
+        self.acts.propagate(p)
+    }
+
+    /// Add a conflict clause.
+    ///
+    /// This should be used in the theory when the current partial model
+    /// is unsatisfiable. It will force the SAT solver to backtrack.
+    /// All propagations added with `propagate` during this session
+    /// will be discarded.
+    ///
+    /// ## Params
+    /// - `lits` a clause that is a tautology of the theory (ie a lemma)
+    ///     and that is false in the current (partial) model.
+    /// - `costly` if true, indicates that the conflict `c` was costly to produce.
+    ///     This is a hint for the SAT solver to keep the theory lemma that corresponds
+    ///     to `c` along with the actual learnt clause.
+    pub fn raise_conflict(&mut self, lits: &[Lit], costly: bool) {
+        self.acts.raise_conflict(lits, costly)
+    }
+}
+
 impl<Th: Theory> IncrementalWrapper<Th> {
     /// Returns false when `self` has been popped below the assertion level
     /// In this case `self` will not produce any propagations or conflicts
     fn is_active(&self) -> bool {
         self.sat_level >= self.assertion_level
+    }
+
+    fn upgrade_acts<'a, 'b>(&self, acts: &'a mut batsat::TheoryArg<'b>) -> TheoryArg<'a, 'b> {
+        let lemma_lit = if self.assertion_level == self.sat_level && self.assertion_level != 0 {
+            !self.th.assertion_level_lit()
+        } else {
+            Lit::UNDEF
+        };
+        TheoryArg { acts, lemma_lit }
     }
 
     pub fn smt_push(&mut self, level_lit: Lit) {
@@ -99,7 +166,7 @@ impl<Th: Theory> IncrementalWrapper<Th> {
 }
 
 impl<Th: Theory> BatTheory for IncrementalWrapper<Th> {
-    fn final_check(&mut self, _: &mut TheoryArg) {}
+    fn final_check(&mut self, _: &mut batsat::TheoryArg) {}
 
     fn create_level(&mut self) {
         if self.is_active() {
@@ -125,19 +192,21 @@ impl<Th: Theory> BatTheory for IncrementalWrapper<Th> {
         self.sat_level as usize
     }
 
-    fn partial_check(&mut self, acts: &mut TheoryArg) {
+    fn partial_check(&mut self, acts: &mut batsat::TheoryArg) {
         debug!("Starting EUF check");
         if !self.is_active() {
             return;
         }
         let _ = (|| {
             let init_len = acts.model().len();
-            while (self.prev_len as usize) < acts.model().len() {
-                self.th.learn(acts.model()[self.prev_len as usize], acts)?;
+            let mut acts = self.upgrade_acts(acts);
+            while (self.prev_len as usize) < acts.acts.model().len() {
+                self.th
+                    .learn(acts.acts.model()[self.prev_len as usize], &mut acts)?;
                 self.prev_len += 1;
             }
-            if acts.model().len() == init_len {
-                self.th.pre_decision_check(acts)
+            if acts.acts.model().len() == init_len {
+                self.th.pre_decision_check(&mut acts)
             } else {
                 debug!("Skipping extra checks since we already made propagations");
                 Ok(())
