@@ -345,7 +345,7 @@ impl EUF {
         let base_unions = self
             .base_marker()
             .map(|x| x.egraph.number_of_unions())
-            .unwrap_or(0);
+            .unwrap_or(usize::MAX);
         let last_unions = self
             .last_marker()
             .map(|x| x.egraph.number_of_unions())
@@ -362,7 +362,7 @@ impl EUF {
             negate,
             base_unions,
             last_unions,
-            &this.eq_ids,
+            &mut this.eq_ids,
         );
         &this.explanation
     }
