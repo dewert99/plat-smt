@@ -285,7 +285,7 @@ impl<D> EGraph<D> {
         negate: bool,
         base_unions: usize,
         last_unions: usize,
-        eq_ids: &EqIds,
+        eq_ids: &mut EqIds,
     ) {
         self.explain
             .promote(
