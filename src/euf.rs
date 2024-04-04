@@ -10,9 +10,12 @@ use egg::{Id, Language, Symbol};
 use hashbrown::HashMap;
 use log::{debug, trace};
 use perfect_derive::perfect_derive;
+use smallvec::{smallvec, SmallVec};
 use std::fmt::{Debug, Formatter};
 use std::mem;
 use std::ops::Range;
+
+type LitVec = SmallVec<[Lit; 4]>;
 
 #[derive(Copy, Clone, Eq, PartialEq)]
 struct OpId(u32);
@@ -49,7 +52,7 @@ impl Default for OpId {
 #[derive(Debug, Clone)]
 pub(crate) enum BoolClass {
     Const(bool),
-    Unknown(Vec<Lit>),
+    Unknown(LitVec),
 }
 
 impl BoolClass {
@@ -102,9 +105,9 @@ impl BoolClass {
 #[derive(Debug)]
 enum MergeInfo {
     Both(bool),
-    Left(Vec<Lit>),
-    Right(Vec<Lit>),
-    Neither(Vec<Lit>),
+    Left(LitVec),
+    Right(LitVec),
+    Neither(LitVec),
 }
 
 #[derive(Debug, Clone)]
@@ -364,7 +367,7 @@ impl<'a, S: 'a + SatSolver> MergeContext<'a, S> {
                 res
             }
             (BoolClass::Unknown(lits1), BoolClass::Unknown(lits2)) => {
-                lits1.extend(&lits2);
+                lits1.extend_from_slice(&lits2);
                 MergeInfo::Neither(lits2)
             }
         };
@@ -447,7 +450,7 @@ impl EUF {
         let id = this.egraph.add_uncanonical(
             op,
             children,
-            |_| EClass::Bool(BoolClass::Unknown(vec![lit])),
+            |_| EClass::Bool(BoolClass::Unknown(smallvec![lit])),
             ctx.merge_fn(dummy_id, dummy_id),
         );
         if !acts.is_ok() {
@@ -535,7 +538,7 @@ impl EUFInner {
         let id = self.egraph.add(sym.into(), children, |_| {
             let lit = fresh_lit();
             added = Some(lit);
-            EClass::Bool(BoolClass::Unknown(vec![lit]))
+            EClass::Bool(BoolClass::Unknown(smallvec![lit]))
         });
         if let Some(l) = added {
             self.add_id_to_lit(id, l);
@@ -558,7 +561,7 @@ impl EUFInner {
         let mut added = false;
         let id = self.egraph.add(op, children, |_| {
             added = true;
-            EClass::Bool(BoolClass::Unknown(Vec::new()))
+            EClass::Bool(BoolClass::Unknown(smallvec![]))
         });
         (id, added)
     }
