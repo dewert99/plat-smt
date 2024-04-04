@@ -10,12 +10,12 @@ use egg::{Id, Language, Symbol};
 use hashbrown::HashMap;
 use log::{debug, trace};
 use perfect_derive::perfect_derive;
-use smallvec::{smallvec, SmallVec};
 use std::fmt::{Debug, Formatter};
 use std::mem;
 use std::ops::Range;
 
-type LitVec = SmallVec<[Lit; 4]>;
+type LitVec = smallvec::SmallVec<[Lit; 4]>;
+use smallvec::smallvec as litvec;
 
 #[derive(Copy, Clone, Eq, PartialEq)]
 struct OpId(u32);
@@ -450,7 +450,7 @@ impl EUF {
         let id = this.egraph.add_uncanonical(
             op,
             children,
-            |_| EClass::Bool(BoolClass::Unknown(smallvec![lit])),
+            |_| EClass::Bool(BoolClass::Unknown(litvec![lit])),
             ctx.merge_fn(dummy_id, dummy_id),
         );
         if !acts.is_ok() {
@@ -538,7 +538,7 @@ impl EUFInner {
         let id = self.egraph.add(sym.into(), children, |_| {
             let lit = fresh_lit();
             added = Some(lit);
-            EClass::Bool(BoolClass::Unknown(smallvec![lit]))
+            EClass::Bool(BoolClass::Unknown(litvec![lit]))
         });
         if let Some(l) = added {
             self.add_id_to_lit(id, l);
@@ -561,7 +561,7 @@ impl EUFInner {
         let mut added = false;
         let id = self.egraph.add(op, children, |_| {
             added = true;
-            EClass::Bool(BoolClass::Unknown(smallvec![]))
+            EClass::Bool(BoolClass::Unknown(litvec![]))
         });
         (id, added)
     }
