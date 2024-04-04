@@ -80,7 +80,7 @@ dependencies = [
 [[package]]
 name = "batsat"
 version = "0.5.0"
-source = "git+https://github.com/dewert99/batsat?branch=allow_empty_theory_conflict#41aba49998166186590f72606d0553c8f172a575"
+source = "git+https://github.com/dewert99/batsat?branch=explain_propagation_final#517f3ee1c84f620180a22f09bc3fef01ca043c76"
 dependencies = [
  "bit-vec",
  "log",
@@ -288,7 +288,7 @@ checksum = "7a81dae078cea95a014a339291cec439d2f232ebe854a9d672b796c6afafa9b7"
 [[package]]
 name = "egg"
 version = "0.9.5"
-source = "git+https://github.com/dewert99/egg?branch=extras#5894d5ba98cbbe54ee7b8d1b69271071dd1948d6"
+source = "git+https://github.com/dewert99/egg?branch=extras#653c68b1faa6583a89a91db6ba985303ecc9d19b"
 dependencies = [
  "env_logger 0.9.3",
  "fxhash",

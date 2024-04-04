@@ -8,6 +8,9 @@ use std::mem;
 use std::ops::Deref;
 
 use crate::approx_bitset::{ApproxBitSet, IdSet};
+use crate::egraph::SymbolLang;
+use crate::euf::EClass;
+use crate::util::minmax;
 use batsat::LSet;
 use egg::raw::RawEGraph;
 use egg::{Id, Language};
@@ -18,28 +21,41 @@ use perfect_derive::perfect_derive;
 
 // either a `Lit` that represents the equality
 // or a hash an explanation of the equality
+// or a marker indicating the equality was already requested
 #[derive(Copy, Clone)]
 struct EqIdInfo(u32);
 
+#[derive(Debug)]
+enum EEqIdInfo {
+    Lit(Lit),
+    Pending(u32),
+    Requested,
+}
+
 impl EqIdInfo {
     // requires the lit is positive
-    fn from_lit(l: Lit) -> Self {
+    fn lit(l: Lit) -> Self {
         let idx = l.idx();
         debug_assert_eq!(idx & 1, 0);
+        debug_assert_ne!(idx, !1);
         EqIdInfo(idx)
     }
 
     // requires the hash is odd
-    fn from_last_info(hash: u32) -> Self {
+    fn pending(hash: u32) -> Self {
         debug_assert_eq!(hash & 1, 1);
         EqIdInfo(hash)
     }
 
-    fn expand(self) -> Result<Lit, u32> {
-        if self.0 & 1 == 0 {
-            Ok(Lit::from_index(self.0 as usize))
+    const REQUESTED: Self = EqIdInfo(!1);
+
+    fn expand(self) -> EEqIdInfo {
+        if self.0 & 1 == 1 {
+            EEqIdInfo::Pending(self.0)
+        } else if self.0 == !1 {
+            EEqIdInfo::Requested
         } else {
-            Err(self.0)
+            EEqIdInfo::Lit(Lit::from_index(self.0 as usize))
         }
     }
 }
@@ -59,11 +75,36 @@ pub(crate) struct EqIds {
 
 impl EqIds {
     pub fn insert(&mut self, ids: [Id; 2], l: Lit) {
-        self.map.insert(ids, EqIdInfo::from_lit(l));
+        self.map.insert(ids, EqIdInfo::lit(l));
     }
 
     pub fn remove(&mut self, ids: &[Id; 2]) {
         self.map.remove(ids);
+    }
+
+    pub fn get_or_insert(&mut self, ids: [Id; 2], mut mk_lit: impl FnMut() -> Lit) -> Lit {
+        match self.map.entry(ids) {
+            Entry::Occupied(mut occ) => match occ.get().expand() {
+                EEqIdInfo::Lit(lit) => lit,
+                _ => {
+                    let res = mk_lit();
+                    occ.insert(EqIdInfo::lit(res));
+                    res
+                }
+            },
+            Entry::Vacant(vac) => {
+                let res = mk_lit();
+                vac.insert(EqIdInfo::lit(res));
+                res
+            }
+        }
+    }
+
+    pub fn get(&self, ids: [Id; 2]) -> Option<Lit> {
+        match self.map.get(&ids)?.expand() {
+            EEqIdInfo::Lit(lit) => Some(lit),
+            _ => None,
+        }
     }
 
     pub fn clear(&mut self) {
@@ -96,8 +137,7 @@ mod ejust {
         NoOp,
     }
 }
-use crate::egraph::SymbolLang;
-use crate::util::minmax;
+
 pub(crate) use ejust::Justification as EJustification;
 
 impl Justification {
@@ -265,7 +305,7 @@ impl<'a, X> Drop for ExplainState<'a, X> {
     }
 }
 
-impl<'x, D> ExplainState<'x, &'x RawEGraph<SymbolLang, D, egg::raw::semi_persistent1::UndoLog>> {
+impl<'x> ExplainState<'x, &'x RawEGraph<SymbolLang, EClass, egg::raw::semi_persistent1::UndoLog>> {
     // Requires `left` != `right`
     // `result.1` is true when the `old_root` from `result.0` corresponds to left
     fn max_assoc_union_gen<S: IdSet>(
@@ -343,7 +383,7 @@ impl<'x, D> ExplainState<'x, &'x RawEGraph<SymbolLang, D, egg::raw::semi_persist
             debug_assert!(!*flip);
             return;
         }
-        trace!("id{left} = id{right} by congruence");
+        trace!("id{left} = id{right} by fused congruence {flip}");
         let current_node = self.raw.id_to_node(left);
         let next_node = self.raw.id_to_node(right);
         debug_assert!(current_node.matches(next_node));
@@ -383,28 +423,30 @@ impl<'x, D> ExplainState<'x, &'x RawEGraph<SymbolLang, D, egg::raw::semi_persist
                 }
                 let union_info = self.union_info[assoc_union as usize];
                 let just = union_info.just;
-                debug_assert!(!matches!(just.expand(), EJustification::NoOp));
                 let (next_left, next_right) = if left_is_old {
                     (union_info.old_id, union_info.new_id)
                 } else {
                     (union_info.new_id, union_info.old_id)
                 };
+                trace!("Pending {next_left} = {next_right} the {assoc_union}th union");
 
+                let ids = minmax(left, right);
                 if assoc_union < self.last_unions
-                    && ((left, right) != (next_left, next_right)
-                        || matches!(just.expand(), EJustification::Congruence(_)))
+                    && !matches!(self.raw.get_class(left).deref(), EClass::Bool(_))
                 {
+                    // avoid equalities between booleans
+                    // this also prevents creating equalities about already created equalities,
+                    // so we create a most n^2
                     // We would like to explain left equals right, and if we could do it in a single
                     // lit UIP would choose this lit (since assoc_union < self.last_unions).
-                    // The normal explanation would require multiple steps either because `just`
-                    // is congruence, or because `just` is only one of the steps
 
                     // We would like to find a lit that represents (= left right)
-                    let ids = minmax(left, right);
                     match self.eq_ids.map.entry(ids) {
-                        Entry::Occupied(occ) => match occ.get().expand() {
-                            Ok(lit) => {
+                        Entry::Occupied(mut occ) => match occ.get().expand() {
+                            EEqIdInfo::Lit(lit) => {
                                 // Yay! we found one
+                                // Note: we require sat solver to use UIP to avoid explaining lit
+                                // in terms of itself
                                 trace!("id{left} = id{right} by found {lit:?}");
                                 self.add_just(lit);
                                 self.handle_congruence(left_congruence, left, &mut flip);
@@ -415,7 +457,7 @@ impl<'x, D> ExplainState<'x, &'x RawEGraph<SymbolLang, D, egg::raw::semi_persist
                                 args = (right, right);
                                 continue;
                             }
-                            Err(last_info) => {
+                            EEqIdInfo::Pending(last_info) => {
                                 let curr_info = exp_hash(just);
                                 if last_info != curr_info {
                                     // This is at least the second time this kind of lit would be
@@ -424,16 +466,29 @@ impl<'x, D> ExplainState<'x, &'x RawEGraph<SymbolLang, D, egg::raw::semi_persist
                                     // This is a good candidate for a pair of ids to assign a
                                     // literal for
                                     debug!("requesting {ids:?}");
-                                    // self.eq_ids.requests.push(ids);
+                                    self.eq_ids.requests.push(ids);
+                                    occ.insert(EqIdInfo::REQUESTED);
                                 }
+                            }
+                            EEqIdInfo::Requested => {
+                                trace!("Already requested {ids:?}");
                             }
                         },
                         Entry::Vacant(vac) => {
-                            // This is the first time this kind of explanation would be useful, so
-                            // we remember how we will explain the equality in case we would want
-                            // to explain it again differently later
-                            let curr_info = exp_hash(just);
-                            vac.insert(EqIdInfo::from_last_info(curr_info));
+                            if cfg!(feature = "test_add_more_mid_search_equalities") {
+                                // It should always be fine to add additional equalities, so we
+                                // use this for testing
+                                // Since pending requests do not get removed during `pop` we may
+                                // request an equality too eagerly, so it's important this works
+                                self.eq_ids.requests.push(ids);
+                                vac.insert(EqIdInfo::REQUESTED);
+                            } else {
+                                // This is the first time this kind of explanation would be useful, so
+                                // we remember how we will explain the equality in case we would want
+                                // to explain it again differently later
+                                let curr_info = exp_hash(just);
+                                vac.insert(EqIdInfo::pending(curr_info));
+                            }
                             trace!("preparing request for {ids:?}")
                         }
                     }
@@ -466,10 +521,15 @@ impl<'x, D> ExplainState<'x, &'x RawEGraph<SymbolLang, D, egg::raw::semi_persist
                         next_right
                     }
                     EJustification::Congruence(f) => {
+                        trace!("id{next_left} = id{next_right} by congruence {f}");
                         flip ^= f;
                         left_congruence
                     }
-                    EJustification::NoOp => unreachable!(),
+                    EJustification::NoOp => {
+                        self.handle_congruence(left_congruence, next_left, &mut flip);
+                        trace!("id{next_left} = id{next_right} by noop");
+                        next_right
+                    }
                 };
                 // tail call
                 (next_right, right)

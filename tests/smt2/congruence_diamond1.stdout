@@ -1,0 +1,4 @@
+unsat
+((not final_equality) diamond0)
+unsat
+((not final_equality) (= x0 x1))

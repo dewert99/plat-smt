@@ -14,6 +14,8 @@ use crate::explain::{EqIds, Explain, Justification};
 
 const N: usize = 4;
 pub type Children = SmallVec<[Id; N]>;
+use crate::euf::EClass;
+pub use smallvec::smallvec as children;
 
 // The first 4 bits in a Symbol are already used for sharding, so we steal the next 2 bits for
 // representation whether an op is symmetrical and whether it has been flipped respectively.
@@ -211,8 +213,8 @@ impl<D> Deref for EGraph<D> {
     }
 }
 
-impl<D> EGraph<D> {
-    pub fn add(&mut self, op: Op, children: Children, mut mk_data: impl FnMut(Id) -> D) -> Id {
+impl EGraph<EClass> {
+    pub fn add(&mut self, op: Op, children: Children, mut mk_data: impl FnMut(Id) -> EClass) -> Id {
         let id = RawEGraph::raw_add(
             self,
             |x| &mut x.inner,
@@ -230,12 +232,41 @@ impl<D> EGraph<D> {
         self.inner.find_mut(id)
     }
 
+    pub fn add_uncanonical(
+        &mut self,
+        op: Op,
+        children: Children,
+        mk_data: impl FnMut(Id) -> EClass,
+        mut merge: impl FnMut(&mut EClass, EClass),
+    ) -> Id {
+        RawEGraph::raw_add_for_sym(
+            &mut (self, mk_data),
+            |(this, _)| &mut this.inner,
+            SymbolLang::new(op, children),
+            // Note unlike the EGraph in egg we only use explanations for clause learning,
+            // so we do not need to distinguish between nodes that are
+            // equivalent modulo ground equalities
+            |_, _, _| None,
+            |node1, node2| node1.op.congruence_just(node2.op),
+            |(this, mk_data), just, root_child, added_id| {
+                this.explain.add(added_id);
+                let class = this.inner.get_class_mut(root_child).0;
+                merge(&mut *class, mk_data(added_id));
+                this.explain.union(added_id, just, added_id, root_child);
+            },
+            |(this, mk_data), id, _| {
+                this.explain.add(id);
+                mk_data(id)
+            },
+        )
+    }
+
     pub fn union(
         &mut self,
         id1: Id,
         id2: Id,
         justification: Justification,
-        mut merge: impl FnMut(&mut D, D),
+        mut merge: impl FnMut(&mut EClass, EClass),
     ) {
         self.inner.raw_union(id1, id2, |info| {
             merge(info.data1, info.data2);
@@ -266,7 +297,7 @@ impl<D> EGraph<D> {
         self.inner.push1()
     }
 
-    pub fn pop(&mut self, info: PushInfo, mut split: impl FnMut(&mut D) -> D) {
+    pub fn pop(&mut self, info: PushInfo, mut split: impl FnMut(&mut EClass) -> EClass) {
         self.explain
             .pop(info.number_of_uncanonical_nodes(), info.number_of_unions());
         self.inner.raw_pop1(info, |data, _, _| split(data))

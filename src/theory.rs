@@ -28,6 +28,12 @@ pub trait Theory<Wrap: DerefMut<Target = Self>> {
     /// Pop to the level indicated by marker
     fn pop_to_level(&mut self, marker: Self::LevelMarker);
 
+    /// Pre-check called before `learn`, return `Err` if there is a conflict
+    #[allow(unused_variables)]
+    fn initial_check(this: &mut Wrap, acts: &mut TheoryArg) -> Result<(), ()> {
+        Ok(())
+    }
+
     /// Add a literal to the model, return `Err` if there is a conflict
     fn learn(this: &mut Wrap, lit: Lit, acts: &mut TheoryArg) -> Result<(), ()>;
 
@@ -44,7 +50,7 @@ pub trait Theory<Wrap: DerefMut<Target = Self>> {
     ///
     /// `p` is the literal that has been propagated by the theory in a prefix
     /// of the current trail.
-    fn explain_propagation(this: &mut Wrap, p: Lit) -> &[Lit];
+    fn explain_propagation(this: &mut Wrap, p: Lit, is_final: bool) -> &[Lit];
 
     /// Sets the "assertion_level_lit"
     ///
@@ -189,6 +195,7 @@ impl<Th: Theory<IncrementalWrapper<Th>>> BatTheory for IncrementalWrapper<Th> {
         }
         let init_len = acts.model().len();
         let _ = (|| {
+            Th::initial_check(self, acts)?;
             while (self.prev_len as usize) < acts.model().len() {
                 Th::learn(self, acts.model()[self.prev_len as usize], acts)?;
                 self.prev_len += 1;
@@ -215,7 +222,17 @@ impl<Th: Theory<IncrementalWrapper<Th>>> BatTheory for IncrementalWrapper<Th> {
             let x = self.prop_explain.get(&p).unwrap();
             core::slice::from_ref(x)
         } else {
-            Th::explain_propagation(self, p)
+            Th::explain_propagation(self, p, false)
+        }
+    }
+
+    fn explain_propagation_final(&mut self, p: Lit) -> &[Lit] {
+        if let Some(_x) = self.prop_explain.get(&p) {
+            // todo delete if the borrow checker improves
+            let x = self.prop_explain.get(&p).unwrap();
+            core::slice::from_ref(x)
+        } else {
+            Th::explain_propagation(self, p, true)
         }
     }
 }

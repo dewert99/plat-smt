@@ -5,7 +5,7 @@ use crate::explain::Justification;
 use crate::junction::*;
 use crate::sort::{BaseSort, Sort};
 use crate::util::display_debug;
-use batsat::{lbool, Lit, SolverInterface, Var};
+use batsat::{lbool, Callbacks, Lit, SolverInterface, SolverOpts, Var};
 use egg::{Id, Symbol};
 use either::Either;
 use hashbrown::HashMap;
@@ -14,13 +14,25 @@ use std::borrow::BorrowMut;
 use std::fmt::{Debug, Display, Formatter};
 use std::ops::{BitXor, Deref, Not};
 
+struct NoCb;
+impl Callbacks for NoCb {}
+type BatSolver = batsat::Solver<NoCb>;
+fn create_solver() -> BatSolver {
+    let mut opts = SolverOpts::default();
+    if let Ok(x) = std::env::var("SEED") {
+        opts.rnd_init_act = true;
+        opts.random_seed = x.parse().unwrap();
+    }
+    BatSolver::new(opts, NoCb)
+}
+
 /// The main solver structure including the sat solver and egraph.
 ///
 /// It allows constructing and asserting expressions [`Exp`] within the solver
 pub struct Solver {
     euf: EUF,
     pending_equalities: Vec<(Id, Id)>,
-    sat: BufferedSolver<batsat::BasicSolver>,
+    sat: BufferedSolver<BatSolver>,
     function_info_buf: FunctionInfo,
     bool_sort: Sort,
 }
@@ -30,7 +42,7 @@ impl Default for Solver {
         Solver {
             euf: Default::default(),
             pending_equalities: vec![],
-            sat: Default::default(),
+            sat: BufferedSolver::new(create_solver()),
             function_info_buf: Default::default(),
             bool_sort: Sort::new(BaseSort {
                 name: Symbol::new("Bool"),
@@ -207,7 +219,7 @@ pub enum SolveResult {
     Unknown,
 }
 
-impl SatSolver for BufferedSolver<batsat::BasicSolver> {
+impl SatSolver for BufferedSolver<BatSolver> {
     fn is_ok(&self) -> bool {
         self.deref().is_ok()
     }
