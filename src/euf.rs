@@ -118,6 +118,10 @@ pub struct PushInfo {
     request_log_len: u32,
 }
 
+pub(crate) fn id_for_bool(b: bool) -> Id {
+    Id::from(b as usize)
+}
+
 #[derive(Debug)]
 pub struct EUFInner {
     egraph: EGraph<EClass>,
@@ -126,8 +130,6 @@ pub struct EUFInner {
     assertion_level_lit: Lit,
     explanation: LSet,
     lit_ids: LMap<OpId>,
-    const_bool_ids: [Id; 2],
-    eq_op: Op,
     distinct_gensym: u32,
     eq_ids: EqIds,
     eq_id_log: Vec<[Id; 2]>,
@@ -138,13 +140,12 @@ impl Default for EUFInner {
     fn default() -> Self {
         let true_sym = Symbol::new("true").into();
         let false_sym = Symbol::new("false").into();
-        let eq_op = Op::new(Symbol::new("="), true);
         let mut egraph = EGraph::default();
-        let tid = egraph.add(true_sym, Children::new(), |_| {
-            EClass::Bool(BoolClass::Const(true))
-        });
         let fid = egraph.add(false_sym, Children::new(), |_| {
             EClass::Bool(BoolClass::Const(false))
+        });
+        let tid = egraph.add(true_sym, Children::new(), |_| {
+            EClass::Bool(BoolClass::Const(true))
         });
         let mut res = EUFInner {
             egraph,
@@ -152,8 +153,6 @@ impl Default for EUFInner {
             explanation: Default::default(),
             lit_id_log: vec![],
             lit_ids: Default::default(),
-            const_bool_ids: [fid, tid],
-            eq_op,
             assertion_level_lit: Lit::UNDEF,
             distinct_gensym: 0,
             eq_ids: Default::default(),
@@ -161,9 +160,9 @@ impl Default for EUFInner {
             requests_handled: 0,
         };
         res.init();
-        debug_assert_eq!(tid, res.id_for_bool(true));
+        debug_assert_eq!(tid, id_for_bool(true));
         debug!("id{tid:?} is true");
-        debug_assert_eq!(fid, res.id_for_bool(false));
+        debug_assert_eq!(fid, id_for_bool(false));
         debug!("id{fid:?} is false");
         res
     }
@@ -226,7 +225,8 @@ impl Theory<EUF> for EUFInner {
             this.requests_handled += 1;
             if this.find(id0) != this.find(id1) {
                 let lit = this.eq_ids.get_or_insert([id0, id1], || acts.mk_new_lit());
-                let (id, res) = this.add_uncanonical(this.eq_op, children![id0, id1], lit, acts);
+                let (id, res) =
+                    this.add_uncanonical(this.eq_ids.eq_op, children![id0, id1], lit, acts);
                 this.add_id_to_lit(id, lit);
                 this.make_equality_true(id0);
                 debug!("lit{lit:?} is defined as (= {id0} {id1}) mid-search");
@@ -244,12 +244,14 @@ impl Theory<EUF> for EUFInner {
         let just = Justification::from_lit(lit);
         let tlit = lit.apply_sign(true);
         if let Some(id) = this.lit_ids[tlit].expand() {
+            // Note it is important to union the children of an equality before union-ing the lit
+            // with true because of an optimization in the explanation
+            let node = this.egraph.id_to_node(id);
+            if let Some([id0, id1]) = this.eq_ids.check_node_is_eq(node) {
+                this.union(acts, id0, id1, just)?;
+            }
             let cid = this.id_for_bool(true);
             this.union(acts, cid, id, just)?;
-            let node = this.egraph.id_to_node(id);
-            if node.op() == this.eq_op {
-                this.union(acts, node.children()[0], node.children()[1], just)?;
-            }
         }
         if let Some(id) = this.lit_ids[!tlit].expand() {
             let cid = this.id_for_bool(false);
@@ -296,7 +298,7 @@ impl Theory<EUF> for EUFInner {
     }
 
     fn clear(&mut self) {
-        let bools = [true, false];
+        let bools = [false, true];
         let bool_syms = bools.map(|b| self.egraph.id_to_node(self.id_for_bool(b)).op());
         self.egraph.clear();
         self.lit_id_log.clear();
@@ -307,7 +309,7 @@ impl Theory<EUF> for EUFInner {
             let id = self
                 .egraph
                 .add(s, Children::new(), |_| EClass::Bool(BoolClass::Const(b)));
-            self.const_bool_ids[b as usize] = id;
+            debug_assert_eq!(id, id_for_bool(b))
         }
         self.init();
     }
@@ -336,7 +338,6 @@ impl<'a> SatSolver for TheoryArg<'a> {
 struct MergeContext<'a, S: SatSolver> {
     acts: &'a mut S,
     history: &'a mut Vec<MergeInfo>,
-    const_ids: [Id; 2],
     conflict: &'a mut Option<[Id; 2]>,
 }
 
@@ -352,7 +353,7 @@ impl<'a, S: 'a + SatSolver> MergeContext<'a, S> {
         let info = match (&mut *lbool, rbool) {
             (BoolClass::Const(b1), BoolClass::Const(b2)) => {
                 if *b1 != b2 {
-                    *self.conflict = Some(self.const_ids)
+                    *self.conflict = Some([id_for_bool(false), id_for_bool(true)])
                 }
                 MergeInfo::Both(b2)
             }
@@ -442,7 +443,6 @@ impl EUF {
         let ctx = MergeContext {
             acts,
             history: &mut this.bool_class_history,
-            const_ids: this.const_bool_ids,
             conflict: &mut conflict,
         };
         // this won't be used since the new class won't be EClass::Singleton
@@ -477,7 +477,6 @@ impl EUF {
         let ctx = MergeContext {
             acts,
             history: &mut this.bool_class_history,
-            const_ids: this.const_bool_ids,
             conflict: &mut conflict,
         };
         this.egraph.union(id1, id2, just, ctx.merge_fn(id1, id2));
@@ -496,8 +495,8 @@ impl EUF {
 impl EUFInner {
     fn init(&mut self) {
         let t_eq_f = self.egraph.add(
-            self.eq_op,
-            Children::from_slice(&self.const_bool_ids),
+            self.eq_ids.eq_op,
+            children![id_for_bool(false), id_for_bool(true)],
             |_| EClass::Bool(BoolClass::Const(false)),
         );
         self.egraph.union(
@@ -575,8 +574,11 @@ impl EUFInner {
         if self.egraph.find(id1) == self.egraph.find(id2) {
             return BoolExp::TRUE;
         }
-        let (res, added, id) =
-            self.add_bool_node(self.eq_op, Children::from_slice(&[id1, id2]), fresh_lit);
+        let (res, added, id) = self.add_bool_node(
+            self.eq_ids.eq_op,
+            Children::from_slice(&[id1, id2]),
+            fresh_lit,
+        );
         if added {
             if let BoolExp::Unknown(l) = res {
                 let ids = minmax(id1, id2);
@@ -592,7 +594,7 @@ impl EUFInner {
 
     // union (= id id) to true
     fn make_equality_true(&mut self, id: Id) {
-        let eq_self = self.egraph.add(self.eq_op, children![id, id], |_| {
+        let eq_self = self.egraph.add(self.eq_ids.eq_op, children![id, id], |_| {
             EClass::Bool(BoolClass::Const(true))
         });
         let tid = self.id_for_bool(true);
@@ -633,7 +635,7 @@ impl EUFInner {
         }
     }
     pub fn id_for_bool(&self, b: bool) -> Id {
-        self.const_bool_ids[b as usize]
+        id_for_bool(b)
     }
 
     pub fn function_info(&self, buf: &mut FunctionInfo) {

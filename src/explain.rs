@@ -8,12 +8,12 @@ use std::mem;
 use std::ops::Deref;
 
 use crate::approx_bitset::{ApproxBitSet, IdSet};
-use crate::egraph::SymbolLang;
-use crate::euf::EClass;
+use crate::egraph::{Op, SymbolLang};
+use crate::euf::{id_for_bool, EClass};
 use crate::util::minmax;
 use batsat::LSet;
 use egg::raw::RawEGraph;
-use egg::{Id, Language};
+use egg::{Id, Language, Symbol};
 use hashbrown::hash_map::Entry;
 use hashbrown::{HashMap, HashSet};
 use log::{debug, trace};
@@ -66,11 +66,22 @@ impl Debug for EqIdInfo {
     }
 }
 
-#[perfect_derive(Debug, Default)]
+#[perfect_derive(Debug)]
 pub(crate) struct EqIds {
     map: HashMap<[Id; 2], EqIdInfo>,
     /// equalities we would like to have literals for
     pub requests: Vec<[Id; 2]>,
+    pub eq_op: Op,
+}
+
+impl Default for EqIds {
+    fn default() -> Self {
+        EqIds {
+            map: Default::default(),
+            requests: vec![],
+            eq_op: Op::new(Symbol::new("="), true),
+        }
+    }
 }
 
 impl EqIds {
@@ -110,6 +121,17 @@ impl EqIds {
     pub fn clear(&mut self) {
         self.map.clear();
         self.requests.clear();
+    }
+
+    pub fn check_node_is_eq(&self, node: &SymbolLang) -> Option<[Id; 2]> {
+        if node.op() == self.eq_op {
+            match node.children() {
+                &[id1, id2] => Some([id1, id2]),
+                _ => unreachable!("equality without two children {node:?}",),
+            }
+        } else {
+            None
+        }
     }
 }
 
@@ -431,7 +453,29 @@ impl<'x> ExplainState<'x, &'x RawEGraph<SymbolLang, EClass, egg::raw::semi_persi
                 trace!("Pending {next_left} = {next_right} the {assoc_union}th union");
 
                 let ids = minmax(left, right);
-                if assoc_union < self.last_unions
+                if ids[0] == id_for_bool(true)
+                    && matches!(just.expand(), EJustification::Congruence(_))
+                {
+                    if let Some([child1, child2]) =
+                        self.eq_ids.check_node_is_eq(self.raw.id_to_node(ids[1]))
+                    {
+                        let (eq_age, _) = self.max_assoc_union(child1, child2);
+                        // make sure we knew child1 = child2 before true = (= child1 child2)
+                        if eq_age < assoc_union {
+                            trace!("id{left} = id{right} since id{child1} = id{child2}");
+                            // we are explaining why true = (= child1 child2) so we should just explain
+                            // child1 = child2
+                            self.deferred_explanations.push((child1, child2));
+
+                            self.handle_congruence(left_congruence, left, &mut flip);
+                            // so we can skip this subtree
+                            left_congruence = right;
+                            // tail call with to equal ids to force a return
+                            args = (right, right);
+                            continue;
+                        }
+                    }
+                } else if assoc_union < self.last_unions
                     && !matches!(self.raw.get_class(left).deref(), EClass::Bool(_))
                 {
                     // avoid equalities between booleans
