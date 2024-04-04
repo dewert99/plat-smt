@@ -18,7 +18,8 @@ jobs:
           channel: stable
           cache-target: dev
       - run: cargo test
-  test-full:
+      - run: cargo test --features test_add_more_mid_search_equalities
+  test-starexec-bench:
     name: StarExec SMT tests
     runs-on: ubuntu-latest
     needs: [test]
@@ -29,9 +30,24 @@ jobs:
         with:
           channel: stable
           cache-target: release
-      - run: cargo test --release
+      - run: cargo test --release --package bat_egg_smt --test test test_smtlib_benchmarks
+  test-more:
+    name: StarExec SMT tests with extra equalities and randomized activations
+    runs-on: ubuntu-latest
+    needs: [ test ]
+    steps:
+      - uses: actions/checkout@v4
+      - name: Setup rust toolchain, cache
+        uses: moonrepo/setup-rust@v0
+        with:
+          channel: stable
+          cache-target: release
+      - run: cargo test --release --features test_add_more_mid_search_equalities --package bat_egg_smt --test test test_smtlib_benchmarks
+      - run: SEED=1 cargo test --release --features test_add_more_mid_search_equalities --package bat_egg_smt --test test test_smtlib_benchmarks
+      - run: SEED=1 cargo test --release --package bat_egg_smt --test test test_smtlib_benchmarks
+
   benchmarks:
-    needs: [test-full]
+    needs: [test-starexec-bench]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v3

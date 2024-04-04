@@ -22,6 +22,12 @@ impl<S> DerefMut for BufferedSolver<S> {
 }
 
 impl<S: SolverInterface> BufferedSolver<S> {
+    pub fn new(solver: S) -> Self {
+        BufferedSolver {
+            solver,
+            buffer: vec![],
+        }
+    }
     pub fn add_clause(&mut self, clause: impl IntoIterator<Item = Lit>) {
         self.buffer.clear();
         self.buffer.extend(clause);
