@@ -59,12 +59,20 @@ enum Error {
     InvalidExp,
     #[error("unexpected token when parsing command")]
     InvalidCommand,
+    #[error("unexpected token when parsing option")]
+    InvalidOption,
     #[error("`define-fun` does not support functions with arguments")]
     InvalidDefineFun,
     #[error("unexpected token when parsing binding")]
     InvalidBinding,
     #[error("unexpected token when parsing let expression")]
     InvalidLet,
+    #[error("expected integer token")]
+    InvalidInt,
+    #[error("expected decimal token")]
+    InvalidFloat,
+    #[error("expected boolean token")]
+    InvalidBool,
     #[error("(check-sat) returned {actual:?} but should have returned {expected:?} based on last (set-info :status)")]
     CheckSatStatusMismatch {
         actual: SolveResult,
@@ -81,6 +89,50 @@ enum Error {
 }
 
 type Result<T> = core::result::Result<T, Error>;
+
+trait FromSexp: Sized {
+    fn from_sexp<R: FullBufRead>(sexp_token: SexpToken<R>) -> Result<Self>;
+}
+
+trait IntFromSexp: TryFrom<u128> {}
+
+impl<I: IntFromSexp> FromSexp for I {
+    fn from_sexp<R: FullBufRead>(sexp_token: SexpToken<R>) -> Result<Self> {
+        match sexp_token {
+            SexpToken::Number(n) => Ok(n.try_into().map_err(|_| ParseError::Overflow)?),
+            _ => Err(InvalidInt),
+        }
+    }
+}
+
+impl IntFromSexp for u32 {}
+impl IntFromSexp for usize {}
+impl IntFromSexp for i32 {}
+impl FromSexp for f64 {
+    fn from_sexp<R: FullBufRead>(sexp_token: SexpToken<R>) -> Result<Self> {
+        match sexp_token {
+            SexpToken::Number(n) => Ok(n as f64),
+            SexpToken::Decimal(n, shift) => Ok(n as f64 * 0.1f64.powi(shift as i32)),
+            _ => Err(InvalidFloat),
+        }
+    }
+}
+
+impl FromSexp for f32 {
+    fn from_sexp<R: FullBufRead>(sexp_token: SexpToken<R>) -> Result<Self> {
+        f64::from_sexp(sexp_token).map(|x| x as f32)
+    }
+}
+
+impl FromSexp for bool {
+    fn from_sexp<R: FullBufRead>(sexp_token: SexpToken<R>) -> Result<Self> {
+        match sexp_token {
+            SexpToken::Symbol("true") => Ok(true),
+            SexpToken::Symbol("false") => Ok(false),
+            _ => Err(InvalidBool),
+        }
+    }
+}
 
 #[derive(Copy, Clone)]
 struct FnSort {
@@ -136,7 +188,7 @@ macro_rules! enum_str {
     };
 }
 
-enum_str!(Smt2Command{
+enum_str! {Smt2Command{
     "declare-sort" => DeclareSort(1),
     "declare-fun" => DeclareFn(3),
     "declare-const" => DeclareConst(2),
@@ -153,10 +205,11 @@ enum_str!(Smt2Command{
     "reset" => Reset(0),
     "set-logic" => SetLogic(1),
     "set-info" => SetInfo(2),
+    "set-option" => SetOption(2),
     "exit" => Exit(0),
-});
+}}
 
-enum_str!(ExpKind{
+enum_str! {ExpKind{
     "and" => And(0),
     "or" => Or(0),
     "not" => Not(1),
@@ -167,7 +220,55 @@ enum_str!(ExpKind{
     "let" => Let(2),
     "if" => If(3),
     "ite" => Ite(3),
-});
+}}
+
+macro_rules! enum_option {
+    ($name:ident {$($s:literal => $var:ident($ty:ty),)*}) => {
+        #[derive(Copy, Clone, Debug)]
+        enum $name {
+            $($var($ty),)*
+        }
+
+        impl $name {
+            fn from_parser<R: FullBufRead>(mut rest: CountingParser<R>) -> Result<Self> {
+                enum Tmp {
+                    $($var,)*
+                }
+
+                let tmp = match rest.next()? {
+                    SexpToken::Keyword(s) => match s {
+                        $($s => Tmp::$var,)*
+                        _ => return Err(InvalidOption)
+                    }
+                    _ => return Err(InvalidOption),
+                };
+                let res = match tmp {
+                    $(Tmp::$var => Self::$var(rest.next_parse()?),)*
+                };
+                rest.finish()?;
+                Ok(res)
+            }
+        }
+    };
+}
+
+enum_option! {SetOption{
+    "sat.var_decay" => VarDecay(f32),
+    "sat.clause_decay" => ClauseDecay(f64),
+    "sat.random_var_freq" => RandomVarFreq(f64),
+    "sat.random_seed" => RandomSeed(f64),
+    "sat.luby_restart" => LubyRestart(bool),
+    "sat.ccmin_mode" => CcminMode(i32),
+    "sat.phase_saving" => PhaseSaving(i32),
+    "sat.rnd_pol" => RndPol(bool),
+    "sat.rnd_init_act" => RndInitAct(bool),
+    "sat.garbage_frac" => GarbageFrac(f64),
+    "sat.min_learnts_lim" => MinLearntsLim(i32),
+    "sat.restart_first" => RestartFirst(i32),
+    "sat.restart_inc" => RestartInc(f64),
+    "sat.learntsize_factor" => LearntsizeFactor(f64),
+    "sat.learntsize_inc" => LearntsizeInc(f64),
+}}
 
 #[derive(Default)]
 enum State {
@@ -243,13 +344,14 @@ impl<'a, R: FullBufRead> CountingParser<'a, R> {
         Ok(self.next_full()?.0)
     }
 
-    fn try_next_number<N: TryFrom<u128>>(&mut self, default: N) -> Result<N> {
+    fn next_parse<N: FromSexp>(&mut self) -> Result<N> {
+        Ok(N::from_sexp(self.next()?)?)
+    }
+
+    fn try_next_parse<N: FromSexp>(&mut self) -> Result<Option<N>> {
         match self.try_next_full() {
-            None => Ok(default),
-            Some(x) => match x?.0 {
-                SexpToken::Number(n) => Ok(n.try_into().map_err(|_| ParseError::Overflow)?),
-                _ => Err(InvalidCommand),
-            },
+            None => Ok(None),
+            Some(x) => N::from_sexp(x?.0).map(Some),
         }
     }
 
@@ -723,7 +825,7 @@ impl<W: Write> Parser<W> {
                 if self.declared_sorts.contains_key(&name) {
                     return Err(Shadow(name));
                 }
-                let args = rest.try_next_number(0)?;
+                let args = rest.try_next_parse()?.unwrap_or(0);
                 rest.finish()?;
                 self.sort_stack.push(name);
                 self.declared_sorts.insert(name, args);
@@ -827,6 +929,29 @@ impl<W: Write> Parser<W> {
                         _ => return Err(InvalidCommand),
                     }
                 }
+            }
+            Smt2Command::SetOption => {
+                let mut prev_option = self.core.sat_options();
+                match SetOption::from_parser(rest)? {
+                    SetOption::VarDecay(x) => prev_option.var_decay = x,
+                    SetOption::ClauseDecay(x) => prev_option.clause_decay = x,
+                    SetOption::RandomVarFreq(x) => prev_option.random_var_freq = x,
+                    SetOption::RandomSeed(x) => prev_option.random_seed = x,
+                    SetOption::LubyRestart(x) => prev_option.luby_restart = x,
+                    SetOption::CcminMode(x) => prev_option.ccmin_mode = x,
+                    SetOption::PhaseSaving(x) => prev_option.phase_saving = x,
+                    SetOption::RndPol(x) => prev_option.rnd_pol = x,
+                    SetOption::RndInitAct(x) => prev_option.rnd_init_act = x,
+                    SetOption::GarbageFrac(x) => prev_option.garbage_frac = x,
+                    SetOption::MinLearntsLim(x) => prev_option.min_learnts_lim = x,
+                    SetOption::RestartFirst(x) => prev_option.restart_first = x,
+                    SetOption::RestartInc(x) => prev_option.restart_inc = x,
+                    SetOption::LearntsizeFactor(x) => prev_option.learntsize_factor = x,
+                    SetOption::LearntsizeInc(x) => prev_option.learntsize_inc = x,
+                }
+                self.core
+                    .set_sat_options(prev_option)
+                    .map_err(|()| InvalidOption)?;
             }
             _ => return self.parse_destructive_command(name, rest),
         }
@@ -964,7 +1089,7 @@ impl<W: Write> Parser<W> {
                 writeln!(self.writer, "{}", res.as_lower_str()).unwrap()
             }
             Smt2Command::Push => {
-                let n = rest.try_next_number(1)?;
+                let n = rest.try_next_parse()?.unwrap_or(1);
                 for _ in 0..n {
                     self.core.push();
                     let info = PushInfo {
@@ -975,7 +1100,7 @@ impl<W: Write> Parser<W> {
                 }
             }
             Smt2Command::Pop => {
-                let n = rest.try_next_number(1)?;
+                let n = rest.try_next_parse()?.unwrap_or(1);
                 if n > self.push_info.len() {
                     self.clear()
                 } else if n > 0 {

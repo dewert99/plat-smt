@@ -111,12 +111,17 @@ fn test_sequential_push_pop() {
 #[cfg(not(debug_assertions))]
 #[test]
 fn test_smtlib_benchmarks() {
-    use std::io::stderr;
+    use std::io::{stderr, Write};
     use std::process::{Command, Stdio};
     use walkdir::WalkDir;
 
     let mut out = Vec::new();
     let mut file_buf = Vec::new();
+    if let Ok(x) = std::env::var("SEED") {
+        writeln!(file_buf, "(set-option :sat.random_seed {x})").unwrap();
+        writeln!(file_buf, "(set-option :sat.rnd_init_act true)").unwrap();
+    }
+    let base_len = file_buf.len();
     let path = Path::new("benches/starexec");
     for x in WalkDir::new(path).into_iter().filter_map(Result::ok) {
         let path = x.path();
@@ -139,7 +144,7 @@ fn test_smtlib_benchmarks() {
                 from_utf8(&out).unwrap(),
                 from_utf8(&yices_out.stdout).unwrap()
             );
-            file_buf.clear();
+            file_buf.truncate(base_len);
             out.clear();
         }
     }

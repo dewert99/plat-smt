@@ -20,13 +20,20 @@ that accepts a subset of SMT2LIB syntax for the logic `QF_UF`
 - [x] `declare-const`
 - [x] `define-const`
 - [x] `push`,`pop`,`reset`
-- [ ] `set-option`
+- [x] `set-option`
 - [ ] `get-proof`
 
 ## Binary usage
 The binary (produced by `cargo build`) takes in a list of `.smt2` files  and evaluates sequentially as if they were a single concatenated file.
 This list can optionally be followed by `-i` which enters interactive mode after the files are evaluated
 
+## Parameters (`set-option`)
+The parameters currently all come from [batsat](https://docs.rs/batsat/latest/batsat/core/struct.SolverOpts.html), and are prefixed by `sat.`,
+for example random initial activations would be enabled with:
+
+`(set-option :sat.rnd_init_act true)`
+
+
 ## Misc
 * The `yices-smt2` file is from `https://yices.csl.sri.com/` and is only included for testing
-* If the environment variable `SEED` is set the initial decisions made are randomized based on it, this is only meant for testing and eventually should be handled by `(set-option)`
+* If the environment variable `SEED` is set the initial decisions made are randomized based on it when running the star exec tests (these should otherwise be configured via `set-option`)
