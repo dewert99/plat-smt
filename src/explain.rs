@@ -9,7 +9,7 @@ use std::ops::Deref;
 
 use crate::approx_bitset::{ApproxBitSet, IdSet};
 use crate::egraph::{Op, SymbolLang};
-use crate::euf::{id_for_bool, EClass};
+use crate::euf::EClass;
 use crate::util::minmax;
 use batsat::LSet;
 use egg::raw::RawEGraph;
@@ -405,12 +405,32 @@ impl<'x> ExplainState<'x, &'x RawEGraph<SymbolLang, EClass, egg::raw::semi_persi
             debug_assert!(!*flip);
             return;
         }
+        let this_flip = *flip;
+        *flip = false;
+        if let Some([lc0, lc1]) = self.eq_ids.check_node_is_eq(self.raw.id_to_node(left)) {
+            let Some([rc0, rc1]) = self.eq_ids.check_node_is_eq(self.raw.id_to_node(right)) else {
+                unreachable!("congruent nodes don't match");
+            };
+            // if we're trying to prove why (= x x) = (= y z) by congruence
+            // we would normally prove x = y and x = z, but since all reflexive equalities are
+            // equivalent at level 0, we can instead prove why (= y y) = (= y z) which just requires
+            // proving why y = z
+            if lc0 == lc1 {
+                trace!("id{left} = id{right} since id{rc0} = id{rc1}");
+                self.deferred_explanations.push((rc0, rc1));
+                return;
+            } else if rc0 == rc1 {
+                trace!("id{left} = id{right} since id{lc0} = id{lc1}");
+                self.deferred_explanations.push((lc0, lc1));
+                return;
+            }
+        }
         trace!("id{left} = id{right} by fused congruence {flip}");
         let current_node = self.raw.id_to_node(left);
         let next_node = self.raw.id_to_node(right);
         debug_assert!(current_node.matches(next_node));
         let left_children = current_node.children().iter().copied();
-        if *flip {
+        if this_flip {
             let right_children = [next_node.children()[1], next_node.children()[0]];
 
             self.deferred_explanations
@@ -421,7 +441,6 @@ impl<'x> ExplainState<'x, &'x RawEGraph<SymbolLang, EClass, egg::raw::semi_persi
             self.deferred_explanations
                 .extend(left_children.zip(right_children));
         }
-        *flip = false;
     }
 
     fn explain_equivalence_h(&mut self, left: Id, right: Id) {
@@ -453,29 +472,7 @@ impl<'x> ExplainState<'x, &'x RawEGraph<SymbolLang, EClass, egg::raw::semi_persi
                 trace!("Pending {next_left} = {next_right} the {assoc_union}th union");
 
                 let ids = minmax(left, right);
-                if ids[0] == id_for_bool(true)
-                    && matches!(just.expand(), EJustification::Congruence(_))
-                {
-                    if let Some([child1, child2]) =
-                        self.eq_ids.check_node_is_eq(self.raw.id_to_node(ids[1]))
-                    {
-                        let (eq_age, _) = self.max_assoc_union(child1, child2);
-                        // make sure we knew child1 = child2 before true = (= child1 child2)
-                        if eq_age < assoc_union {
-                            trace!("id{left} = id{right} since id{child1} = id{child2}");
-                            // we are explaining why true = (= child1 child2) so we should just explain
-                            // child1 = child2
-                            self.deferred_explanations.push((child1, child2));
-
-                            self.handle_congruence(left_congruence, left, &mut flip);
-                            // so we can skip this subtree
-                            left_congruence = right;
-                            // tail call with to equal ids to force a return
-                            args = (right, right);
-                            continue;
-                        }
-                    }
-                } else if assoc_union < self.last_unions
+                if assoc_union < self.last_unions
                     && !matches!(self.raw.get_class(left).deref(), EClass::Bool(_))
                 {
                     // avoid equalities between booleans
