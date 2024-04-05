@@ -14,17 +14,10 @@ use std::borrow::BorrowMut;
 use std::fmt::{Debug, Display, Formatter};
 use std::ops::{BitXor, Deref, Not};
 
+#[derive(Default)]
 struct NoCb;
 impl Callbacks for NoCb {}
 type BatSolver = batsat::Solver<NoCb>;
-fn create_solver() -> BatSolver {
-    let mut opts = SolverOpts::default();
-    if let Ok(x) = std::env::var("SEED") {
-        opts.rnd_init_act = true;
-        opts.random_seed = x.parse().unwrap();
-    }
-    BatSolver::new(opts, NoCb)
-}
 
 /// The main solver structure including the sat solver and egraph.
 ///
@@ -42,7 +35,7 @@ impl Default for Solver {
         Solver {
             euf: Default::default(),
             pending_equalities: vec![],
-            sat: BufferedSolver::new(create_solver()),
+            sat: BufferedSolver::default(),
             function_info_buf: Default::default(),
             bool_sort: Sort::new(BaseSort {
                 name: Symbol::new("Bool"),
@@ -591,6 +584,13 @@ impl Solver {
     pub fn function_info(&mut self) -> (FullFunctionInfo<'_>, &Self) {
         self.euf.function_info(&mut self.function_info_buf);
         (self.function_info_buf.with_euf(&self.euf), &*self)
+    }
+    pub fn sat_options(&self) -> SolverOpts {
+        self.sat.options()
+    }
+
+    pub fn set_sat_options(&mut self, options: SolverOpts) -> Result<(), ()> {
+        self.sat.set_options(options)
     }
 }
 
