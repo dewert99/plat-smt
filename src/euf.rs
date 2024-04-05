@@ -228,7 +228,7 @@ impl Theory<EUF> for EUFInner {
                 let (id, res) =
                     this.add_uncanonical(this.eq_ids.eq_op, children![id0, id1], lit, acts);
                 this.add_id_to_lit(id, lit);
-                this.make_equality_true(id0);
+                this.make_equality_true(id0, id1);
                 debug!("lit{lit:?} is defined as (= {id0} {id1}) mid-search");
                 res.expect("Adding mid search shouldn't cause conflict");
             } else {
@@ -586,17 +586,21 @@ impl EUFInner {
                 self.eq_ids.insert(ids, l);
             }
 
-            self.make_equality_true(id1);
+            self.make_equality_true(id1, id2);
         }
         debug!("{res:?} is defined as (= id{id1:?} id{id2:?}) and given id{id:?}");
         res
     }
 
-    // union (= id id) to true
-    fn make_equality_true(&mut self, id: Id) {
-        let eq_self = self.egraph.add(self.eq_ids.eq_op, children![id, id], |_| {
-            EClass::Bool(BoolClass::Const(true))
-        });
+    // union one of (= alt_id alt_id) or (= id id) with true
+    fn make_equality_true(&mut self, id: Id, alt_id: Id) {
+        let candidate = SymbolLang::new(self.eq_ids.eq_op, children![alt_id, alt_id]);
+        let eq_self = match self.egraph.lookup(candidate) {
+            Some(id) => id,
+            None => self.egraph.add(self.eq_ids.eq_op, children![id, id], |_| {
+                EClass::Bool(BoolClass::Const(true))
+            }),
+        };
         let tid = self.id_for_bool(true);
         self.egraph
             .union(tid, eq_self, Justification::NOOP, |_, _| {

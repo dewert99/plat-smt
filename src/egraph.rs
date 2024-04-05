@@ -177,7 +177,7 @@ impl SymbolLang {
             }
         }
     }
-    fn new(op: Op, children: Children) -> Self {
+    pub(crate) fn new(op: Op, children: Children) -> Self {
         debug_assert_eq!(op.0 & FLIPPED_MASK, 0, "op should not be flipped");
         let mut res = SymbolLang { op, children };
         // don't flip here since we want all un-cannonical nodes to be not flipped
