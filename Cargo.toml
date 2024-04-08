@@ -7,7 +7,7 @@ edition = "2021"
 
 [dependencies]
 batsat = { git = "https://github.com/dewert99/batsat", branch = "change_options", features = ["logging"] }
-egg = {git = "https://github.com/dewert99/egg", branch = "extras"}
+egg = {git = "https://github.com/dewert99/egg", branch = "optimizations"}
 hashbrown = "0.14.3"
 log = { version = "0.4.20", features = [] }
 internment = "0.7.4"
