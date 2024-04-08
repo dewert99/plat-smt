@@ -1,7 +1,7 @@
 sat
 (
- (define-fun a () D D!val!3)
- (define-fun b () D D!val!4)
- (define-fun c () D D!val!3)
+ (define-fun a () D @D_3)
+ (define-fun b () D @D_4)
+ (define-fun c () D @D_3)
 )
 unsat
