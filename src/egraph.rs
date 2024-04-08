@@ -309,7 +309,7 @@ impl EGraph<EClass> {
     }
 
     pub fn explain_equivalence(
-        &self,
+        &mut self,
         id1: Id,
         id2: Id,
         res: &mut LSet,
