@@ -1,11 +1,9 @@
-use std::cell::Cell;
 // https://www.cs.upc.edu/~oliveras/rta05.pdf
 // 2.1 Union-find with an O(k log n) Explain operation
 use batsat::intmap::AsIndex;
 use batsat::Lit;
 use std::fmt::{Debug, Formatter};
-use std::mem;
-use std::ops::Deref;
+use std::ops::{Deref, DerefMut};
 
 use crate::approx_bitset::{ApproxBitSet, IdSet};
 use crate::egraph::{Op, SymbolLang};
@@ -202,52 +200,21 @@ struct StackElem {
     right: Id,
 }
 
-/// Cached `Vec`s that will always be cleared before they are used,
-/// they are used to avoid unnecessary allocations
-#[perfect_derive(Default)]
-struct VecCache<T>(Cell<Vec<T>>);
-
-impl<T> Debug for VecCache<T> {
-    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("VecCache").finish()
-    }
-}
-
-impl<T> Clone for VecCache<T> {
-    fn clone(&self) -> Self {
-        VecCache(Cell::new(Vec::new()))
-    }
-}
-
-impl<T> VecCache<T> {
-    fn take(&self) -> Vec<T> {
-        let mut res = self.0.take();
-        res.clear();
-        res
-    }
-
-    fn set(&self, v: Vec<T>) {
-        self.0.set(v)
-    }
-}
-
 #[derive(Debug, Clone, Default)]
 pub struct Explain {
     union_info: Vec<UnionInfo>,
     // index into union_info
     assoc_unions: Vec<u32>,
-    stack_cache: VecCache<StackElem>,
-    deferred_explanations_cache: VecCache<(Id, Id)>,
+    // we defer congruence explanations to avoid recursive calls
+    stack: Vec<StackElem>,
+    // stack explain equivalence
+    deferred_explanations: Vec<(Id, Id)>,
 }
 
 pub(crate) struct ExplainState<'a, X> {
-    explain: &'a Explain,
+    explain: &'a mut Explain,
     out: &'a mut LSet,
     negate: bool,
-    // we defer congruence explanations to avoid recursive calls
-    deferred_explanations: Vec<(Id, Id)>,
-    // stack explain equivalence
-    stack: Vec<StackElem>,
     raw: X,
     // unions in union_info before base_unions are proved at the base decision level
     base_unions: u32,
@@ -288,7 +255,7 @@ impl Explain {
     }
 
     pub(crate) fn promote<'a, X>(
-        &'a self,
+        &'a mut self,
         raw: X,
         out: &'a mut LSet,
         negate: bool,
@@ -296,14 +263,14 @@ impl Explain {
         last_unions: u32,
         eq_ids: &'a mut EqIds,
     ) -> ExplainState<'a, X> {
+        self.stack.clear();
+        self.deferred_explanations.clear();
         ExplainState {
             explain: self,
             raw,
             base_unions,
             negate,
-            deferred_explanations: self.deferred_explanations_cache.take(),
             out,
-            stack: self.stack_cache.take(),
             eq_ids,
             last_unions,
         }
@@ -318,12 +285,9 @@ impl<'a, X> Deref for ExplainState<'a, X> {
     }
 }
 
-impl<'a, X> Drop for ExplainState<'a, X> {
-    fn drop(&mut self) {
-        let stack = mem::take(&mut self.stack);
-        let deferred_explanations = mem::take(&mut self.deferred_explanations);
-        self.stack_cache.set(stack);
-        self.deferred_explanations_cache.set(deferred_explanations);
+impl<'a, X> DerefMut for ExplainState<'a, X> {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        self.explain
     }
 }
 
