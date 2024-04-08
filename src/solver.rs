@@ -53,7 +53,7 @@ pub(crate) struct UExp {
 
 impl Debug for UExp {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{}!val!{:?}", self.sort.name, self.id)
+        write!(f, "@{}_{:?}", self.sort.name, self.id)
     }
 }
 
@@ -128,12 +128,11 @@ impl Debug for BoolExp {
         match self {
             BoolExp::Const(c) => Debug::fmt(c, f),
             BoolExp::Unknown(l) => {
-                write!(
-                    f,
-                    "{}Bool!val!{:?}",
-                    if l.sign() { "" } else { "!" },
-                    l.var()
-                )
+                if l.sign() {
+                    write!(f, "@Bool_{:?}", l.var())
+                } else {
+                    write!(f, "(not @Bool_{:?})", l.var())
+                }
             }
         }
     }
