@@ -12,6 +12,8 @@ mod sort;
 mod theory;
 mod util;
 
+use symbol_table::GlobalSymbol as Symbol;
+
 #[doc(inline)]
 pub use junction::{Conjunction, Disjunction};
 pub use parser::{interp_smt2, interp_smt2_with_reader};

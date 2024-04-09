@@ -57,8 +57,8 @@ fn test(#[files("tests/smt2/**/*.smt2")] mut file: PathBuf) {
         let mut stdout_actual = Vec::new();
         let mut stderr_actual = Vec::new();
         interp_smt2(&smt2_data, &mut stdout_actual, &mut stderr_actual);
-        assert_eq!(String::from_utf8(stdout_actual).unwrap(), stdout_expected);
         assert_eq!(String::from_utf8(stderr_actual).unwrap(), stderr_expected);
+        assert_eq!(String::from_utf8(stdout_actual).unwrap(), stdout_expected);
     }
 }
 
@@ -122,7 +122,7 @@ fn test_smtlib_benchmarks() {
         writeln!(file_buf, "(set-option :sat.rnd_init_act true)").unwrap();
     }
     let base_len = file_buf.len();
-    let path = Path::new("benches/starexec");
+    let path = Path::new("benches/starexec/non-incremental");
     for x in WalkDir::new(path).into_iter().filter_map(Result::ok) {
         let path = x.path();
         if path.extension() == Some("smt2".as_ref()) {

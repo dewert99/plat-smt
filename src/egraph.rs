@@ -1,7 +1,8 @@
+use crate::Symbol;
 use batsat::LSet;
 pub use egg::raw::semi_persistent1::PushInfo;
-use egg::raw::{semi_persistent1::UndoLog, EGraphResidual, RawEClass, RawEGraph};
-use egg::{Id, Language, Symbol};
+use egg::raw::{semi_persistent1::UndoLog, EGraphResidual, Language, RawEClass, RawEGraph};
+use egg::Id;
 use smallvec::SmallVec;
 use std::cmp::Ordering;
 use std::fmt::{Debug, Formatter};

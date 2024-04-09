@@ -7,7 +7,8 @@ use crate::parser_core::{ParseError, SexpParser, SexpToken, SpanRange};
 use crate::solver::{BoolExp, Exp, SolveResult, Solver, UnsatCoreConjunction, UnsatCoreInfo};
 use crate::sort::{BaseSort, Sort};
 use crate::util::{format_args2, parenthesized, Bind};
-use egg::{Id, Symbol};
+use crate::Symbol;
+use egg::Id;
 use hashbrown::HashMap;
 use internment::Intern;
 use log::debug;
@@ -150,14 +151,14 @@ macro_rules! enum_str {
         #[derive(Copy, Clone)]
         enum $name {
             $($var,)*
-            Unknown(::egg::Symbol),
+            Unknown(Symbol),
         }
 
         impl $name {
             fn from_str(s: &str) -> Self {
                 match s {
                     $($s => Self::$var,)*
-                    _ => Self::Unknown(::egg::Symbol::new(s)),
+                    _ => Self::Unknown(Symbol::new(s)),
                 }
             }
 
