@@ -66,13 +66,14 @@ dependencies = [
  "codspeed-criterion-compat",
  "egg",
  "either",
- "env_logger 0.10.2",
+ "env_logger",
  "hashbrown 0.14.3",
  "internment",
  "log",
  "perfect-derive",
  "rstest",
  "smallvec",
+ "symbol_table",
  "thiserror",
  "walkdir",
 ]
@@ -288,19 +289,13 @@ checksum = "7a81dae078cea95a014a339291cec439d2f232ebe854a9d672b796c6afafa9b7"
 [[package]]
 name = "egg"
 version = "0.9.5"
-source = "git+https://github.com/dewert99/egg?branch=optimizations#1c7ecbb8905e38e14850ed630a04446240bb7afb"
+source = "git+https://github.com/dewert99/egg?branch=main#e706844af332ab13c549ea46014c65b1a140400f"
 dependencies = [
- "env_logger 0.9.3",
  "fxhash",
  "hashbrown 0.14.3",
- "indexmap",
- "instant",
  "log",
  "saturating",
  "smallvec",
- "symbol_table",
- "symbolic_expressions",
- "thiserror",
 ]
 
 [[package]]
@@ -308,15 +303,6 @@ name = "either"
 version = "1.10.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "11157ac094ffbdde99aa67b23417ebdd801842852b500e395a45a9c0aac03e4a"
-
-[[package]]
-name = "env_logger"
-version = "0.9.3"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "a12e6657c4c97ebab115a42dcee77225f7f482cdd841cf7088c657a42e9e00e7"
-dependencies = [
- "log",
-]
 
 [[package]]
 name = "env_logger"
@@ -397,25 +383,6 @@ name = "humantime"
 version = "2.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "9a3a5bfb195931eeb336b2a7b4d761daec841b97f947d34394601737a7bba5e4"
-
-[[package]]
-name = "indexmap"
-version = "1.9.3"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "bd070e393353796e801d209ad339e89596eb4c8d430d18ede6a1cced8fafbd99"
-dependencies = [
- "autocfg",
- "hashbrown 0.12.3",
-]
-
-[[package]]
-name = "instant"
-version = "0.1.12"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "7a5bbe824c507c5da5956355e86a746d82e0e1464f65d862cc5e71da70e94b2c"
-dependencies = [
- "cfg-if",
-]
 
 [[package]]
 name = "internment"
@@ -786,12 +753,6 @@ dependencies = [
  "ahash 0.7.8",
  "hashbrown 0.12.3",
 ]
-
-[[package]]
-name = "symbolic_expressions"
-version = "5.0.3"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "7c68d531d83ec6c531150584c42a4290911964d5f0d79132b193b67252a23b71"
 
 [[package]]
 name = "syn"

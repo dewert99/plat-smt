@@ -1,5 +1,5 @@
 use crate::util::display_debug;
-use egg::Symbol;
+use crate::Symbol;
 use internment::Intern;
 use std::fmt::{Debug, Formatter};
 
