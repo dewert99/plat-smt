@@ -94,6 +94,16 @@ impl<'a, T: Display> Display for Spanned<'a, T> {
     }
 }
 
+impl<'a, T> Spanned<'a, T> {
+    pub fn map<U>(self, f: impl FnOnce(T) -> U) -> Spanned<'a, U> {
+        Spanned {
+            data: f(self.data),
+            src: &self.src,
+            span: self.span,
+        }
+    }
+}
+
 pub(crate) struct SexpLexer<R> {
     reader: R,
     current_line: usize,
@@ -457,22 +467,26 @@ impl<'a> SexpParser<'a, &'static [u8]> {
 }
 
 impl<'a, R: FullBufRead> SexpParser<'a, R> {
-    pub fn parse_stream_keep_going<E>(
+    pub fn parse_stream_keep_going<E, C>(
         reader: R,
-        mut f: impl FnMut(Result<SexpToken<'_, R>, ParseError>) -> Result<(), E>,
-        mut handle_err: impl FnMut(Spanned<E>),
+        mut ctx: C,
+        mut f: impl FnMut(&mut C, Result<SexpToken<'_, R>, ParseError>) -> Result<(), E>,
+        mut handle_err: impl FnMut(&mut C, Spanned<E>),
     ) {
         let mut lexer = SexpLexer::new(reader);
         let mut p = SexpParser(&mut lexer);
         loop {
             let next = p.next_raw(false);
             if next.is_some() {
-                if let Err(e) = f(next.unwrap()) {
-                    handle_err(Spanned {
-                        data: e,
-                        span: p.0.last_span,
-                        src: p.0.reader.data(),
-                    });
+                if let Err(e) = f(&mut ctx, next.unwrap()) {
+                    handle_err(
+                        &mut ctx,
+                        Spanned {
+                            data: e,
+                            span: p.0.last_span,
+                            src: p.0.reader.data(),
+                        },
+                    );
                 }
             } else {
                 return;

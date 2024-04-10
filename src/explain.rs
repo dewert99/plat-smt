@@ -6,10 +6,9 @@ use std::fmt::{Debug, Formatter};
 use std::ops::{Deref, DerefMut};
 
 use crate::approx_bitset::{ApproxBitSet, IdSet};
-use crate::egraph::{Op, SymbolLang};
+use crate::egraph::{SymbolLang, EQ_OP};
 use crate::euf::EClass;
 use crate::util::minmax;
-use crate::Symbol;
 use batsat::LSet;
 use egg::raw::RawEGraph;
 use egg::{raw::Language, Id};
@@ -65,22 +64,11 @@ impl Debug for EqIdInfo {
     }
 }
 
-#[perfect_derive(Debug)]
+#[perfect_derive(Debug, Default)]
 pub(crate) struct EqIds {
     map: HashMap<[Id; 2], EqIdInfo>,
     /// equalities we would like to have literals for
     pub requests: Vec<[Id; 2]>,
-    pub eq_op: Op,
-}
-
-impl Default for EqIds {
-    fn default() -> Self {
-        EqIds {
-            map: Default::default(),
-            requests: vec![],
-            eq_op: Op::new(Symbol::new("="), true),
-        }
-    }
 }
 
 impl EqIds {
@@ -123,7 +111,7 @@ impl EqIds {
     }
 
     pub fn check_node_is_eq(&self, node: &SymbolLang) -> Option<[Id; 2]> {
-        if node.op() == self.eq_op {
+        if node.op() == EQ_OP {
             match node.children() {
                 &[id1, id2] => Some([id1, id2]),
                 _ => unreachable!("equality without two children {node:?}",),

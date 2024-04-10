@@ -1,9 +1,9 @@
-use crate::egraph::{children, Children, EGraph, Op, PushInfo as EGPushInfo, SymbolLang};
+use crate::egraph::{children, Children, EGraph, Op, PushInfo as EGPushInfo, SymbolLang, EQ_OP};
 use crate::explain::{EqIds, Justification};
+use crate::intern::{Sort, SymbolInfo, FALSE_SYM, TRUE_SYM};
 use crate::solver::{BoolExp, Exp, UExp};
-use crate::sort::Sort;
 use crate::theory::{IncrementalWrapper, Theory};
-use crate::util::{minmax, Bind, DebugIter};
+use crate::util::{format_args2, minmax, Bind, DebugIter};
 use crate::Symbol;
 use batsat::{LMap, LSet};
 use batsat::{Lit, TheoryArg, Var};
@@ -139,13 +139,11 @@ pub struct EUFInner {
 
 impl Default for EUFInner {
     fn default() -> Self {
-        let true_sym = Symbol::new("true").into();
-        let false_sym = Symbol::new("false").into();
         let mut egraph = EGraph::default();
-        let fid = egraph.add(false_sym, Children::new(), |_| {
+        let fid = egraph.add(FALSE_SYM.into(), Children::new(), |_| {
             EClass::Bool(BoolClass::Const(false))
         });
-        let tid = egraph.add(true_sym, Children::new(), |_| {
+        let tid = egraph.add(TRUE_SYM.into(), Children::new(), |_| {
             EClass::Bool(BoolClass::Const(true))
         });
         let mut res = EUFInner {
@@ -226,8 +224,7 @@ impl Theory<EUF> for EUFInner {
             this.requests_handled += 1;
             if this.find(id0) != this.find(id1) {
                 let lit = this.eq_ids.get_or_insert([id0, id1], || acts.mk_new_lit());
-                let (id, res) =
-                    this.add_uncanonical(this.eq_ids.eq_op, children![id0, id1], lit, acts);
+                let (id, res) = this.add_uncanonical(EQ_OP, children![id0, id1], lit, acts);
                 this.add_id_to_lit(id, lit);
                 this.make_equality_true(id0, id1);
                 debug!("lit{lit:?} is defined as (= {id0} {id1}) mid-search");
@@ -496,7 +493,7 @@ impl EUF {
 impl EUFInner {
     fn init(&mut self) {
         let t_eq_f = self.egraph.add(
-            self.eq_ids.eq_op,
+            EQ_OP,
             children![id_for_bool(false), id_for_bool(true)],
             |_| EClass::Bool(BoolClass::Const(false)),
         );
@@ -546,7 +543,7 @@ impl EUFInner {
         } else {
             let b = match &*self.egraph[id] {
                 EClass::Uninterpreted(x) => {
-                    unreachable!("merging eclasses with different sorts {}, Bool", x)
+                    unreachable!("merging eclasses with different sorts {:?}, Bool", x)
                 }
                 EClass::Bool(b) => b.to_exp(),
                 _ => unreachable!(),
@@ -575,11 +572,8 @@ impl EUFInner {
         if self.egraph.find(id1) == self.egraph.find(id2) {
             return BoolExp::TRUE;
         }
-        let (res, added, id) = self.add_bool_node(
-            self.eq_ids.eq_op,
-            Children::from_slice(&[id1, id2]),
-            fresh_lit,
-        );
+        let (res, added, id) =
+            self.add_bool_node(EQ_OP, Children::from_slice(&[id1, id2]), fresh_lit);
         if added {
             if let BoolExp::Unknown(l) = res {
                 let ids = minmax(id1, id2);
@@ -595,10 +589,10 @@ impl EUFInner {
 
     // union one of (= alt_id alt_id) or (= id id) with true
     fn make_equality_true(&mut self, id: Id, alt_id: Id) {
-        let candidate = SymbolLang::new(self.eq_ids.eq_op, children![alt_id, alt_id]);
+        let candidate = SymbolLang::new(EQ_OP, children![alt_id, alt_id]);
         let eq_self = match self.egraph.lookup(candidate) {
             Some(id) => id,
-            None => self.egraph.add(self.eq_ids.eq_op, children![id, id], |_| {
+            None => self.egraph.add(EQ_OP, children![id, id], |_| {
                 EClass::Bool(BoolClass::Const(true))
             }),
         };
@@ -614,8 +608,12 @@ impl EUFInner {
             .add(sym, children, |_| EClass::Uninterpreted(sort))
     }
 
-    pub(crate) fn make_distinct(&mut self, ids: impl IntoIterator<Item = Id>) -> Result {
-        let s = Symbol::new(format!("distinct|{}", self.distinct_gensym));
+    pub(crate) fn make_distinct(
+        &mut self,
+        ids: impl IntoIterator<Item = Id>,
+        syms: &mut SymbolInfo,
+    ) -> Result {
+        let s = syms.gen_sym("distinct");
         self.distinct_gensym += 1;
         for id in ids {
             let mut added = false;
@@ -630,11 +628,11 @@ impl EUFInner {
         Ok(())
     }
 
-    pub fn id_for_lit(&mut self, lit: Lit) -> Id {
+    pub fn id_for_lit(&mut self, lit: Lit, syms: &mut SymbolInfo) -> Id {
         match &mut self.lit_ids[lit].expand() {
             Some(id) => *id,
             None => {
-                let sym = Symbol::new(format!("bool|lit|{lit:?}"));
+                let sym = syms.gen_sym(&format_args2!("bool|lit|{lit:?}"));
                 self.add_bool_node(sym.into(), Children::new(), || lit).2
             }
         }
