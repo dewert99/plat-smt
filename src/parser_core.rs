@@ -425,7 +425,7 @@ pub enum SexpToken<'a, R: FullBufRead> {
 /// use std::io::Cursor;
 /// use bat_egg_smt::parser_core::{SexpParser, SexpToken, Radix};
 /// let sexp = "(|hello world| (+ x 1 (+ a b) (+ c (+ d e))) 42)";
-/// SexpParser::parse_stream_keep_going(sexp.as_bytes(), |token| {
+/// SexpParser::parse_stream_keep_going(sexp.as_bytes(), (), |_, token| {
 ///     let Ok(SexpToken::List(mut list)) = token else {unreachable!()};
 ///     let t1 = list.next(); // *
 ///     assert!(matches!(t1, Some(Ok(SexpToken::Symbol("hello world")))));
@@ -446,7 +446,7 @@ pub enum SexpToken<'a, R: FullBufRead> {
 ///     drop(t3);
 ///     assert!(list.next().is_none());
 ///     Ok::<(), ()>(())
-/// }, |_| unreachable!());
+/// }, |_, _| unreachable!());
 /// ```
 pub struct SexpParser<'a, R: FullBufRead>(&'a mut SexpLexer<R>);
 
