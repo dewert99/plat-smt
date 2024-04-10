@@ -2,8 +2,8 @@ use crate::buffered_solver::BufferedSolver;
 use crate::egraph::Children;
 use crate::euf::{FullFunctionInfo, FunctionInfo, SatSolver, EUF};
 use crate::explain::Justification;
+use crate::intern::{DisplayInterned, InternInfo, Sort, BOOL_SORT};
 use crate::junction::*;
-use crate::sort::{BaseSort, Sort};
 use crate::util::display_debug;
 use crate::Symbol;
 use batsat::{lbool, Callbacks, Lit, SolverInterface, SolverOpts, Var};
@@ -12,7 +12,7 @@ use either::Either;
 use hashbrown::HashMap;
 use log::debug;
 use std::borrow::BorrowMut;
-use std::fmt::{Debug, Display, Formatter};
+use std::fmt::{Debug, Formatter};
 use std::ops::{BitXor, Deref, Not};
 
 #[derive(Default)]
@@ -23,42 +23,27 @@ type BatSolver = batsat::Solver<NoCb>;
 /// The main solver structure including the sat solver and egraph.
 ///
 /// It allows constructing and asserting expressions [`Exp`] within the solver
+#[derive(Default)]
 pub struct Solver {
     euf: EUF,
     pending_equalities: Vec<(Id, Id)>,
     sat: BufferedSolver<BatSolver>,
     function_info_buf: FunctionInfo,
-    bool_sort: Sort,
+    pub intern: InternInfo,
 }
 
-impl Default for Solver {
-    fn default() -> Self {
-        Solver {
-            euf: Default::default(),
-            pending_equalities: vec![],
-            sat: BufferedSolver::default(),
-            function_info_buf: Default::default(),
-            bool_sort: Sort::new(BaseSort {
-                name: Symbol::new("Bool"),
-                params: Box::new([]),
-            }),
-        }
-    }
-}
-
-#[derive(Copy, Clone)]
+#[derive(Copy, Clone, Debug)]
 pub(crate) struct UExp {
     pub(crate) id: Id,
     pub(crate) sort: Sort,
 }
 
-impl Debug for UExp {
-    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
-        write!(f, "@{}_{:?}", self.sort.name, self.id)
+impl DisplayInterned for UExp {
+    fn fmt(&self, i: &InternInfo, f: &mut Formatter<'_>) -> std::fmt::Result {
+        let sym = i.sorts.resolve(self.sort).0;
+        write!(f, "@{}_{:?}", sym.with_intern(i), self.id)
     }
 }
-
-display_debug!(UExp);
 
 /// A boolean sorted expression within a [`Solver`]
 ///
@@ -160,9 +145,16 @@ impl Debug for Exp {
     }
 }
 
-display_debug!(Exp);
+impl DisplayInterned for Exp {
+    fn fmt(&self, i: &InternInfo, f: &mut Formatter<'_>) -> std::fmt::Result {
+        match &self.0 {
+            EExp::Bool(b) => DisplayInterned::fmt(b, i, f),
+            EExp::Uninterpreted(u) => DisplayInterned::fmt(u, i, f),
+        }
+    }
+}
 
-pub trait ExpLike: Into<Exp> + Copy + Debug + Display {
+pub trait ExpLike: Into<Exp> + Copy + Debug + DisplayInterned {
     fn canonize(self, solver: &Solver) -> Self;
 }
 
@@ -356,7 +348,7 @@ impl Solver {
 
     /// Assert that no pair of `Id`s from `ids` are equal to each other
     pub fn assert_distinct(&mut self, ids: impl IntoIterator<Item = Id>) {
-        if let Err(()) = self.euf.make_distinct(ids) {
+        if let Err(()) = self.euf.make_distinct(ids, &mut self.intern.symbols) {
             self.sat.add_clause([]);
         }
     }
@@ -384,7 +376,7 @@ impl Solver {
             BoolExp::Unknown(u) => {
                 let tid = self.id_sort(t).0;
                 let eid = self.id_sort(e).0;
-                let sym = Symbol::new(format!("if|{u:?}|id{tid}|id{eid}"));
+                let sym = self.intern.symbols.gen_sym("if");
                 let fresh = self.sorted_fn(sym, Children::new(), tsort);
                 let fresh_id = self.id_sort(fresh).0;
                 let eqt = self.raw_eq(fresh_id, tid);
@@ -400,7 +392,7 @@ impl Solver {
                 fresh
             }
         };
-        debug!("{res} is bound to (ite {i} {t} {e})");
+        debug!("{res:?} is bound to (ite {i:?} {t:?} {e:?})");
         Ok(res)
     }
 
@@ -412,7 +404,7 @@ impl Solver {
     /// call expressions with the same name but different return sorts do not become congruently
     /// equal (This would cause a panic when it happens)
     pub fn sorted_fn(&mut self, fn_name: Symbol, children: Children, sort: Sort) -> Exp {
-        if sort == self.bool_sort {
+        if sort == BOOL_SORT {
             self.bool_fn(fn_name, children).into()
         } else {
             let id = self
@@ -551,8 +543,11 @@ impl Solver {
     /// See [`sorted_fn`](Solver::sorted_fn) and  [`bool_fn`](Solver::bool_fn)
     pub fn id_sort(&mut self, exp: Exp) -> (Id, Sort) {
         match exp.0 {
-            EExp::Bool(BoolExp::Const(b)) => (self.euf.id_for_bool(b), self.bool_sort),
-            EExp::Bool(BoolExp::Unknown(lit)) => (self.euf.id_for_lit(lit), self.bool_sort),
+            EExp::Bool(BoolExp::Const(b)) => (self.euf.id_for_bool(b), BOOL_SORT),
+            EExp::Bool(BoolExp::Unknown(lit)) => (
+                self.euf.id_for_lit(lit, &mut self.intern.symbols),
+                BOOL_SORT,
+            ),
             EExp::Uninterpreted(u) => (u.id, u.sort),
         }
     }
@@ -560,20 +555,20 @@ impl Solver {
     /// Returns the sort of `exp`
     pub fn sort(&self, exp: Exp) -> Sort {
         match exp.0 {
-            EExp::Bool(_) => self.bool_sort,
+            EExp::Bool(_) => BOOL_SORT,
             EExp::Uninterpreted(u) => u.sort,
         }
     }
 
     /// Returns the boolean sort
     pub fn bool_sort(&self) -> Sort {
-        self.bool_sort
+        BOOL_SORT
     }
 
     /// Simplifies `t` based on the current assertions
     pub fn canonize<T: ExpLike>(&self, t: T) -> T {
         let res = t.canonize(self);
-        debug!("{t} canonized to {res}");
+        debug!("{t:?} canonized to {res:?}");
         res
     }
 

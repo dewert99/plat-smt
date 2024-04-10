@@ -8,7 +8,6 @@ use std::cmp::Ordering;
 use std::fmt::{Debug, Formatter};
 use std::hash::{Hash, Hasher};
 use std::mem;
-use std::num::NonZeroU32;
 use std::ops::{Deref, Index};
 
 use crate::explain::{EqIds, Explain, Justification};
@@ -16,29 +15,24 @@ use crate::explain::{EqIds, Explain, Justification};
 const N: usize = 4;
 pub type Children = SmallVec<[Id; N]>;
 use crate::euf::EClass;
+use crate::intern::EQ_SYM;
 pub use smallvec::smallvec as children;
 
-// The first 4 bits in a Symbol are already used for sharding, so we steal the next 2 bits for
-// representation whether an op is symmetrical and whether it has been flipped respectively.
-// This leaves us with 32 - 4 - 2 = 26 bits to represent about 67 million different `Symbol`s
-
-const SYMBOL_SHARD_BITS: u32 = 4;
-
-const SYMMETRY_SHIFT: u32 = u32::BITS - SYMBOL_SHARD_BITS - 1;
+const SYMMETRY_SHIFT: u32 = u32::BITS - 1;
 const SYMMETRY_MASK: u32 = 1 << SYMMETRY_SHIFT;
 
-const FLIPPED_SHIFT: u32 = u32::BITS - SYMBOL_SHARD_BITS - 2;
+const FLIPPED_SHIFT: u32 = u32::BITS - 2;
 const FLIPPED_MASK: u32 = 1 << FLIPPED_SHIFT;
 
-const SYMBOL_MASK: u32 = u32::MAX ^ FLIPPED_MASK ^ SYMMETRY_MASK;
+const SYMBOL_MASK: u32 = u32::MAX >> 2;
 
 #[derive(Copy, Clone)]
 pub struct Op(u32);
 
 impl Op {
-    pub fn new(sym: Symbol, symmetric: bool) -> Self {
-        let sym = u32::from(NonZeroU32::from(sym));
-        assert_eq!(sym & SYMBOL_MASK, sym);
+    pub const fn new(sym: Symbol, symmetric: bool) -> Self {
+        let sym = sym.0;
+        assert!(sym & SYMBOL_MASK == sym);
         Op(sym | (symmetric as u32) << SYMMETRY_SHIFT)
     }
 
@@ -60,7 +54,7 @@ impl Op {
     }
 
     pub fn sym(self) -> Symbol {
-        Symbol::from(NonZeroU32::new(self.sym_u32()).unwrap())
+        Symbol(self.sym_u32())
     }
 
     fn sym_u32(self) -> u32 {
@@ -68,9 +62,11 @@ impl Op {
     }
 }
 
+pub const EQ_OP: Op = Op::new(EQ_SYM, true);
+
 #[test]
 fn test_flip() {
-    let op1 = Op::new(Symbol::new("test_sym"), true);
+    let op1 = Op::new(EQ_SYM, true);
     use crate::explain::EJustification;
     assert!(matches!(
         op1.congruence_just(op1).expand(),

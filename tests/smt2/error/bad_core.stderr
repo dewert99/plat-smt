@@ -1,4 +1,4 @@
-The last command was not `check-sat-assuming` that returned `Unsat` at 4:2
+The last command was not `check-sat-assuming` that returned `unsat` at 4:2
 (get-unsat-core)
  ^
 
