@@ -50,7 +50,7 @@ dependencies = [
 [[package]]
 name = "batsat"
 version = "0.5.0"
-source = "git+https://github.com/dewert99/batsat?branch=safe#7c868cba73d5bf396d2fa8201c3a8e32fb378d76"
+source = "git+https://github.com/dewert99/batsat?branch=safe#00a153f39db5eb2e2c952573619a07499fe88757"
 dependencies = [
  "bit-vec",
  "bytemuck",
