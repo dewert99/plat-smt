@@ -1,4 +1,4 @@
-use hashbrown::hash_map::DefaultHashBuilder;
+use crate::util::DefaultHashBuilder;
 use hashbrown::hash_table::Entry;
 use hashbrown::HashTable;
 use std::fmt::{Debug, Display, Formatter};

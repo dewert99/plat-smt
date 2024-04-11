@@ -1,3 +1,4 @@
+use crate::util::DefaultHashBuilder;
 use egg::Id;
 use hashbrown::HashSet;
 use std::fmt::Debug;
@@ -38,7 +39,7 @@ impl IdSet for ApproxBitSet {
     }
 }
 
-impl IdSet for HashSet<Id> {
+impl IdSet for HashSet<Id, DefaultHashBuilder> {
     fn empty() -> Self {
         HashSet::default()
     }

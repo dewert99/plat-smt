@@ -73,3 +73,32 @@ pub(crate) fn minmax<T: Ord>(t1: T, t2: T) -> [T; 2] {
         [t2, t1]
     }
 }
+
+pub enum Either<L, R> {
+    Left(L),
+    Right(R),
+}
+
+impl<L: Iterator, R: Iterator<Item = L::Item>> Iterator for Either<L, R> {
+    type Item = L::Item;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        match self {
+            Either::Left(l) => l.next(),
+            Either::Right(r) => r.next(),
+        }
+    }
+
+    fn fold<B, F>(self, init: B, f: F) -> B
+    where
+        Self: Sized,
+        F: FnMut(B, Self::Item) -> B,
+    {
+        match self {
+            Either::Left(l) => l.fold(init, f),
+            Either::Right(r) => r.fold(init, f),
+        }
+    }
+}
+
+pub use fxhash::FxBuildHasher as DefaultHashBuilder;

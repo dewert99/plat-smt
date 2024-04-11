@@ -4,11 +4,10 @@ use crate::euf::{FullFunctionInfo, FunctionInfo, SatSolver, EUF};
 use crate::explain::Justification;
 use crate::intern::{DisplayInterned, InternInfo, Sort, BOOL_SORT};
 use crate::junction::*;
-use crate::util::display_debug;
+use crate::util::{display_debug, DefaultHashBuilder, Either};
 use crate::Symbol;
 use batsat::{lbool, Callbacks, Lit, SolverInterface, SolverOpts, Var};
 use egg::Id;
-use either::Either;
 use hashbrown::HashMap;
 use log::debug;
 use std::borrow::BorrowMut;
@@ -594,7 +593,7 @@ impl Solver {
 
 pub(crate) enum UnsatCoreInfo<T> {
     FalseBy(T),
-    Map(HashMap<Lit, T>),
+    Map(HashMap<Lit, T, DefaultHashBuilder>),
 }
 
 impl<T> Default for UnsatCoreInfo<T> {
