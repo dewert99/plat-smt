@@ -50,9 +50,10 @@ dependencies = [
 [[package]]
 name = "batsat"
 version = "0.5.0"
-source = "git+https://github.com/dewert99/batsat?branch=change_options#d17718885e0671486c404945f29c8a2bec0000a3"
+source = "git+https://github.com/dewert99/batsat?branch=safe#7c868cba73d5bf396d2fa8201c3a8e32fb378d76"
 dependencies = [
  "bit-vec",
+ "bytemuck",
  "log",
 ]
 
@@ -67,6 +68,26 @@ name = "bumpalo"
 version = "3.15.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7ff69b9dd49fd426c69a0db9fc04dd934cdb6645ff000864d98f7e2af8830eaa"
+
+[[package]]
+name = "bytemuck"
+version = "1.15.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "5d6d68c57235a3a081186990eca2867354726650f42f7516ca50c28d6281fd15"
+dependencies = [
+ "bytemuck_derive",
+]
+
+[[package]]
+name = "bytemuck_derive"
+version = "1.6.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "4da9a32f3fed317401fa3c862968128267c3106685286e15d5aaa3d7389c2f60"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn 2.0.52",
+]
 
 [[package]]
 name = "byteorder"
