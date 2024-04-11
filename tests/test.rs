@@ -122,7 +122,7 @@ fn test_smtlib_benchmarks() {
         writeln!(file_buf, "(set-option :sat.rnd_init_act true)").unwrap();
     }
     let base_len = file_buf.len();
-    let path = Path::new("benches/starexec/non-incremental");
+    let path = Path::new("benches/starexec");
     for x in WalkDir::new(path).into_iter().filter_map(Result::ok) {
         let path = x.path();
         if path.extension() == Some("smt2".as_ref()) {
