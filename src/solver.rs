@@ -12,7 +12,7 @@ use either::Either;
 use hashbrown::HashMap;
 use log::debug;
 use std::borrow::BorrowMut;
-use std::fmt::{Debug, Formatter};
+use std::fmt::{format, Debug, Formatter};
 use std::ops::{BitXor, Deref, Not};
 
 #[derive(Default)]
@@ -376,7 +376,10 @@ impl Solver {
             BoolExp::Unknown(u) => {
                 let tid = self.id_sort(t).0;
                 let eid = self.id_sort(e).0;
-                let sym = self.intern.symbols.gen_sym("if");
+                let sym = self
+                    .intern
+                    .symbols
+                    .intern(&format!("if|{u:?}|id{tid}|id{eid}"));
                 let fresh = self.sorted_fn(sym, Children::new(), tsort);
                 let fresh_id = self.id_sort(fresh).0;
                 let eqt = self.raw_eq(fresh_id, tid);
