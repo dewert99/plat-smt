@@ -1,3 +1,4 @@
+#![forbid(unsafe_code)]
 use bat_egg_smt::interp_smt2_with_reader;
 use std::fs::File;
 use std::io::{empty, stderr, stdin, stdout, Read};

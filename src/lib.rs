@@ -1,3 +1,4 @@
+#![forbid(unsafe_code)]
 mod approx_bitset;
 mod buffered_solver;
 mod egraph;
