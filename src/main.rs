@@ -1,7 +1,20 @@
 use bat_egg_smt::interp_smt2_with_reader;
-use either::Either;
 use std::fs::File;
 use std::io::{empty, stderr, stdin, stdout, Read};
+
+enum Either<L, R> {
+    Left(L),
+    Right(R),
+}
+
+impl<L: Read, R: Read> Read for Either<L, R> {
+    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+        match self {
+            Either::Left(l) => l.read(buf),
+            Either::Right(r) => r.read(buf),
+        }
+    }
+}
 
 fn main() {
     #[cfg(feature = "env_logger")]

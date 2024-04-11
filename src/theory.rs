@@ -1,3 +1,4 @@
+use crate::util::DefaultHashBuilder;
 use batsat::theory::Theory as BatTheory;
 use batsat::{Lit, TheoryArg};
 use hashbrown::HashMap;
@@ -79,7 +80,7 @@ pub struct IncrementalWrapper<Th: Theory<IncrementalWrapper<Th>>> {
     // propagations done at levels at or below the assertion level
     prop_log: Vec<Lit>,
     // explanations for lits in prop_log (always the appropriate assertion level lit)
-    prop_explain: HashMap<Lit, Lit>,
+    prop_explain: HashMap<Lit, Lit, DefaultHashBuilder>,
     // whether we've handled prop_log since the last push or pop
     done_prop_log: bool,
     sat_level: u32,

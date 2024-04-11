@@ -3,7 +3,7 @@ use crate::explain::{EqIds, Justification};
 use crate::intern::{Sort, SymbolInfo, FALSE_SYM, TRUE_SYM};
 use crate::solver::{BoolExp, Exp, UExp};
 use crate::theory::{IncrementalWrapper, Theory};
-use crate::util::{format_args2, minmax, Bind, DebugIter};
+use crate::util::{format_args2, minmax, Bind, DebugIter, DefaultHashBuilder};
 use crate::Symbol;
 use batsat::{LMap, LSet};
 use batsat::{Lit, TheoryArg, Var};
@@ -676,7 +676,7 @@ impl EUFInner {
 
 #[perfect_derive(Default)]
 pub struct FunctionInfo<L = SymbolLang> {
-    indices: HashMap<Symbol, Range<usize>>,
+    indices: HashMap<Symbol, Range<usize>, DefaultHashBuilder>,
     data: Vec<(L, Id)>,
 }
 

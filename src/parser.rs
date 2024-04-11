@@ -6,7 +6,7 @@ use crate::junction::{Conjunction, Disjunction};
 use crate::parser::Error::*;
 use crate::parser_core::{ParseError, SexpParser, SexpToken, SpanRange};
 use crate::solver::{BoolExp, Exp, SolveResult, Solver, UnsatCoreConjunction, UnsatCoreInfo};
-use crate::util::{format_args2, parenthesized, Bind};
+use crate::util::{format_args2, parenthesized, Bind, DefaultHashBuilder};
 use egg::Id;
 use hashbrown::HashMap;
 use log::debug;
@@ -341,9 +341,9 @@ struct PushInfo {
 }
 #[derive(Default)]
 struct Parser<W: Write> {
-    bound: HashMap<Symbol, Bound>,
+    bound: HashMap<Symbol, Bound, DefaultHashBuilder>,
     bound_stack: Vec<(Symbol, Option<Bound>)>,
-    declared_sorts: HashMap<Symbol, u32>,
+    declared_sorts: HashMap<Symbol, u32, DefaultHashBuilder>,
     sort_stack: Vec<Symbol>,
     push_info: Vec<PushInfo>,
     core: Solver,

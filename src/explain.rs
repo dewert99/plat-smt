@@ -8,7 +8,7 @@ use std::ops::{Deref, DerefMut};
 use crate::approx_bitset::{ApproxBitSet, IdSet};
 use crate::egraph::{SymbolLang, EQ_OP};
 use crate::euf::EClass;
-use crate::util::minmax;
+use crate::util::{minmax, DefaultHashBuilder};
 use batsat::LSet;
 use egg::raw::RawEGraph;
 use egg::{raw::Language, Id};
@@ -66,7 +66,7 @@ impl Debug for EqIdInfo {
 
 #[perfect_derive(Debug, Default)]
 pub(crate) struct EqIds {
-    map: HashMap<[Id; 2], EqIdInfo>,
+    map: HashMap<[Id; 2], EqIdInfo, DefaultHashBuilder>,
     /// equalities we would like to have literals for
     pub requests: Vec<[Id; 2]>,
 }
@@ -345,7 +345,7 @@ impl<'x> ExplainState<'x, &'x RawEGraph<SymbolLang, EClass, egg::raw::semi_persi
 
     #[inline(never)]
     fn max_assoc_union_fallback(&self, left: Id, right: Id) -> (u32, bool) {
-        self.max_assoc_union_gen::<HashSet<Id>>(left, right, |_, _, _| unreachable!())
+        self.max_assoc_union_gen::<HashSet<Id, _>>(left, right, |_, _, _| unreachable!())
     }
 
     fn max_assoc_union(&self, left: Id, right: Id) -> (u32, bool) {
