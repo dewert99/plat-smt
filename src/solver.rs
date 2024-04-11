@@ -12,7 +12,7 @@ use either::Either;
 use hashbrown::HashMap;
 use log::debug;
 use std::borrow::BorrowMut;
-use std::fmt::{format, Debug, Formatter};
+use std::fmt::{Debug, Formatter};
 use std::ops::{BitXor, Deref, Not};
 
 #[derive(Default)]
