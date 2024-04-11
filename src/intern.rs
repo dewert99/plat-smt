@@ -68,11 +68,14 @@ pub struct SymbolInfo {
 
 impl SymbolInfo {
     pub fn intern(&mut self, s: &str) -> Symbol {
-        let hash = self.hasher.hash_one(s);
+        let hash = self.hasher.hash_one(s.as_bytes());
         match self.map.entry(
             hash,
-            |&(start, end, _)| &self.symbol_data[start..end] == s,
-            |&(start, end, _)| self.hasher.hash_one(&self.symbol_data[start..end]),
+            |&(start, end, _)| &self.symbol_data.as_bytes()[start..end] == s.as_bytes(),
+            |&(start, end, _)| {
+                self.hasher
+                    .hash_one(&self.symbol_data.as_bytes()[start..end])
+            },
         ) {
             Entry::Occupied(occ) => Symbol(occ.get().2),
             Entry::Vacant(vac) => {
