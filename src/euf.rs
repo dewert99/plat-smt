@@ -10,6 +10,7 @@ use batsat::{Lit, TheoryArg, Var};
 use egg::{raw::Language, Id};
 use hashbrown::HashMap;
 use log::{debug, trace};
+use no_std_compat::prelude::v1::*;
 use perfect_derive::perfect_derive;
 use std::fmt::{Debug, Formatter};
 use std::mem;

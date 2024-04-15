@@ -27,6 +27,14 @@ fn init_logger() {
         .try_init();
 }
 
+struct WrapWrite<W>(W);
+
+impl<W: std::io::Write> std::fmt::Write for WrapWrite<W> {
+    fn write_str(&mut self, s: &str) -> std::fmt::Result {
+        self.0.write_all(s.as_bytes()).map_err(|_| std::fmt::Error)
+    }
+}
+
 #[rstest]
 fn test(#[files("tests/smt2/**/*.smt2")] mut file: PathBuf) {
     init_logger();
@@ -42,9 +50,9 @@ fn test(#[files("tests/smt2/**/*.smt2")] mut file: PathBuf) {
         file.set_extension("stderr");
         let stderr_file = File::create(&file).unwrap();
         interp_smt2(
-            &smt2_data,
-            BufWriter::new(stdout_file),
-            BufWriter::new(stderr_file),
+            &*smt2_data,
+            WrapWrite(BufWriter::new(stdout_file)),
+            WrapWrite(BufWriter::new(stderr_file)),
         );
         remove_empty(&file);
         file.set_extension("stdout");
@@ -54,18 +62,18 @@ fn test(#[files("tests/smt2/**/*.smt2")] mut file: PathBuf) {
         let stdout_expected = String::from_utf8(read_path(&file)).unwrap();
         file.set_extension("stderr");
         let stderr_expected = String::from_utf8(read_path(&file)).unwrap();
-        let mut stdout_actual = Vec::new();
-        let mut stderr_actual = Vec::new();
-        interp_smt2(&smt2_data, &mut stdout_actual, &mut stderr_actual);
-        assert_eq!(String::from_utf8(stderr_actual).unwrap(), stderr_expected);
-        assert_eq!(String::from_utf8(stdout_actual).unwrap(), stdout_expected);
+        let mut stdout_actual = String::new();
+        let mut stderr_actual = String::new();
+        interp_smt2(&*smt2_data, &mut stdout_actual, &mut stderr_actual);
+        assert_eq!(stderr_actual, stderr_expected);
+        assert_eq!(stdout_actual, stdout_expected);
     }
 }
 
 fn test_sequential(init_command: &str, split_command: &str, exact: bool) {
     init_logger();
-    let mut out = Vec::new();
-    let mut err = Vec::new();
+    let mut out = String::new();
+    let mut err = String::new();
     let mut expect_out = Vec::new();
     let mut file_buf = Vec::new();
     file_buf.extend_from_slice(init_command.as_bytes());
@@ -86,10 +94,10 @@ fn test_sequential(init_command: &str, split_command: &str, exact: bool) {
                 .unwrap();
         }
     }
-    interp_smt2(&file_buf, &mut out, &mut err);
-    assert_eq!(from_utf8(&err).unwrap(), "");
+    interp_smt2(&*file_buf, &mut out, &mut err);
+    assert_eq!(&err, "");
     if exact {
-        assert_eq!(from_utf8(&out).unwrap(), from_utf8(&expect_out).unwrap());
+        assert_eq!(&out, from_utf8(&expect_out).unwrap());
     }
 }
 
@@ -115,7 +123,8 @@ fn test_smtlib_benchmarks() {
     use std::process::{Command, Stdio};
     use walkdir::WalkDir;
 
-    let mut out = Vec::new();
+    let mut out = String::new();
+    let mut err = String::new();
     let mut file_buf = Vec::new();
     if let Ok(x) = std::env::var("SEED") {
         writeln!(file_buf, "(set-option :sat.random_seed {x})").unwrap();
@@ -138,12 +147,10 @@ fn test_smtlib_benchmarks() {
                 .unwrap()
                 .read_to_end(&mut file_buf)
                 .unwrap();
-            interp_smt2(&file_buf, &mut out, stderr());
+            interp_smt2(&*file_buf, &mut out, &mut err);
             let yices_out = yices_child.wait_with_output().unwrap();
-            assert_eq!(
-                from_utf8(&out).unwrap(),
-                from_utf8(&yices_out.stdout).unwrap()
-            );
+            assert_eq!(&err, "");
+            assert_eq!(&out, from_utf8(&yices_out.stdout).unwrap());
             file_buf.truncate(base_len);
             out.clear();
         }

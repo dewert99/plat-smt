@@ -1,3 +1,4 @@
+use no_std_compat::prelude::v1::*;
 // https://www.cs.upc.edu/~oliveras/rta05.pdf
 // 2.1 Union-find with an O(k log n) Explain operation
 use batsat::intmap::AsIndex;

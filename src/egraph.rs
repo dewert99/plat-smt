@@ -3,6 +3,7 @@ use batsat::LSet;
 pub use egg::raw::semi_persistent1::PushInfo;
 use egg::raw::{semi_persistent1::UndoLog, EGraphResidual, Language, RawEClass, RawEGraph};
 use egg::Id;
+use no_std_compat::prelude::v1::*;
 use smallvec::SmallVec;
 use std::cmp::Ordering;
 use std::fmt::{Debug, Formatter};

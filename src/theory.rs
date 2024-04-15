@@ -3,6 +3,7 @@ use batsat::theory::Theory as BatTheory;
 use batsat::{Lit, TheoryArg};
 use hashbrown::HashMap;
 use log::{debug, trace};
+use no_std_compat::prelude::v1::*;
 use perfect_derive::perfect_derive;
 use std::cmp::max;
 use std::ops::{Deref, DerefMut};

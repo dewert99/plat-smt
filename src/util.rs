@@ -1,4 +1,5 @@
 use core::fmt::{Debug, Display, Formatter};
+use no_std_compat::prelude::v1::*;
 
 pub(crate) struct DebugIter<'a, I>(pub &'a I);
 
@@ -101,4 +102,21 @@ impl<L: Iterator, R: Iterator<Item = L::Item>> Iterator for Either<L, R> {
     }
 }
 
-pub use fxhash::FxBuildHasher as DefaultHashBuilder;
+pub type DefaultHashBuilder = std::hash::BuildHasherDefault<rustc_hash::FxHasher>;
+
+pub fn powi(mut f: f64, mut exp: u32) -> f64 {
+    let mut res = 1.0;
+    while exp != 0 {
+        if exp & 1 != 0 {
+            res *= f;
+        }
+        f *= f;
+        exp >>= 1;
+    }
+    return res;
+}
+
+#[test]
+fn test_powi() {
+    debug_assert_eq!(powi(0.1, 5), 0.1f64.powi(5))
+}
