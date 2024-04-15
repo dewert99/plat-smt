@@ -1,6 +1,7 @@
 use crate::util::DefaultHashBuilder;
 use egg::Id;
 use hashbrown::HashSet;
+use no_std_compat::prelude::v1::*;
 use std::fmt::Debug;
 
 type Elt = u128;

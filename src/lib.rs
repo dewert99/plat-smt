@@ -1,4 +1,8 @@
 #![forbid(unsafe_code)]
+#![no_std]
+
+extern crate no_std_compat as std;
+
 mod approx_bitset;
 mod buffered_solver;
 mod egraph;
@@ -15,8 +19,9 @@ mod util;
 
 use intern::Symbol;
 
+pub use full_buf_read::FullBufRead;
 pub use intern::Sort;
 #[doc(inline)]
 pub use junction::{Conjunction, Disjunction};
-pub use parser::{interp_smt2, interp_smt2_with_reader};
+pub use parser::interp_smt2;
 pub use solver::{BLit, BoolExp, Exp, SolveResult, Solver};

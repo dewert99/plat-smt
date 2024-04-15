@@ -1,6 +1,7 @@
 use crate::util::DefaultHashBuilder;
 use hashbrown::hash_table::Entry;
 use hashbrown::HashTable;
+use no_std_compat::prelude::v1::*;
 use std::fmt::{Debug, Display, Formatter};
 use std::hash::BuildHasher;
 

@@ -1,6 +1,7 @@
 use crate::full_buf_read::FullBufRead;
 use core::fmt::{Debug, Display, Formatter};
 use core::str::Utf8Error;
+use no_std_compat::prelude::v1::*;
 use std::string::FromUtf8Error;
 fn is_white_space_byte(c: u8) -> bool {
     matches!(c, b' ' | b'\n' | b'\t' | b'\r')
@@ -44,7 +45,7 @@ pub struct Span {
     pub idx: usize,
 }
 
-#[derive(thiserror::Error, Debug, Clone)]
+#[derive(thiserror_no_std::Error, Debug, Clone)]
 pub enum ParseError {
     #[error("error parsing number with radix {}", *radix as u8)]
     NumberError { radix: Radix },
@@ -173,7 +174,7 @@ impl<R: FullBufRead> SexpLexer<R> {
     }
 
     fn read_char(&mut self) -> char {
-        let bytes = &self.reader.fill_to_data(self.idx + 4).unwrap()[self.idx..];
+        let bytes = &self.reader.fill_to_data(self.idx + 4)[self.idx..];
         let end = core::cmp::min(4, bytes.len());
         let bytes = &bytes[..end];
         let s = match core::str::from_utf8(bytes) {
@@ -188,7 +189,6 @@ impl<R: FullBufRead> SexpLexer<R> {
     fn peek_byte(&mut self) -> Option<u8> {
         self.reader
             .fill_to_data(self.idx + 1)
-            .unwrap()
             .get(self.idx)
             .copied()
     }

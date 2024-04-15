@@ -10,6 +10,7 @@ use batsat::{lbool, Callbacks, Lit, SolverInterface, SolverOpts, Var};
 use egg::Id;
 use hashbrown::HashMap;
 use log::debug;
+use no_std_compat::prelude::v1::*;
 use std::borrow::BorrowMut;
 use std::fmt::{Debug, Formatter};
 use std::ops::{BitXor, Deref, Not};

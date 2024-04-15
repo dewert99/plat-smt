@@ -1,5 +1,6 @@
 use crate::solver::BoolExp;
 use batsat::Lit;
+use no_std_compat::prelude::v1::*;
 use std::fmt::{Debug, Formatter};
 use std::mem;
 use std::ops::{BitAnd, BitOr};
@@ -142,6 +143,7 @@ impl BitOr<BoolExp> for Disjunction {
 
 #[cfg(test)]
 mod test {
+    use super::*;
     use crate::junction::{Conjunction, Disjunction, Junction};
     use crate::solver::BoolExp;
 

@@ -1,18 +1,19 @@
 use crate::egraph::Children;
 use crate::euf::FullFunctionInfo;
-use crate::full_buf_read::{FullBufRead, FullBufReader};
+use crate::full_buf_read::FullBufRead;
 use crate::intern::{DisplayInterned, InternInfo, Sort, Symbol, BOOL_SYM, FALSE_SYM, TRUE_SYM};
 use crate::junction::{Conjunction, Disjunction};
 use crate::parser::Error::*;
 use crate::parser_core::{ParseError, SexpParser, SexpToken, SpanRange};
 use crate::solver::{BoolExp, Exp, SolveResult, Solver, UnsatCoreConjunction, UnsatCoreInfo};
-use crate::util::{format_args2, parenthesized, Bind, DefaultHashBuilder};
+use crate::util::{format_args2, parenthesized, powi, Bind, DefaultHashBuilder};
 use egg::Id;
 use hashbrown::HashMap;
 use log::debug;
+use no_std_compat::prelude::v1::*;
 use smallvec::SmallVec;
 use std::fmt::Formatter;
-use std::io::{Read, Write};
+use std::fmt::Write;
 use std::iter;
 
 #[derive(Copy, Clone)]
@@ -165,11 +166,12 @@ impl<I: IntFromSexp> FromSexp for I {
 impl IntFromSexp for u32 {}
 impl IntFromSexp for usize {}
 impl IntFromSexp for i32 {}
+
 impl FromSexp for f64 {
     fn from_sexp<R: FullBufRead>(sexp_token: SexpToken<R>) -> Result<Self> {
         match sexp_token {
             SexpToken::Number(n) => Ok(n as f64),
-            SexpToken::Decimal(n, shift) => Ok(n as f64 * 0.1f64.powi(shift as i32)),
+            SexpToken::Decimal(n, shift) => Ok(n as f64 * powi(0.1, shift as u32)),
             _ => Err(InvalidFloat),
         }
     }
@@ -1262,18 +1264,7 @@ fn write_body<W: Write>(
 
 /// Evaluate `data`, the bytes of an `smt2` file, reporting results to `stdout` and errors to
 /// `stderr`
-pub fn interp_smt2(data: &[u8], out: impl Write, err: impl Write) {
+pub fn interp_smt2(data: impl FullBufRead, out: impl Write, err: impl Write) {
     let mut p = Parser::new(out);
     p.interp_smt2(data, err)
-}
-
-/// Similar to [`interp_smt2`] but evaluates the bytes read from `reader` after init_data
-pub fn interp_smt2_with_reader(
-    init_data: Vec<u8>,
-    reader: impl Read,
-    out: impl Write,
-    err: impl Write,
-) {
-    let mut p = Parser::new(out);
-    p.interp_smt2(FullBufReader::new(reader, init_data), err)
 }
