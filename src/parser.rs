@@ -344,7 +344,11 @@ struct PushInfo {
 #[derive(Default)]
 struct Parser<W: Write> {
     bound: HashMap<Symbol, Bound, DefaultHashBuilder>,
-    bound_stack: Vec<(Symbol, Option<Bound>)>,
+    /// List of global variables in the order defined
+    /// Used to remove global variable during `(pop)`
+    global_stack: Vec<Symbol>,
+    /// List of let bound variable with the old value they are shadowing
+    let_bound_stack: Vec<(Symbol, Option<Bound>)>,
     declared_sorts: HashMap<Symbol, u32, DefaultHashBuilder>,
     sort_stack: Vec<Symbol>,
     push_info: Vec<PushInfo>,
@@ -646,7 +650,8 @@ impl<W: Write> Parser<W> {
     fn new(writer: W) -> Self {
         let mut res = Parser {
             bound: Default::default(),
-            bound_stack: Default::default(),
+            global_stack: Default::default(),
+            let_bound_stack: Default::default(),
             push_info: vec![],
             declared_sorts: Default::default(),
             core: Default::default(),
@@ -773,12 +778,17 @@ impl<W: Write> Parser<W> {
         }
     }
 
-    fn undo_bindings(&mut self, old_len: usize) {
-        for (name, bound) in self.bound_stack.drain(old_len..).rev() {
+    fn undo_let_bindings(&mut self, old_len: usize) {
+        for (name, bound) in self.let_bound_stack.drain(old_len..).rev() {
             match bound {
                 None => self.bound.remove(&name),
                 Some(x) => self.bound.insert(name, x),
             };
+        }
+    }
+    fn undo_base_bindings(&mut self, old_len: usize) {
+        for name in self.global_stack.drain(old_len..).rev() {
+            self.bound.remove(&name);
         }
     }
 
@@ -792,24 +802,24 @@ impl<W: Write> Parser<W> {
         let mut rest = f.bind(rest);
         let res = match f {
             ExpKind::Let => {
-                let old_len = self.bound_stack.len();
+                let old_len = self.let_bound_stack.len();
                 match rest.next()? {
                     SexpToken::List(mut l) => l
                         .map(|token| {
                             let (name, exp) = self.parse_binding(token?)?;
-                            self.bound_stack.push((name, Some(Bound::Const(exp))));
+                            self.let_bound_stack.push((name, Some(Bound::Const(exp))));
                             Ok(())
                         })
                         .collect::<Result<()>>()?,
                     _ => return Err(InvalidLet),
                 }
                 let body = rest.next()?;
-                for (name, bound) in &mut self.bound_stack[old_len..] {
+                for (name, bound) in &mut self.let_bound_stack[old_len..] {
                     *bound = self.bound.insert(*name, bound.take().unwrap())
                 }
                 let exp = self.parse_exp_gen(body, p)?;
                 rest.finish()?;
-                self.undo_bindings(old_len);
+                self.undo_let_bindings(old_len);
                 exp
             }
             _ => p.parse(self, f, rest)?,
@@ -1057,7 +1067,7 @@ impl<W: Write> Parser<W> {
 
     fn clear(&mut self) {
         self.push_info.clear();
-        self.bound_stack.clear();
+        self.global_stack.clear();
         self.bound.clear();
         self.core.clear();
         self.declared_sorts.clear();
@@ -1160,7 +1170,7 @@ impl<W: Write> Parser<W> {
                 for _ in 0..n {
                     self.core.push();
                     let info = PushInfo {
-                        bound: self.bound_stack.len(),
+                        bound: self.global_stack.len(),
                         sort: self.sort_stack.len(),
                     };
                     self.push_info.push(info);
@@ -1177,7 +1187,7 @@ impl<W: Write> Parser<W> {
                         info = self.push_info.pop();
                     }
                     let info = info.unwrap();
-                    self.undo_bindings(info.bound);
+                    self.undo_base_bindings(info.bound);
 
                     for s in self.sort_stack.drain(info.sort..).rev() {
                         self.declared_sorts.remove(&s);
@@ -1192,7 +1202,9 @@ impl<W: Write> Parser<W> {
     }
 
     fn insert_bound(&mut self, name: Symbol, val: Bound) {
-        self.bound_stack.push((name, self.bound.insert(name, val)))
+        let res = self.bound.insert(name, val);
+        debug_assert!(res.is_none());
+        self.global_stack.push(name)
     }
 
     fn declare_const(&mut self, name: Symbol, ret: Sort) {
