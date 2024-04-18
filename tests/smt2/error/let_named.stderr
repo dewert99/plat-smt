@@ -1,0 +1,8 @@
+unknown identifier `unbound` at 2:45
+(define-const x Bool (or (! false :named y) unbound))
+                                            ^
+
+the :named identifier `a` is already in scope at 5:34
+(define-const a Bool (! z :named a))
+                                 ^
+

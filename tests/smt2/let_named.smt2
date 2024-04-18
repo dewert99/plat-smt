@@ -1,0 +1,8 @@
+(declare-const a Bool)
+(declare-const b Bool)
+(declare-fun f (Bool) Bool)
+(assert (and (! a :named x) (let ((x b)) x) (f x)))
+(check-sat)
+(get-model)
+(assert (not (and a b (f a))))
+(check-sat)
