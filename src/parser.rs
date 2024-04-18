@@ -487,15 +487,17 @@ impl ExpParser for BaseExpParser {
                 (!x).into()
             }
             ExpKind::And => {
-                let conj = rest
-                    .map_full(|token| p.parse_bool(token?))
-                    .collect::<Result<Conjunction>>()?;
+                let mut iter = rest.map_full(|token| p.parse_bool(token?));
+                let conj = iter.by_ref().collect::<Result<Conjunction>>()?;
+                iter.try_for_each(|x| x.map(drop))?;
+                drop(iter);
                 p.core.collapse_bool(conj).into()
             }
             ExpKind::Or => {
-                let disj = rest
-                    .map_full(|token| p.parse_bool(token?))
-                    .collect::<Result<Disjunction>>()?;
+                let mut iter = rest.map_full(|token| p.parse_bool(token?));
+                let disj = iter.by_ref().collect::<Result<Disjunction>>()?;
+                iter.try_for_each(|x| x.map(drop))?;
+                drop(iter);
                 p.core.collapse_bool(disj).into()
             }
             ExpKind::Imp => {
