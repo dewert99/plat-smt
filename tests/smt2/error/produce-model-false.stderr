@@ -1,0 +1,8 @@
+The option `:produce-models` must be set to true at 5:2
+(get-model)
+ ^
+
+The option `:produce-models` must be set to true at 6:2
+(get-value (a))
+ ^
+

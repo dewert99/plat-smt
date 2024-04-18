@@ -29,11 +29,12 @@ The binary (produced by `cargo build`) takes in a list of `.smt2` files  and eva
 This list can optionally be followed by `-i` which enters interactive mode after the files are evaluated
 
 ## Parameters (`set-option`)
-The parameters currently all come from [batsat](https://docs.rs/batsat/latest/batsat/core/struct.SolverOpts.html), and are prefixed by `sat.`,
+Most parameters currently come from [batsat](https://docs.rs/batsat/latest/batsat/core/struct.SolverOpts.html), and are prefixed by `sat.`,
 for example random initial activations would be enabled with:
 
 `(set-option :sat.rnd_init_act true)`
 
+The parameters `:produce-models` and `:produce-unsat-cores` from the SMT-LIB standard are also supported, and default to `true`.
 
 ## Misc
 * The `yices-smt2` file is from `https://yices.csl.sri.com/` and is only included for testing

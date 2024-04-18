@@ -1,0 +1,6 @@
+(set-option :produce-models false)
+(declare-const a Bool)
+(assert a)
+(check-sat)
+(get-model)
+(get-value (a))

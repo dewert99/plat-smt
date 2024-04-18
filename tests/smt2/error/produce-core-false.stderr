@@ -1,0 +1,4 @@
+The option `:produce-unsat-cores` must be set to true at 5:2
+(get-unsat-core)
+ ^
+

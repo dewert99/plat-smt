@@ -85,7 +85,10 @@ enum Error {
         expected: SolveResult,
     },
     NoCore,
+    ProduceCoreFalse,
     NoModel,
+    ProduceModelFalse,
+    NonInit,
     Unsupported(&'static str),
     Parser(ParseError),
 }
@@ -139,7 +142,10 @@ impl DisplayInterned for Error {
                 expected,
             } => write!(fmt, "(check-sat) returned {actual:?} but should have returned {expected:?} based on last (set-info :status)"),
             NoCore => write!(fmt, "The last command was not `check-sat-assuming` that returned `unsat`"),
+            ProduceCoreFalse => write!(fmt, "The option `:produce-unsat-cores` must be set to true"),
             NoModel => write!(fmt, "The last command was not `check-sat-assuming` that returned `sat`"),
+            ProduceModelFalse => write!(fmt, "The option `:produce-models` must be set to true"),
+            NonInit => write!(fmt, "The option cannot be set after assertions, declarations, or definitions"),
             Unsupported(s) => write!(fmt, "unsupported {s}"),
             Parser(err) => write!(fmt, "{err}"),
         }
@@ -334,6 +340,9 @@ enum_option! {SetOption{
     "sat.restart_inc" => RestartInc(f64),
     "sat.learntsize_factor" => LearntsizeFactor(f64),
     "sat.learntsize_inc" => LearntsizeInc(f64),
+    "random-seed" => BaseRandomSeed(f64),
+    "produce-models" => ProduceModels(bool),
+    "produce-unsat-cores" => ProduceUnsatCores(bool),
 }}
 
 enum UnsatCoreElt {
@@ -347,8 +356,9 @@ enum UnsatCoreElt {
 enum State {
     Unsat,
     Model,
-    #[default]
     Base,
+    #[default]
+    Init,
 }
 
 struct PushInfo {
@@ -381,7 +391,22 @@ struct Parser<W: Write> {
     core: Solver,
     writer: W,
     state: State,
+    options: Options,
     last_status_info: Option<SolveResult>,
+}
+
+struct Options {
+    produce_models: bool,
+    produces_unsat_cores: bool,
+}
+
+impl Default for Options {
+    fn default() -> Self {
+        Options {
+            produce_models: true,
+            produces_unsat_cores: true,
+        }
+    }
 }
 
 struct CountingParser<'a, R: FullBufRead> {
@@ -709,12 +734,13 @@ impl<W: Write> Parser<W> {
             declared_sorts: Default::default(),
             core: Default::default(),
             writer,
-            state: State::Base,
+            state: State::Init,
             sort_stack: vec![],
             last_status_info: None,
             currently_defining: None,
             named_assertions: UnsatCoreConjunction::default(),
             old_named_assertions: 0,
+            options: Default::default(),
         };
         res.declared_sorts.insert(BOOL_SYM, 0);
         res.bound
@@ -1006,6 +1032,9 @@ impl<W: Write> Parser<W> {
                 let State::Unsat = &self.state else {
                     return Err(NoCore);
                 };
+                if !self.options.produces_unsat_cores {
+                    return Err(ProduceCoreFalse);
+                }
                 write!(self.writer, "(").unwrap();
                 let mut iter = self
                     .named_assertions
@@ -1028,6 +1057,9 @@ impl<W: Write> Parser<W> {
             Smt2Command::GetValue => {
                 if !matches!(self.state, State::Model) {
                     return Err(NoModel);
+                }
+                if !self.options.produce_models {
+                    return Err(ProduceModelFalse);
                 }
                 let SexpToken::List(mut l) = rest.next()? else {
                     return Err(InvalidCommand);
@@ -1056,6 +1088,9 @@ impl<W: Write> Parser<W> {
                 rest.finish()?;
                 if !matches!(self.state, State::Model) {
                     return Err(NoModel);
+                }
+                if !self.options.produce_models {
+                    return Err(ProduceModelFalse);
                 }
                 let (funs, core) = self.core.function_info();
                 writeln!(self.writer, "(").unwrap();
@@ -1119,7 +1154,13 @@ impl<W: Write> Parser<W> {
                     SetOption::VarDecay(x) => prev_option.var_decay = x,
                     SetOption::ClauseDecay(x) => prev_option.clause_decay = x,
                     SetOption::RandomVarFreq(x) => prev_option.random_var_freq = x,
-                    SetOption::RandomSeed(x) => prev_option.random_seed = x,
+                    SetOption::RandomSeed(mut x) | SetOption::BaseRandomSeed(mut x) => {
+                        if x <= 0.0 {
+                            // ensure x is positive since this is required by `batsat`
+                            x = -x + f64::MIN_POSITIVE;
+                        }
+                        prev_option.random_seed = x
+                    }
                     SetOption::LubyRestart(x) => prev_option.luby_restart = x,
                     SetOption::CcminMode(x) => prev_option.ccmin_mode = x,
                     SetOption::PhaseSaving(x) => prev_option.phase_saving = x,
@@ -1131,6 +1172,17 @@ impl<W: Write> Parser<W> {
                     SetOption::RestartInc(x) => prev_option.restart_inc = x,
                     SetOption::LearntsizeFactor(x) => prev_option.learntsize_factor = x,
                     SetOption::LearntsizeInc(x) => prev_option.learntsize_inc = x,
+                    SetOption::ProduceUnsatCores(x) => {
+                        if !matches!(self.state, State::Init) {
+                            return Err(NonInit);
+                        }
+                        self.options.produces_unsat_cores = x;
+                        return Ok(());
+                    }
+                    SetOption::ProduceModels(x) => {
+                        self.options.produce_models = x;
+                        return Ok(());
+                    }
                 }
                 self.core
                     .set_sat_options(prev_option)
@@ -1232,7 +1284,7 @@ impl<W: Write> Parser<W> {
                 self.define_const(name, rest)?;
             }
             Smt2Command::Assert => {
-                self.parse_assert(rest.next_full()?, false, true)?;
+                self.parse_assert(rest.next_full()?, false, self.options.produce_models)?;
                 rest.finish()?;
             }
             Smt2Command::CheckSat => {
