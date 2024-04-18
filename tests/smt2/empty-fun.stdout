@@ -1,7 +1,7 @@
 sat
 (
  (define-fun f ((x!0 Bool)) Bool
-   f!default)
+   false)
  (define-fun g ((x!0 Bool) (x!1 Bool)) Bool
-   g!default)
+   false)
 )

@@ -1,7 +1,9 @@
 use crate::egraph::Children;
 use crate::euf::FullFunctionInfo;
 use crate::full_buf_read::FullBufRead;
-use crate::intern::{DisplayInterned, InternInfo, Sort, Symbol, BOOL_SYM, FALSE_SYM, TRUE_SYM};
+use crate::intern::{
+    DisplayInterned, InternInfo, Sort, Symbol, WithIntern, BOOL_SORT, BOOL_SYM, FALSE_SYM, TRUE_SYM,
+};
 use crate::junction::{Conjunction, Disjunction};
 use crate::parser::Error::*;
 use crate::parser_core::{ParseError, SexpParser, SexpToken, SpanRange};
@@ -1120,7 +1122,7 @@ impl<W: Write> Parser<W> {
                             let args = parenthesized(args, " ");
                             let ret = f.ret.with_intern(intern);
                             writeln!(self.writer, " (define-fun {k_i} {args} {ret}").unwrap();
-                            write_body(&mut self.writer, &funs, k, intern);
+                            write_body(&mut self.writer, &funs, k, ret, intern);
                         }
                     }
                 }
@@ -1426,6 +1428,7 @@ fn write_body<W: Write>(
     writer: &mut W,
     info: &FullFunctionInfo,
     name: Symbol,
+    ret: WithIntern<Sort>,
     intern: &InternInfo,
 ) {
     let cases = info.get(name);
@@ -1450,7 +1453,11 @@ fn write_body<W: Write>(
         }
         writeln!(writer, " {res}").unwrap();
     }
-    writeln!(writer, "   {name}!default{:)<len$})", "").unwrap()
+    if ret.0 == BOOL_SORT {
+        writeln!(writer, "   false{:)<len$})", "").unwrap()
+    } else {
+        writeln!(writer, "   (as @{name}!default {ret}){:)<len$})", "").unwrap()
+    }
 }
 
 /// Evaluate `data`, the bytes of an `smt2` file, reporting results to `stdout` and errors to

@@ -1,8 +1,8 @@
 sat
 (
- (define-fun a () T @T_3)
- (define-fun b () T @T_3)
- (define-fun c () T @T_3)
- (define-fun d () T @T_3)
+ (define-fun a () T (as @v3 T))
+ (define-fun b () T (as @v3 T))
+ (define-fun c () T (as @v3 T))
+ (define-fun d () T (as @v3 T))
 )
 unsat
