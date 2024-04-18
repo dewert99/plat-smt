@@ -1,0 +1,4 @@
+unknown identifier `unbound` at 1:41
+(check-sat-assuming ((! false :named x) unbound))
+                                        ^
+

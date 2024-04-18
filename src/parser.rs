@@ -5,7 +5,7 @@ use crate::intern::{DisplayInterned, InternInfo, Sort, Symbol, BOOL_SYM, FALSE_S
 use crate::junction::{Conjunction, Disjunction};
 use crate::parser::Error::*;
 use crate::parser_core::{ParseError, SexpParser, SexpToken, SpanRange};
-use crate::solver::{BoolExp, Exp, SolveResult, Solver, UnsatCoreConjunction, UnsatCoreInfo};
+use crate::solver::{BoolExp, Exp, SolveResult, Solver, UnsatCoreConjunction};
 use crate::util::{format_args2, parenthesized, powi, Bind, DefaultHashBuilder};
 use egg::Id;
 use hashbrown::HashMap;
@@ -336,19 +336,27 @@ enum_option! {SetOption{
     "sat.learntsize_inc" => LearntsizeInc(f64),
 }}
 
+enum UnsatCoreElt {
+    /// from `check_sat_assuming`
+    Span(SpanRange),
+    /// from `:named` assertions
+    Sym(Symbol),
+}
+
 #[derive(Default)]
 enum State {
-    Unsat(UnsatCoreInfo<SpanRange>),
+    Unsat,
     Model,
     #[default]
     Base,
 }
 
 struct PushInfo {
-    sort: usize,
-    bound: usize,
+    sort: u32,
+    bound: u32,
+    named_assert: u32,
 }
-#[derive(Default)]
+
 struct Parser<W: Write> {
     bound: HashMap<Symbol, Bound, DefaultHashBuilder>,
     /// List of global variables in the order defined
@@ -361,6 +369,14 @@ struct Parser<W: Write> {
     currently_defining: Option<Symbol>,
     declared_sorts: HashMap<Symbol, u32, DefaultHashBuilder>,
     sort_stack: Vec<Symbol>,
+    /// assertions named a top level that we always add to assumption list of `check_sat` instead
+    /// of immediately asserting.
+    /// Between a command `(check-sat-assuming)` and the next destructive command,
+    /// `named_assertions` also contains the assumptions from `check-sat-assuming` and
+    /// `old_named_assertion` contains the length it had before they were added
+    named_assertions: UnsatCoreConjunction<UnsatCoreElt>,
+    // see above
+    old_named_assertions: u32,
     push_info: Vec<PushInfo>,
     core: Solver,
     writer: W,
@@ -553,22 +569,7 @@ impl ExpParser for BaseExpParser {
             }
             ExpKind::Annot => {
                 let exp = p.parse_exp(rest.next()?)?;
-                let SexpToken::Keyword(k) = rest.next()? else {
-                    return Err(InvalidAnnot);
-                };
-                if k != "named" {
-                    return Err(InvalidAnnotAttr(p.core.intern.symbols.intern(k)));
-                }
-                let SexpToken::Symbol(s) = rest.next()? else {
-                    return Err(InvalidAnnot);
-                };
-                let s = p.core.intern.symbols.intern(s);
-                if p.bound.contains_key(&s) || p.currently_defining == Some(s) {
-                    return Err(NamedShadow(s));
-                }
-                // we now know that `s` isn't bound anywhere, so we can insert it without shadowing
-                // a let bound variable that should have higher priority
-                p.insert_bound(s, Bound::Const(exp));
+                p.parse_annot_after_exp(exp, rest)?;
                 exp
             }
             ExpKind::Unknown(f) => {
@@ -598,6 +599,7 @@ impl ExpParser for BaseExpParser {
 struct AssertExpParser {
     // assert (exp ^ self.negate)
     negate: bool,
+    top_level: bool,
 }
 
 impl ExpParser for AssertExpParser {
@@ -617,11 +619,11 @@ impl ExpParser for AssertExpParser {
     ) -> Result<Self::Out> {
         match (f, self.negate) {
             (ExpKind::And, neg @ false) | (ExpKind::Or, neg @ true) => {
-                rest.map_full(|token| p.parse_assert(token?, neg))
+                rest.map_full(|token| p.parse_assert(token?, neg, false))
                     .collect::<Result<()>>()?;
             }
             (ExpKind::Not, neg) => {
-                p.parse_assert(rest.next_full()?, !neg)?;
+                p.parse_assert(rest.next_full()?, !neg, false)?;
             }
             (ExpKind::Eq, false) => {
                 let exp1 = p.parse_exp(rest.next()?)?;
@@ -666,6 +668,25 @@ impl ExpParser for AssertExpParser {
                     }
                 }
             }
+            (ExpKind::Annot, neg) => {
+                if self.top_level {
+                    debug_assert!(!neg);
+                    let exp = p.parse_exp(rest.next()?)?;
+                    let name = p.parse_annot_after_exp(exp, rest)?;
+                    match exp.as_bool() {
+                        None => return Ok(Err(p.core.sort(exp))),
+                        Some(b) => {
+                            p.named_assertions.extend([(b, UnsatCoreElt::Sym(name))]);
+                            p.old_named_assertions = p.named_assertions.push();
+                        }
+                    }
+                } else {
+                    p.parse_assert(rest.next_full()?, neg, false)?;
+                    // since we asserted exp ^ neg, exp will always equal !neg as long as the
+                    // problem is satisfiable
+                    p.parse_annot_after_exp(BoolExp::Const(!neg).into(), rest)?;
+                }
+            }
             (_, neg) => {
                 let exp = BaseExpParser.parse(p, f, rest)?;
                 match exp.as_bool() {
@@ -692,6 +713,8 @@ impl<W: Write> Parser<W> {
             sort_stack: vec![],
             last_status_info: None,
             currently_defining: None,
+            named_assertions: UnsatCoreConjunction::default(),
+            old_named_assertions: 0,
         };
         res.declared_sorts.insert(BOOL_SYM, 0);
         res.bound
@@ -768,8 +791,9 @@ impl<W: Write> Parser<W> {
         &mut self,
         (token, arg_n, f): InfoToken<R>,
         negate: bool,
+        top_level: bool,
     ) -> Result<()> {
-        let exp = self.parse_exp_gen(token, &AssertExpParser { negate })?;
+        let exp = self.parse_exp_gen(token, &AssertExpParser { negate, top_level })?;
         exp.map_err(|actual| SortMismatch {
             f,
             arg_n,
@@ -809,6 +833,31 @@ impl<W: Write> Parser<W> {
             }
             _ => Err(InvalidBinding),
         }
+    }
+
+    fn parse_annot_after_exp<R: FullBufRead>(
+        &mut self,
+        exp: Exp,
+        mut rest: CountingParser<R>,
+    ) -> Result<Symbol> {
+        let SexpToken::Keyword(k) = rest.next()? else {
+            return Err(InvalidAnnot);
+        };
+        if k != "named" {
+            return Err(InvalidAnnotAttr(self.core.intern.symbols.intern(k)));
+        }
+        let SexpToken::Symbol(s) = rest.next()? else {
+            return Err(InvalidAnnot);
+        };
+        let s = self.core.intern.symbols.intern(s);
+        rest.finish()?;
+        if self.bound.contains_key(&s) || self.currently_defining == Some(s) {
+            return Err(NamedShadow(s));
+        }
+        // we now know that `s` isn't bound anywhere, so we can insert it without shadowing
+        // a let bound variable that should have higher priority
+        self.insert_bound(s, Bound::Const(exp));
+        Ok(s)
     }
 
     fn undo_let_bindings(&mut self, old_len: usize) {
@@ -910,10 +959,11 @@ impl<W: Write> Parser<W> {
     }
 
     fn reset_state(&mut self) {
-        if matches!(self.state, State::Model) {
+        if !matches!(self.state, State::Base) {
             self.core.pop_model();
+            self.named_assertions.pop_to(self.old_named_assertions);
+            self.state = State::Base;
         }
-        self.state = State::Base;
     }
 
     fn parse_command<R: FullBufRead>(
@@ -926,6 +976,7 @@ impl<W: Write> Parser<W> {
             Ok(()) => Ok(()),
             Err(err) => {
                 self.undo_base_bindings(old_len);
+                self.named_assertions.pop_to(self.old_named_assertions);
                 Err(err)
             }
         }
@@ -952,13 +1003,19 @@ impl<W: Write> Parser<W> {
                 self.declared_sorts.insert(name, args);
             }
             Smt2Command::GetUnsatCore => {
-                let State::Unsat(info) = &self.state else {
+                let State::Unsat = &self.state else {
                     return Err(NoCore);
                 };
                 write!(self.writer, "(").unwrap();
-                let mut iter = info
+                let mut iter = self
+                    .named_assertions
+                    .parts()
+                    .1
                     .core(self.core.last_unsat_core())
-                    .map(|x| rest.p.lookup_range(*x));
+                    .map(|x| match *x {
+                        UnsatCoreElt::Span(s) => rest.p.lookup_range(s),
+                        UnsatCoreElt::Sym(s) => self.core.intern.symbols.resolve(s),
+                    });
                 if let Some(x) = iter.next() {
                     write!(self.writer, "{x}").unwrap();
                 }
@@ -1084,10 +1141,9 @@ impl<W: Write> Parser<W> {
         Ok(())
     }
 
-    fn set_state(&mut self, res: SolveResult, info: UnsatCoreInfo<SpanRange>) -> Result<()> {
+    fn set_state(&mut self, res: SolveResult) -> Result<()> {
         self.state = if let SolveResult::Unsat = res {
-            self.core.pop_model();
-            State::Unsat(info)
+            State::Unsat
         } else {
             State::Model
         };
@@ -1125,6 +1181,8 @@ impl<W: Write> Parser<W> {
             .insert(TRUE_SYM, Bound::Const(BoolExp::TRUE.into()));
         self.bound
             .insert(FALSE_SYM, Bound::Const(BoolExp::FALSE.into()));
+        self.named_assertions.pop_to(0);
+        self.old_named_assertions = 0;
     }
 
     fn parse_destructive_command<R: FullBufRead>(
@@ -1174,14 +1232,15 @@ impl<W: Write> Parser<W> {
                 self.define_const(name, rest)?;
             }
             Smt2Command::Assert => {
-                self.parse_assert(rest.next_full()?, false)?;
+                self.parse_assert(rest.next_full()?, false, true)?;
                 rest.finish()?;
             }
             Smt2Command::CheckSat => {
+                self.old_named_assertions = self.named_assertions.push();
                 let res = self
                     .core
-                    .check_sat_assuming_preserving_trail(&Default::default());
-                self.set_state(res, Default::default())?;
+                    .check_sat_assuming_preserving_trail(self.named_assertions.parts().0);
+                self.set_state(res)?;
                 writeln!(self.writer, "{}", res.as_lower_str()).unwrap()
             }
             Smt2Command::CheckSatAssuming => {
@@ -1192,13 +1251,15 @@ impl<W: Write> Parser<W> {
                     .zip_map_full(0.., |token, i| {
                         self.parse_bool((token?, i, name.to_str_sym()))
                     })
-                    .collect::<Result<UnsatCoreConjunction<SpanRange>>>()?;
+                    .collect::<Result<Vec<_>>>()?;
                 drop(l);
                 rest.finish()?;
+                self.named_assertions
+                    .extend(conj.into_iter().map(|(b, s)| (b, UnsatCoreElt::Span(s))));
                 let res = self
                     .core
-                    .check_sat_assuming_preserving_trail(conj.parts().0);
-                self.set_state(res, conj.take_core())?;
+                    .check_sat_assuming_preserving_trail(self.named_assertions.parts().0);
+                self.set_state(res)?;
                 writeln!(self.writer, "{}", res.as_lower_str()).unwrap()
             }
             Smt2Command::Push => {
@@ -1206,8 +1267,9 @@ impl<W: Write> Parser<W> {
                 for _ in 0..n {
                     self.core.push();
                     let info = PushInfo {
-                        bound: self.global_stack.len(),
-                        sort: self.sort_stack.len(),
+                        bound: self.global_stack.len() as u32,
+                        sort: self.sort_stack.len() as u32,
+                        named_assert: self.named_assertions.push(),
                     };
                     self.push_info.push(info);
                 }
@@ -1223,11 +1285,12 @@ impl<W: Write> Parser<W> {
                         info = self.push_info.pop();
                     }
                     let info = info.unwrap();
-                    self.undo_base_bindings(info.bound);
+                    self.undo_base_bindings(info.bound as usize);
 
-                    for s in self.sort_stack.drain(info.sort..).rev() {
+                    for s in self.sort_stack.drain(info.sort as usize..).rev() {
                         self.declared_sorts.remove(&s);
                     }
+                    self.named_assertions.pop_to(info.named_assert)
                 }
             }
             Smt2Command::Reset => self.clear(),
