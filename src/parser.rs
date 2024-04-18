@@ -67,6 +67,7 @@ enum Error {
     Unbound(Symbol),
     UnboundSort(Symbol),
     Shadow(Symbol),
+    NamedShadow(Symbol),
     InvalidSort,
     InvalidExp,
     InvalidCommand,
@@ -74,6 +75,8 @@ enum Error {
     InvalidDefineFun,
     InvalidBinding,
     InvalidLet,
+    InvalidAnnot,
+    InvalidAnnotAttr(Symbol),
     InvalidInt,
     InvalidFloat,
     InvalidBool,
@@ -118,6 +121,7 @@ impl DisplayInterned for Error {
             Unbound(s) => write!(fmt, "unknown identifier `{}`", s.with_intern(i)),
             UnboundSort(s) => write!(fmt, "unknown sort `{}`", s.with_intern(i)),
             Shadow(s) => write!(fmt, "the identifier `{}` shadows a global constant", s.with_intern(i)),
+            NamedShadow(s) => write!(fmt, "the :named identifier `{}` is already in scope", s.with_intern(i)),
             InvalidSort => write!(fmt, "unexpected token when parsing sort"),
             InvalidExp => write!(fmt, "unexpected token when parsing expression"),
             InvalidCommand => write!(fmt, "unexpected token when parsing command"),
@@ -125,6 +129,8 @@ impl DisplayInterned for Error {
             InvalidDefineFun => write!(fmt, "`define-fun` does not support functions with arguments"),
             InvalidBinding => write!(fmt, "unexpected token when parsing binding"),
             InvalidLet => write!(fmt, "unexpected token when parsing let expression"),
+            InvalidAnnot => write!(fmt, "unexpected token when parsing annotation"),
+            InvalidAnnotAttr(s) => write!(fmt, "invalid attribute :{}", s.with_intern(i)),
             InvalidInt => write!(fmt, "expected integer token"),
             InvalidFloat => write!(fmt, "expected decimal token"),
             InvalidBool => write!(fmt, "expected boolean token"),
@@ -279,6 +285,7 @@ enum_str! {ExpKind{
     "let" => Let(2),
     "if" => If(3),
     "ite" => Ite(3),
+    "!" => Annot(3),
 }}
 
 macro_rules! enum_option {
@@ -349,6 +356,9 @@ struct Parser<W: Write> {
     global_stack: Vec<Symbol>,
     /// List of let bound variable with the old value they are shadowing
     let_bound_stack: Vec<(Symbol, Option<Bound>)>,
+    /// A symbol we are currently defining (it cannot be used with :named even though it's not bound
+    /// yet
+    currently_defining: Option<Symbol>,
     declared_sorts: HashMap<Symbol, u32, DefaultHashBuilder>,
     sort_stack: Vec<Symbol>,
     push_info: Vec<PushInfo>,
@@ -539,6 +549,26 @@ impl ExpParser for BaseExpParser {
                 let err_m = |(left, right)| IteSortMismatch { left, right };
                 p.core.ite(i, t, e).map_err(err_m)?
             }
+            ExpKind::Annot => {
+                let exp = p.parse_exp(rest.next()?)?;
+                let SexpToken::Keyword(k) = rest.next()? else {
+                    return Err(InvalidAnnot);
+                };
+                if k != "named" {
+                    return Err(InvalidAnnotAttr(p.core.intern.symbols.intern(k)));
+                }
+                let SexpToken::Symbol(s) = rest.next()? else {
+                    return Err(InvalidAnnot);
+                };
+                let s = p.core.intern.symbols.intern(s);
+                if p.bound.contains_key(&s) || p.currently_defining == Some(s) {
+                    return Err(NamedShadow(s));
+                }
+                // we now know that `s` isn't bound anywhere, so we can insert it without shadowing
+                // a let bound variable that should have higher priority
+                p.insert_bound(s, Bound::Const(exp));
+                exp
+            }
             ExpKind::Unknown(f) => {
                 // Uninterpreted function
                 let sig = p.bound.get(&f).ok_or(Unbound(f))?.clone();
@@ -659,6 +689,7 @@ impl<W: Write> Parser<W> {
             state: State::Base,
             sort_stack: vec![],
             last_status_info: None,
+            currently_defining: None,
         };
         res.declared_sorts.insert(BOOL_SYM, 0);
         res.bound
@@ -888,6 +919,21 @@ impl<W: Write> Parser<W> {
         name: Smt2Command,
         rest: SexpParser<R>,
     ) -> Result<()> {
+        let old_len = self.global_stack.len();
+        match self.parse_command_h(name, rest) {
+            Ok(()) => Ok(()),
+            Err(err) => {
+                self.undo_base_bindings(old_len);
+                Err(err)
+            }
+        }
+    }
+
+    fn parse_command_h<R: FullBufRead>(
+        &mut self,
+        name: Smt2Command,
+        rest: SexpParser<R>,
+    ) -> Result<()> {
         let mut rest = name.bind(rest);
         match name {
             Smt2Command::DeclareSort => {
@@ -1112,13 +1158,7 @@ impl<W: Write> Parser<W> {
             }
             Smt2Command::DefineConst => {
                 let name = self.parse_fresh_binder(rest.next()?)?;
-                let sort = self.parse_sort(rest.next()?)?;
-                let ret = self.parse_exp(rest.next()?)?;
-                if sort != self.core.sort(ret) {
-                    return Err(BindSortMismatch(self.core.sort(ret)));
-                }
-                rest.finish()?;
-                self.insert_bound(name, Bound::Const(ret));
+                self.define_const(name, rest)?;
             }
             Smt2Command::DefineFn => {
                 let name = self.parse_fresh_binder(rest.next()?)?;
@@ -1129,13 +1169,7 @@ impl<W: Write> Parser<W> {
                     return Err(InvalidDefineFun);
                 }
                 drop(args);
-                let sort = self.parse_sort(rest.next()?)?;
-                let ret = self.parse_exp(rest.next()?)?;
-                if sort != self.core.sort(ret) {
-                    return Err(BindSortMismatch(self.core.sort(ret)));
-                }
-                rest.finish()?;
-                self.insert_bound(name, Bound::Const(ret));
+                self.define_const(name, rest)?;
             }
             Smt2Command::Assert => {
                 self.parse_assert(rest.next_full()?, false)?;
@@ -1198,6 +1232,23 @@ impl<W: Write> Parser<W> {
             Smt2Command::Exit => {}
             _ => return Err(InvalidCommand),
         }
+        Ok(())
+    }
+
+    fn define_const<R: FullBufRead>(
+        &mut self,
+        name: Symbol,
+        mut rest: CountingParser<R>,
+    ) -> Result<()> {
+        let sort = self.parse_sort(rest.next()?)?;
+        self.currently_defining = Some(name);
+        let ret = self.parse_exp(rest.next()?)?;
+        self.currently_defining = None;
+        if sort != self.core.sort(ret) {
+            return Err(BindSortMismatch(self.core.sort(ret)));
+        }
+        rest.finish()?;
+        self.insert_bound(name, Bound::Const(ret));
         Ok(())
     }
 
