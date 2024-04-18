@@ -1,0 +1,6 @@
+(set-option :produce-unsat-cores false)
+(declare-const a Bool)
+(assert (! a :named an))
+(set-option :produce-unsat-cores true)
+(check-sat-assuming ((not an)))
+(get-unsat-core)
