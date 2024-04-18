@@ -20,7 +20,7 @@ that accepts a subset of SMT2LIB syntax for the logic `QF_UF`
 - [x] `get-unsat-core`
 - [x] `declare-const`
 - [x] `define-const`
-- [x] `push`,`pop`,`reset`
+- [x] `push`,`pop`,`reset`,`reset-assertions`
 - [x] `set-option`
 - [ ] `get-proof`
 
