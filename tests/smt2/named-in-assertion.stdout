@@ -1,0 +1,11 @@
+sat
+(
+ (define-fun a () Bool true)
+ (define-fun an () Bool true)
+ (define-fun b () Bool true)
+ (define-fun bn () Bool true)
+ (define-fun c () Bool true)
+ (define-fun cn () Bool true)
+)
+unsat
+((not (and an bn)))

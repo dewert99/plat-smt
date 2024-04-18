@@ -11,6 +11,7 @@ use egg::Id;
 use hashbrown::HashMap;
 use log::debug;
 use no_std_compat::prelude::v1::*;
+use perfect_derive::perfect_derive;
 use std::borrow::BorrowMut;
 use std::fmt::{Debug, Formatter};
 use std::ops::{BitXor, Deref, Not};
@@ -275,11 +276,12 @@ impl Solver {
         &mut self,
         mut j: impl BorrowMut<Junction<IS_AND>> + Debug,
     ) -> BoolExp {
+        let j = j.borrow_mut();
         debug!("{j:?} was collapsed to ...");
-        let res = match &mut j.borrow_mut().0 {
-            Err(_) => BoolExp::Const(!IS_AND),
-            Ok(x) if x.is_empty() => BoolExp::Const(IS_AND),
-            Ok(x) => BoolExp::Unknown(self.andor_reuse(x, IS_AND)),
+        let res = match j.absorbing {
+            true => BoolExp::Const(!IS_AND),
+            false if j.lits.is_empty() => BoolExp::Const(IS_AND),
+            false => BoolExp::Unknown(self.andor_reuse(&mut j.lits, IS_AND)),
         };
         debug!("... {res}");
         res
@@ -458,11 +460,11 @@ impl Solver {
     /// Leave the solver in a state representing the model
     pub fn check_sat_assuming_preserving_trail(&mut self, c: &Conjunction) -> SolveResult {
         self.flush_pending();
-        let res = match &c.0 {
-            Err(_) => lbool::FALSE,
-            Ok(x) => self
+        let res = match c.absorbing {
+            true => lbool::FALSE,
+            false => self
                 .sat
-                .solve_limited_preserving_trail_th(&mut self.euf, &x),
+                .solve_limited_preserving_trail_th(&mut self.euf, &c.lits),
         };
         if res == lbool::FALSE {
             debug!(
@@ -592,38 +594,38 @@ impl Solver {
     }
 }
 
-pub(crate) enum UnsatCoreInfo<T> {
-    FalseBy(T),
-    Map(HashMap<Lit, T, DefaultHashBuilder>),
-}
-
-impl<T> Default for UnsatCoreInfo<T> {
-    fn default() -> Self {
-        UnsatCoreInfo::Map(Default::default())
-    }
+#[perfect_derive(Default)]
+pub(crate) struct UnsatCoreInfo<T> {
+    false_by: Option<T>,
+    data: HashMap<Lit, T, DefaultHashBuilder>,
 }
 
 impl<T> UnsatCoreInfo<T> {
     fn add(&mut self, bool_exp: BoolExp, t: T) {
         match bool_exp {
-            BoolExp::FALSE => *self = UnsatCoreInfo::FalseBy(t),
+            BoolExp::FALSE => {
+                if self.false_by.is_none() {
+                    self.false_by = Some(t)
+                }
+            }
             BoolExp::TRUE => {}
             BoolExp::Unknown(l) => {
-                if let UnsatCoreInfo::Map(m) = self {
-                    m.insert(!l, t);
+                if self.false_by.is_none() {
+                    self.data.insert(!l, t);
                 }
             }
         }
     }
 
     pub(crate) fn core<'a>(&'a self, lits: &'a [Lit]) -> impl Iterator<Item = &'a T> {
-        match self {
-            UnsatCoreInfo::Map(m) => Either::Left(lits.iter().filter_map(|x| m.get(x))),
-            UnsatCoreInfo::FalseBy(x) => Either::Right(core::iter::once(x)),
+        match &self.false_by {
+            Some(x) => Either::Right(core::iter::once(x)),
+            None => Either::Left(lits.iter().filter_map(|x| self.data.get(x))),
         }
     }
 }
 
+#[perfect_derive(Default)]
 pub struct UnsatCoreConjunction<T> {
     conj: Conjunction,
     info: UnsatCoreInfo<T>,
@@ -658,7 +660,21 @@ impl<T> UnsatCoreConjunction<T> {
         (&self.conj, &self.info)
     }
 
-    pub(crate) fn take_core(self) -> UnsatCoreInfo<T> {
-        self.info
+    pub(crate) fn push(&self) -> u32 {
+        if self.conj.absorbing {
+            u32::MAX
+        } else {
+            self.conj.lits.len() as u32
+        }
+    }
+
+    pub(crate) fn pop_to(&mut self, push_info: u32) {
+        if push_info != u32::MAX {
+            self.conj.absorbing = false;
+            self.info.false_by = None;
+            for l in self.conj.lits.drain(push_info as usize..) {
+                self.info.data.remove(&l);
+            }
+        }
     }
 }
