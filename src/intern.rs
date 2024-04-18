@@ -234,7 +234,7 @@ pub trait DisplayInterned {
     }
 }
 
-pub struct WithIntern<'a, X>(X, &'a InternInfo);
+pub struct WithIntern<'a, X>(pub X, &'a InternInfo);
 
 impl<'a, X: DisplayInterned> Display for WithIntern<'a, X> {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {

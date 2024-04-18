@@ -4,7 +4,7 @@ sat
  (define-fun b () Bool true)
  (define-fun f ((x!0 Bool)) Bool
   (ite (= x!0 true) true
-   f!default))
+   false))
  (define-fun x () Bool true)
 )
 unsat

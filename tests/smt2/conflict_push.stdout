@@ -2,12 +2,12 @@ unsat
 unsat
 sat
 (
- (define-fun a () S @S_3)
- (define-fun b () S @S_4)
+ (define-fun a () S (as @v3 S))
+ (define-fun b () S (as @v4 S))
  (define-fun f ((x!0 S)) Bool
-  (ite (= x!0 @S_3) true
-  (ite (= x!0 @S_4) false
-   f!default)))
+  (ite (= x!0 (as @v3 S)) true
+  (ite (= x!0 (as @v4 S)) false
+   false)))
 )
 unsat
 unsat

@@ -41,8 +41,7 @@ pub(crate) struct UExp {
 
 impl DisplayInterned for UExp {
     fn fmt(&self, i: &InternInfo, f: &mut Formatter<'_>) -> std::fmt::Result {
-        let sym = i.sorts.resolve(self.sort).0;
-        write!(f, "@{}_{:?}", sym.with_intern(i), self.id)
+        write!(f, "(as @v{:?} {})", self.id, self.sort.with_intern(i))
     }
 }
 
