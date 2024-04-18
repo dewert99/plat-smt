@@ -274,6 +274,7 @@ enum_str! {Smt2Command{
     "push" => Push(0),
     "pop" => Pop(0),
     "reset" => Reset(0),
+    "reset-assertions" => ResetAssertions(0),
     "set-logic" => SetLogic(1),
     "set-info" => SetInfo(2),
     "set-option" => SetOption(2),
@@ -1235,6 +1236,7 @@ impl<W: Write> Parser<W> {
             .insert(FALSE_SYM, Bound::Const(BoolExp::FALSE.into()));
         self.named_assertions.pop_to(0);
         self.old_named_assertions = 0;
+        self.state = State::Init;
     }
 
     fn parse_destructive_command<R: FullBufRead>(
@@ -1345,7 +1347,16 @@ impl<W: Write> Parser<W> {
                     self.named_assertions.pop_to(info.named_assert)
                 }
             }
-            Smt2Command::Reset => self.clear(),
+            Smt2Command::ResetAssertions => {
+                rest.finish()?;
+                self.clear();
+            }
+            Smt2Command::Reset => {
+                rest.finish()?;
+                self.clear();
+                self.core.set_sat_options(Default::default()).unwrap();
+                self.options = Default::default();
+            }
             Smt2Command::Exit => {}
             _ => return Err(InvalidCommand),
         }
