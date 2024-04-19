@@ -116,43 +116,129 @@ fn test_sequential_push_pop() {
     test_sequential("(push)", "(pop) (push)", true)
 }
 
-#[cfg(not(debug_assertions))]
-#[test]
-fn test_smtlib_benchmarks() {
-    use std::io::{stderr, Write};
+mod test_smtlib_benchmarks {
+    use super::*;
+    use std::io::{stderr, Seek, Write};
     use std::process::{Command, Stdio};
     use walkdir::WalkDir;
 
-    let mut out = String::new();
-    let mut err = String::new();
-    let mut file_buf = Vec::new();
-    if let Ok(x) = std::env::var("SEED") {
-        writeln!(file_buf, "(set-option :sat.random_seed {x})").unwrap();
-        writeln!(file_buf, "(set-option :sat.rnd_init_act true)").unwrap();
+    #[test]
+    fn test_incremental() {
+        let mut out = String::new();
+        let mut err = String::new();
+        let mut file_buf = Vec::new();
+        if let Ok(x) = std::env::var("SEED") {
+            writeln!(file_buf, "(set-option :sat.random_seed {x})").unwrap();
+            writeln!(file_buf, "(set-option :sat.rnd_init_act true)").unwrap();
+        }
+        let base_len = file_buf.len();
+        let path = Path::new("benches/starexec/incremental");
+        for x in WalkDir::new(path).into_iter().filter_map(Result::ok) {
+            let path = x.path();
+            if path.extension() == Some("smt2".as_ref()) {
+                use std::io::Write;
+                writeln!(stderr(), "Testing file {:?}", path).unwrap();
+                let yices_child = Command::new("./yices-smt2")
+                    .arg("--incremental")
+                    .arg(path)
+                    .stdout(Stdio::piped())
+                    .spawn()
+                    .unwrap();
+                File::open(&path)
+                    .unwrap()
+                    .read_to_end(&mut file_buf)
+                    .unwrap();
+                interp_smt2(&*file_buf, &mut out, &mut err);
+                let yices_out = yices_child.wait_with_output().unwrap();
+                assert_eq!(&err, "");
+                assert_eq!(&out, from_utf8(&yices_out.stdout).unwrap());
+                file_buf.truncate(base_len);
+                out.clear();
+            }
+        }
     }
-    let base_len = file_buf.len();
-    let path = Path::new("benches/starexec");
-    for x in WalkDir::new(path).into_iter().filter_map(Result::ok) {
-        let path = x.path();
-        if path.extension() == Some("smt2".as_ref()) {
-            use std::io::Write;
-            writeln!(stderr(), "Testing file {:?}", path).unwrap();
-            let yices_child = Command::new("./yices-smt2")
-                .arg("--incremental")
-                .arg(path)
-                .stdout(Stdio::piped())
-                .spawn()
-                .unwrap();
-            File::open(&path)
-                .unwrap()
-                .read_to_end(&mut file_buf)
-                .unwrap();
-            interp_smt2(&*file_buf, &mut out, &mut err);
-            let yices_out = yices_child.wait_with_output().unwrap();
-            assert_eq!(&err, "");
-            assert_eq!(&out, from_utf8(&yices_out.stdout).unwrap());
-            file_buf.truncate(base_len);
-            out.clear();
+
+    #[test]
+    fn test_model_unsat_core() {
+        let mut out = String::new();
+        let mut err = String::new();
+        let mut file_buf = Vec::new();
+        if let Ok(x) = std::env::var("SEED") {
+            writeln!(file_buf, "(set-option :sat.random_seed {x})").unwrap();
+            writeln!(file_buf, "(set-option :sat.rnd_init_act true)").unwrap();
+        }
+        let base_len = file_buf.len();
+        let path = Path::new("benches/starexec/non-incremental/QF_UF/2018-Goel-hwbench");
+        for x in WalkDir::new(path).into_iter().filter_map(Result::ok) {
+            let path = x.path();
+            if path.extension() == Some("smt2".as_ref()) {
+                use std::io::Write;
+                writeln!(stderr(), "Testing file {:?}", path).unwrap();
+                let mut base_file = File::open(&path).unwrap();
+                base_file.read_to_end(&mut file_buf).unwrap();
+                base_file.rewind().unwrap();
+                let mut scrambled_file = File::create("tmp.smt2").unwrap();
+                let mut output_file = File::create("tmp.out").unwrap();
+                interp_smt2(&*file_buf, &mut out, &mut err);
+                assert_eq!(&err, "");
+                file_buf.truncate(base_len);
+                match &*out {
+                    "sat\n" => {
+                        let scrambler_out = Command::new("./scrambler")
+                            .args(["-gen-model-val", "true"])
+                            .stdin(base_file)
+                            .output()
+                            .unwrap();
+                        assert!(scrambler_out.stderr.is_empty() && scrambler_out.status.success());
+                        let scrambled = scrambler_out.stdout;
+                        out.clear();
+                        interp_smt2(&*scrambled, &mut out, &mut err);
+                        assert_eq!(&err, "");
+                        scrambled_file.write_all(&*scrambled).unwrap();
+                        drop(scrambled_file);
+                        output_file.write_all(out.as_bytes()).unwrap();
+                        out.clear();
+                        let validator_out = Command::new("./ModelValidator")
+                            .args(["--smt2", "tmp.smt2", "--model", "tmp.out"])
+                            .output()
+                            .unwrap();
+                        assert!(validator_out
+                            .stdout
+                            .starts_with(b"model_validator_status=VALID"))
+                    }
+                    "unsat\n" => {
+                        let scrambler_out = Command::new("./scrambler")
+                            .args(["-gen-unsat-core", "true"])
+                            .stdin(base_file)
+                            .output()
+                            .unwrap();
+                        assert!(scrambler_out.stderr.is_empty() && scrambler_out.status.success());
+                        let scrambled = scrambler_out.stdout;
+                        out.clear();
+                        interp_smt2(&*scrambled, &mut out, &mut err);
+                        assert_eq!(&err, "");
+                        scrambled_file.write_all(&*scrambled).unwrap();
+                        drop(scrambled_file);
+                        output_file.write_all(out.as_bytes()).unwrap();
+                        out.clear();
+                        let scrambled_file = File::open("tmp.smt2").unwrap(); // open in read mode
+                        let mut cored_child = Command::new("./scrambler")
+                            .args(["-seed", "0", "-core", "tmp.out"])
+                            .stdin(scrambled_file)
+                            .stdout(Stdio::piped())
+                            .spawn()
+                            .unwrap();
+                        let yices_out = Command::new("./yices-smt2")
+                            .stdin(cored_child.stdout.take().unwrap())
+                            .output()
+                            .unwrap();
+                        assert_eq!(String::from_utf8_lossy(&yices_out.stdout), "unsat\n");
+                        assert_eq!(String::from_utf8_lossy(&yices_out.stderr), "");
+                        cored_child.wait().unwrap();
+                    }
+                    _ => panic!("unexpected output:\n{out}"),
+                }
+            }
         }
     }
 }
