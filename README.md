@@ -42,4 +42,5 @@ for example random initial activations would be enabled with:
 
 ## Misc
 * The `yices-smt2` file is from `https://yices.csl.sri.com/` and is only included for testing
+* The `scrambler` and `ModelValidator` files are from `https://smt-comp.github.io/2021/tools.html` and are also only used for testing
 * If the environment variable `SEED` is set the initial decisions made are randomized based on it when running the star exec tests (these should otherwise be configured via `set-option`)
