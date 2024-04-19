@@ -301,6 +301,7 @@ enum_str! {Smt2Command{
     "set-logic" => SetLogic(1),
     "set-info" => SetInfo(2),
     "set-option" => SetOption(2),
+    "echo" => Echo(1),
     "exit" => Exit(0),
 }}
 
@@ -1225,6 +1226,16 @@ impl<W: Write> Parser<W> {
                 self.core
                     .set_sat_options(prev_option)
                     .map_err(|()| InvalidOption)?;
+            }
+            Smt2Command::Echo => {
+                let start = rest.p.start_idx();
+                let SexpToken::String(_) = rest.next()? else {
+                    return Err(InvalidCommand);
+                };
+                let range = rest.p.end_idx(start);
+                let s = rest.p.lookup_range(range);
+                writeln!(self.writer, "{s}");
+                rest.finish()?;
             }
             _ => return self.parse_destructive_command(name, rest),
         }
