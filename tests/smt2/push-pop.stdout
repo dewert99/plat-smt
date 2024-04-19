@@ -15,7 +15,7 @@ sat
   (ite (= x!0 (as @v3 S)) true
    false))
  (define-fun g ((x!0 S2)) S
-  (ite (= x!0 (as @v6 S2)) (as @v7 S)
+  (ite (= x!0 (as @v6 S2)) (as @v3 S)
    (as @g!default S)))
 )
 unsat
