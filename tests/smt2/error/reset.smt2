@@ -1,3 +1,4 @@
+(set-option :print-success true)
 (set-option :produce-models false)
 (check-sat)
 (get-model) ; fail

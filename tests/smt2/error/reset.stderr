@@ -1,8 +1,8 @@
-The option `:produce-models` must be set to true at 3:2
+The option `:produce-models` must be set to true at 4:2
 (get-model) ; fail
  ^
 
-The option `:produce-models` must be set to true at 6:2
+The option `:produce-models` must be set to true at 7:2
 (get-model) ; fail
  ^
 
