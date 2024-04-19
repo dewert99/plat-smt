@@ -35,10 +35,9 @@ impl<R: Read> FullBufReader<R> {
     #[inline(never)]
     fn fill_to_inner(&mut self, new_size: usize) {
         self.buf.reserve(new_size.saturating_sub(self.read_to));
+        self.buf.resize(self.buf.capacity(), 0);
+        debug_assert!(self.buf.len() >= new_size);
         while self.read_to < new_size {
-            if self.read_to == self.buf.len() {
-                self.buf.resize(self.read_to * 2, 0)
-            }
             let read = self.reader.read(&mut self.buf[self.read_to..]).unwrap();
             if read == 0 {
                 return;
