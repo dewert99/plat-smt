@@ -9,6 +9,7 @@ use crate::parser::Error::*;
 use crate::parser_core::{ParseError, SexpParser, SexpToken, SpanRange};
 use crate::solver::{BoolExp, Exp, SolveResult, Solver, UnsatCoreConjunction};
 use crate::util::{format_args2, parenthesized, powi, Bind, DefaultHashBuilder};
+use core::fmt::Arguments;
 use egg::Id;
 use hashbrown::HashMap;
 use log::debug;
@@ -17,6 +18,26 @@ use smallvec::SmallVec;
 use std::fmt::Formatter;
 use std::fmt::Write;
 use std::iter;
+
+struct PrintSuccessWriter<W> {
+    writer: W,
+    print_success: bool,
+}
+
+impl<W: Write> PrintSuccessWriter<W> {
+    fn new(writer: W) -> Self {
+        PrintSuccessWriter {
+            writer,
+            print_success: false,
+        }
+    }
+
+    #[inline]
+    fn write_fmt(&mut self, args: Arguments<'_>) {
+        self.print_success = false;
+        self.writer.write_fmt(args).unwrap()
+    }
+}
 
 #[derive(Copy, Clone)]
 enum StrSym {
@@ -346,6 +367,7 @@ enum_option! {SetOption{
     "random-seed" => BaseRandomSeed(f64),
     "produce-models" => ProduceModels(bool),
     "produce-unsat-cores" => ProduceUnsatCores(bool),
+    "print-success" => PrintSuccess(bool),
 }}
 
 enum UnsatCoreElt {
@@ -392,7 +414,7 @@ struct Parser<W: Write> {
     old_named_assertions: u32,
     push_info: Vec<PushInfo>,
     core: Solver,
-    writer: W,
+    writer: PrintSuccessWriter<W>,
     state: State,
     options: Options,
     last_status_info: Option<SolveResult>,
@@ -401,6 +423,7 @@ struct Parser<W: Write> {
 struct Options {
     produce_models: bool,
     produces_unsat_cores: bool,
+    print_success: bool,
 }
 
 impl Default for Options {
@@ -408,6 +431,7 @@ impl Default for Options {
         Options {
             produce_models: true,
             produces_unsat_cores: true,
+            print_success: false,
         }
     }
 }
@@ -736,7 +760,7 @@ impl<W: Write> Parser<W> {
             push_info: vec![],
             declared_sorts: Default::default(),
             core: Default::default(),
-            writer,
+            writer: PrintSuccessWriter::new(writer),
             state: State::Init,
             sort_stack: vec![],
             last_status_info: None,
@@ -1001,8 +1025,14 @@ impl<W: Write> Parser<W> {
         rest: SexpParser<R>,
     ) -> Result<()> {
         let old_len = self.global_stack.len();
+        self.writer.print_success = self.options.print_success;
         match self.parse_command_h(name, rest) {
-            Ok(()) => Ok(()),
+            Ok(()) => {
+                if self.writer.print_success {
+                    writeln!(self.writer, "success");
+                }
+                Ok(())
+            }
             Err(err) => {
                 self.undo_base_bindings(old_len);
                 self.named_assertions.pop_to(self.old_named_assertions);
@@ -1038,7 +1068,7 @@ impl<W: Write> Parser<W> {
                 if !self.options.produces_unsat_cores {
                     return Err(ProduceCoreFalse);
                 }
-                write!(self.writer, "(").unwrap();
+                write!(self.writer, "(");
                 let mut iter = self
                     .named_assertions
                     .parts()
@@ -1049,12 +1079,12 @@ impl<W: Write> Parser<W> {
                         UnsatCoreElt::Sym(s) => self.core.intern.symbols.resolve(s),
                     });
                 if let Some(x) = iter.next() {
-                    write!(self.writer, "{x}").unwrap();
+                    write!(self.writer, "{x}");
                 }
                 for x in iter {
-                    write!(self.writer, " {x}").unwrap();
+                    write!(self.writer, " {x}");
                 }
-                writeln!(self.writer, ")").unwrap();
+                writeln!(self.writer, ")");
                 rest.finish()?;
             }
             Smt2Command::GetValue => {
@@ -1071,7 +1101,7 @@ impl<W: Write> Parser<W> {
                     .zip_map_full(iter::repeat(()), |x, ()| self.parse_exp(x?))
                     .collect::<Result<Vec<_>>>()?;
                 drop(l);
-                write!(self.writer, "(").unwrap();
+                write!(self.writer, "(");
                 let mut iter = values.into_iter().map(|(exp, span)| {
                     (
                         exp.with_intern(&self.core.intern),
@@ -1079,12 +1109,12 @@ impl<W: Write> Parser<W> {
                     )
                 });
                 if let Some((x, lit)) = iter.next() {
-                    write!(self.writer, "({lit} {x})").unwrap();
+                    write!(self.writer, "({lit} {x})");
                 }
                 for (x, lit) in iter {
-                    write!(self.writer, "\n ({lit} {x})").unwrap();
+                    write!(self.writer, "\n ({lit} {x})");
                 }
-                writeln!(self.writer, ")").unwrap();
+                writeln!(self.writer, ")");
                 rest.finish()?;
             }
             Smt2Command::GetModel => {
@@ -1096,7 +1126,7 @@ impl<W: Write> Parser<W> {
                     return Err(ProduceModelFalse);
                 }
                 let (funs, core) = self.core.function_info();
-                writeln!(self.writer, "(").unwrap();
+                writeln!(self.writer, "(");
                 let mut bound: Vec<_> = self
                     .bound
                     .keys()
@@ -1112,7 +1142,7 @@ impl<W: Write> Parser<W> {
                             let x = core.canonize(*x);
                             let sort = core.sort(x).with_intern(intern);
                             let x = x.with_intern(intern);
-                            writeln!(self.writer, " (define-fun {k_i} () {sort} {x})").unwrap();
+                            writeln!(self.writer, " (define-fun {k_i} () {sort} {x})");
                         }
                         Bound::Fn(f) => {
                             let args =
@@ -1121,12 +1151,12 @@ impl<W: Write> Parser<W> {
                                 });
                             let args = parenthesized(args, " ");
                             let ret = f.ret.with_intern(intern);
-                            writeln!(self.writer, " (define-fun {k_i} {args} {ret}").unwrap();
+                            writeln!(self.writer, " (define-fun {k_i} {args} {ret}");
                             write_body(&mut self.writer, &funs, k, ret, intern);
                         }
                     }
                 }
-                writeln!(self.writer, ")").unwrap();
+                writeln!(self.writer, ")");
             }
             Smt2Command::SetLogic => {
                 match rest.next()? {
@@ -1184,6 +1214,11 @@ impl<W: Write> Parser<W> {
                     }
                     SetOption::ProduceModels(x) => {
                         self.options.produce_models = x;
+                        return Ok(());
+                    }
+                    SetOption::PrintSuccess(x) => {
+                        self.options.print_success = x;
+                        self.writer.print_success = x; // apply to current command
                         return Ok(());
                     }
                 }
@@ -1297,7 +1332,7 @@ impl<W: Write> Parser<W> {
                     .core
                     .check_sat_assuming_preserving_trail(self.named_assertions.parts().0);
                 self.set_state(res)?;
-                writeln!(self.writer, "{}", res.as_lower_str()).unwrap()
+                writeln!(self.writer, "{}", res.as_lower_str())
             }
             Smt2Command::CheckSatAssuming => {
                 let SexpToken::List(mut l) = rest.next()? else {
@@ -1316,7 +1351,7 @@ impl<W: Write> Parser<W> {
                     .core
                     .check_sat_assuming_preserving_trail(self.named_assertions.parts().0);
                 self.set_state(res)?;
-                writeln!(self.writer, "{}", res.as_lower_str()).unwrap()
+                writeln!(self.writer, "{}", res.as_lower_str())
             }
             Smt2Command::Push => {
                 let n = rest.try_next_parse()?.unwrap_or(1);
@@ -1358,6 +1393,7 @@ impl<W: Write> Parser<W> {
                 self.clear();
                 self.core.set_sat_options(Default::default()).unwrap();
                 self.options = Default::default();
+                self.writer.print_success = self.options.print_success;
             }
             Smt2Command::Exit => {}
             _ => return Err(InvalidCommand),
@@ -1425,7 +1461,7 @@ impl<W: Write> Parser<W> {
 }
 
 fn write_body<W: Write>(
-    writer: &mut W,
+    writer: &mut PrintSuccessWriter<W>,
     info: &FullFunctionInfo,
     name: Symbol,
     ret: WithIntern<Sort>,
@@ -1439,24 +1475,24 @@ fn write_body<W: Write>(
         let mut case = case
             .enumerate()
             .map(|(i, x)| format_args2!("(= x!{i} {})", x.with_intern(intern)));
-        write!(writer, "  (ite ").unwrap();
+        write!(writer, "  (ite ");
         let c1 = case.next().unwrap();
         match case.next() {
-            None => write!(writer, "{c1}").unwrap(),
+            None => write!(writer, "{c1}"),
             Some(c2) => {
-                write!(writer, "(and {c1} {c2}").unwrap();
+                write!(writer, "(and {c1} {c2}");
                 for c in case {
-                    write!(writer, " {c}").unwrap();
+                    write!(writer, " {c}");
                 }
-                write!(writer, ")").unwrap();
+                write!(writer, ")");
             }
         }
-        writeln!(writer, " {res}").unwrap();
+        writeln!(writer, " {res}");
     }
     if ret.0 == BOOL_SORT {
-        writeln!(writer, "   false{:)<len$})", "").unwrap()
+        writeln!(writer, "   false{:)<len$})", "");
     } else {
-        writeln!(writer, "   (as @{name}!default {ret}){:)<len$})", "").unwrap()
+        writeln!(writer, "   (as @{name}!default {ret}){:)<len$})", "");
     }
 }
 

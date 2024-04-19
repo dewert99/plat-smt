@@ -34,7 +34,10 @@ for example random initial activations would be enabled with:
 
 `(set-option :sat.rnd_init_act true)`
 
-The parameters `:produce-models` and `:produce-unsat-cores` from the SMT-LIB standard are also supported, and default to `true`.
+`bat_egg_smt` also supports the SMT-LIB standard parameters:
+* `:produce-models` (default `true`) 
+* `:produce-unsat-cores` (default `true`)
+* `:print-success` (default `false`)
 
 ## Misc
 * The `yices-smt2` file is from `https://yices.csl.sri.com/` and is only included for testing
