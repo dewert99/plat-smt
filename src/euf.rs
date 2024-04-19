@@ -646,7 +646,7 @@ impl EUFInner {
         buf.clear();
         for (id, node) in self.egraph.uncanonical_nodes() {
             let node = node.clone().map_children(|id| self.find(id));
-            buf.data.push((node, id))
+            buf.data.push((node, self.find(id)))
         }
         buf.data.sort_unstable_by(|x, y| x.0.cmp(&y.0));
         buf.data.dedup_by(|x, y| x.0 == y.0);
