@@ -110,6 +110,7 @@ pub(crate) struct SexpLexer<R> {
     current_line: usize,
     idx: usize,
     last_span: Span,
+    str_buf: Vec<u8>,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -124,7 +125,7 @@ enum RawSexpToken<'a, R> {
     RightParen,
     Keyword(&'a str),
     Symbol(&'a str),
-    String(String),
+    String(&'a str),
     Number(u128),
     // x*10^-y
     Decimal(u128, u8),
@@ -155,6 +156,7 @@ impl<R: FullBufRead> SexpLexer<R> {
             current_line: 0,
             idx: 0,
             last_span: Span::default(),
+            str_buf: vec![],
         }
     }
 
@@ -279,19 +281,19 @@ impl<R: FullBufRead> SexpLexer<R> {
             // String literals
             Some(b'"') => {
                 self.consume_byte();
-                let mut buf = Vec::new();
+                self.str_buf.clear();
                 while let Some(c) = self.read_byte() {
                     if c == b'"' {
                         if let Some(d) = self.peek_byte() {
                             if d == b'"' {
                                 self.consume_byte();
-                                buf.push(b'"');
+                                self.str_buf.push(b'"');
                                 continue;
                             }
                         }
-                        return Ok(RawSexpToken::String(String::from_utf8(buf)?));
+                        return Ok(RawSexpToken::String(std::str::from_utf8(&self.str_buf)?));
                     }
-                    buf.push(c);
+                    self.str_buf.push(c);
                 }
                 // Do not accept EOI as a terminator.
                 Err(UnexpectedEOI { expected: '"' })
@@ -411,7 +413,7 @@ impl<R: FullBufRead> SexpLexer<R> {
 pub enum SexpToken<'a, R: FullBufRead> {
     Keyword(&'a str),
     Symbol(&'a str),
-    String(String),
+    String(&'a str),
     Number(u128),
     // x * 10^-y
     Decimal(u128, u8),
@@ -529,6 +531,15 @@ impl<'a, R: FullBufRead> SexpParser<'a, R> {
         self.next_raw(true)
     }
 
+    pub fn start_idx(&mut self) -> usize {
+        self.0.skip();
+        self.0.idx
+    }
+
+    pub fn end_idx(&mut self, start: usize) -> SpanRange {
+        SpanRange(start, self.0.idx)
+    }
+
     pub fn zip_map_full<
         U,
         E,
@@ -541,12 +552,11 @@ impl<'a, R: FullBufRead> SexpParser<'a, R> {
     ) -> impl Iterator<Item = Result<(U, SpanRange), E>> + Bind<(F, I, &mut Self)> {
         let mut iter = zip.into_iter();
         core::iter::from_fn(move || {
-            self.0.skip();
+            let start = self.start_idx();
             let it_next = iter.next()?;
-            let start = self.0.idx;
             let res = f(self.next()?, it_next);
-            let end = self.0.idx;
-            Some(res.map(|res| (res, SpanRange(start, end))))
+            let range = self.end_idx(start);
+            Some(res.map(|res| (res, range)))
         })
     }
 
