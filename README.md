@@ -26,7 +26,7 @@ that accepts a subset of SMT2LIB syntax for the logic `QF_UF`
 
 ## Binary usage
 The binary (produced by `cargo build`) takes in a list of `.smt2` files  and evaluates sequentially as if they were a single concatenated file.
-This list can optionally be followed by `-i` which enters interactive mode after the files are evaluated
+This list can optionally be followed by `-i` which enters interactive mode (reading from `stdin`) after the files are evaluated
 
 ## Parameters (`set-option`)
 Most parameters currently come from [batsat](https://docs.rs/batsat/latest/batsat/core/struct.SolverOpts.html), and are prefixed by `sat.`,
