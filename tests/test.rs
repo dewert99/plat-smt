@@ -116,6 +116,7 @@ fn test_sequential_push_pop() {
     test_sequential("(push)", "(pop) (push)", true)
 }
 
+#[cfg(not(debug_assertions))]
 mod test_smtlib_benchmarks {
     use super::*;
     use std::io::{stderr, Seek, Write};
