@@ -418,7 +418,7 @@ impl EUF {
         self.explanation.clear();
         let res = self.explain(id1, id2, true, false);
         debug!("EUF Conflict by {:?}", res.as_slice());
-        acts.raise_conflict(res, true)
+        acts.raise_conflict(res, false)
     }
 
     pub(crate) fn rebuild(&mut self, acts: &mut impl SatSolver) -> Result {
