@@ -32,7 +32,7 @@ pub struct Op(u32);
 
 impl Op {
     pub const fn new(sym: Symbol, symmetric: bool) -> Self {
-        let sym = sym.0;
+        let sym = sym.idx();
         assert!(sym & SYMBOL_MASK == sym);
         Op(sym | (symmetric as u32) << SYMMETRY_SHIFT)
     }
@@ -55,7 +55,7 @@ impl Op {
     }
 
     pub fn sym(self) -> Symbol {
-        Symbol(self.sym_u32())
+        Symbol::new(self.sym_u32())
     }
 
     fn sym_u32(self) -> u32 {

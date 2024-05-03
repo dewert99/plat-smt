@@ -1,6 +1,7 @@
 #![forbid(unsafe_code)]
 #![no_std]
 
+extern crate alloc;
 extern crate no_std_compat as std;
 
 mod approx_bitset;
@@ -9,10 +10,12 @@ mod egraph;
 mod euf;
 mod explain;
 mod full_buf_read;
+mod index;
 mod intern;
 pub mod junction;
 mod parser;
 pub mod parser_core;
+mod slice_vec;
 mod solver;
 mod sp_insert_map;
 mod theory;

@@ -1,17 +1,20 @@
+use crate::index::Idx;
+use crate::slice_vec::SliceVec;
 use crate::util::DefaultHashBuilder;
+use batsat::intmap::AsIndex;
 use hashbrown::hash_table::Entry;
 use hashbrown::HashTable;
 use no_std_compat::prelude::v1::*;
-use std::fmt::{Debug, Display, Formatter};
+use std::fmt::{Display, Formatter};
 use std::hash::BuildHasher;
 
-#[derive(Copy, Clone, Ord, PartialOrd, Eq, PartialEq, Hash, Debug)]
-pub struct Symbol(pub(crate) u32);
+pub struct SymbolK;
+pub type Symbol = Idx<SymbolK>;
+pub struct SortK;
 
-#[derive(Copy, Clone, Eq, PartialEq, Debug, Hash)]
-pub struct Sort(u32);
+pub type Sort = Idx<SortK>;
 
-const BASE_SYMBOLS: &'static [&'static str] = &["Bool", "=", "true", "false"];
+const BASE_SYMBOLS: &'static [&'static str] = &["|Default|", "Bool", "=", "true", "false"];
 
 const fn u8_slice_eq(s0: &[u8], s1: &[u8]) -> bool {
     match (s0, s1) {
@@ -24,7 +27,7 @@ const fn u8_slice_eq(s0: &[u8], s1: &[u8]) -> bool {
 const fn base_symbol(s: &str) -> Symbol {
     const fn h(s: &str, x: usize) -> Symbol {
         if u8_slice_eq(BASE_SYMBOLS[x].as_bytes(), s.as_bytes()) {
-            Symbol(x as u32)
+            Symbol::new(x as u32)
         } else {
             h(s, x + 1)
         }
@@ -42,15 +45,15 @@ const BASE_SORTS: &'static [(Symbol, &'static [Sort])] = &[(BOOL_SYM, &[])];
 const fn sort_slice_eq(s0: &[Sort], s1: &[Sort]) -> bool {
     match (s0, s1) {
         ([], []) => true,
-        ([x0, rest0 @ ..], [x1, rest1 @ ..]) if x0.0 == x1.0 => sort_slice_eq(rest0, rest1),
+        ([x0, rest0 @ ..], [x1, rest1 @ ..]) if x0.idx() == x1.idx() => sort_slice_eq(rest0, rest1),
         _ => false,
     }
 }
 const fn base_sort(name: Symbol, children: &[Sort]) -> Sort {
     const fn h(name: Symbol, children: &[Sort], x: usize) -> Sort {
         let (b_name, b_children) = BASE_SORTS[x];
-        if b_name.0 == name.0 && sort_slice_eq(b_children, children) {
-            Sort(x as u32)
+        if b_name.idx() == name.idx() && sort_slice_eq(b_children, children) {
+            Sort::new(x as u32)
         } else {
             h(name, children, x + 1)
         }
@@ -63,7 +66,7 @@ pub const BOOL_SORT: Sort = base_sort(BOOL_SYM, &[]);
 pub struct SymbolInfo {
     symbol_data: String,
     symbol_indices: Vec<usize>,
-    map: HashTable<(usize, usize, u32)>,
+    map: HashTable<(usize, usize, Symbol)>,
     hasher: DefaultHashBuilder,
 }
 
@@ -78,7 +81,7 @@ impl SymbolInfo {
                     .hash_one(&self.symbol_data.as_bytes()[start..end])
             },
         ) {
-            Entry::Occupied(occ) => Symbol(occ.get().2),
+            Entry::Occupied(occ) => occ.get().2,
             Entry::Vacant(vac) => {
                 let old_len = self.symbol_data.len();
                 self.symbol_data.push_str(s);
@@ -86,10 +89,10 @@ impl SymbolInfo {
                 if res > (u32::MAX as usize >> 2) {
                     panic!("Too many symbols");
                 }
-                let res = res as u32;
+                let res = Symbol::from_index(res);
                 vac.insert((old_len, self.symbol_data.len(), res));
                 self.symbol_indices.push(self.symbol_data.len());
-                Symbol(res)
+                res
             }
         }
     }
@@ -100,17 +103,16 @@ impl SymbolInfo {
         if res > u32::MAX as usize >> 2 {
             panic!("Too many symbols");
         }
-        let res = res as u32;
         if cfg!(debug_assertions) {
             // this is only useful for logging
             write!(&mut self.symbol_data, "{name}|{res}").unwrap();
         }
         self.symbol_indices.push(self.symbol_data.len());
-        Symbol(res)
+        Symbol::from_index(res)
     }
 
     pub fn resolve(&self, s: Symbol) -> &str {
-        let idx = s.0 as usize;
+        let idx = s.as_index();
         &self.symbol_data[self.symbol_indices[idx]..self.symbol_indices[idx + 1]]
     }
 }
@@ -123,9 +125,10 @@ impl Default for SymbolInfo {
             map: Default::default(),
             hasher: Default::default(),
         };
+        #[cfg(debug_assertions)]
         for (i, &elt) in BASE_SYMBOLS.iter().enumerate() {
             let s = res.intern(elt);
-            assert_eq!(s, Symbol(i as u32));
+            assert_eq!(s, Symbol::from_index(i));
         }
         res
     }
@@ -150,9 +153,8 @@ fn test_symbols() {
 }
 
 pub struct SortInfo {
-    sort_args: Vec<Sort>,
-    sorts: Vec<(Symbol, u32)>,
-    map: HashTable<(Symbol, u32, u32, u32)>,
+    data: SliceVec<Sort, Symbol, Sort>,
+    map: HashTable<(Symbol, u32, u32, Sort)>,
     hasher: DefaultHashBuilder,
 }
 
@@ -162,56 +164,57 @@ impl SortInfo {
         match self.map.entry(
             hash,
             |x| {
-                (|&(sym, start, end, _)| (sym, &self.sort_args[start as usize..end as usize]))(x)
+                (|&(sym, start, end, _)| (sym, self.data.range_to_slice(start, end)))(x)
                     == (name, args)
             },
             |x| {
                 self.hasher.hash_one((|&(sym, start, end, _)| {
-                    (sym, &self.sort_args[start as usize..end as usize])
+                    (sym, self.data.range_to_slice(start, end))
                 })(x))
             },
         ) {
-            Entry::Occupied(occ) => Sort(occ.get().3),
+            Entry::Occupied(occ) => occ.get().3,
             Entry::Vacant(vac) => {
-                let old_len = self.sort_args.len();
-                self.sort_args.extend_from_slice(args);
-                let res = self.sorts.len() - 1;
-                if res > u32::MAX as usize {
-                    panic!("Too many symbols");
-                }
-                if self.sort_args.len() > u32::MAX as usize {
-                    panic!("Too many sort args");
-                }
-                let res = res as u32;
-                vac.insert((name, old_len as u32, self.sort_args.len() as u32, res));
-                self.sorts.push((name, self.sort_args.len() as u32));
-                Sort(res)
+                let old_len = self.data.slice_data_len();
+                let res = self.data.push(name, args);
+                vac.insert((name, old_len, self.data.slice_data_len(), res));
+                res
             }
         }
     }
 
     pub fn resolve(&self, s: Sort) -> (Symbol, &[Sort]) {
-        let idx = s.0 as usize;
-        let name = self.sorts[idx + 1].0;
-        let children = &self.sort_args[self.sorts[idx].1 as usize..self.sorts[idx + 1].1 as usize];
-        (name, children)
+        let (name, children) = self.data.lookup(s);
+        (*name, children)
     }
 }
 
 impl Default for SortInfo {
     fn default() -> Self {
         let mut res = SortInfo {
-            sort_args: vec![],
-            sorts: vec![(Symbol(0), 0)],
+            data: Default::default(),
             map: Default::default(),
             hasher: Default::default(),
         };
+        #[cfg(debug_assertions)]
         for (i, &(name, args)) in BASE_SORTS.iter().enumerate() {
             let s = res.intern(name, args);
-            assert_eq!(s, Sort(i as u32));
+            assert_eq!(s, Sort::from_index(i));
         }
         res
     }
+}
+
+#[test]
+fn test_sorts() {
+    let mut sorts = SortInfo::default();
+    let sort = sorts.intern(EQ_SYM, &[BOOL_SORT, BOOL_SORT]);
+    let (sym, args) = sorts.resolve(sort);
+    assert_eq!(sym, EQ_SYM);
+    assert_eq!(args, &[BOOL_SORT, BOOL_SORT]);
+    let (b_sym, b_args) = sorts.resolve(BOOL_SORT);
+    assert_eq!(b_sym, BOOL_SYM);
+    assert_eq!(b_args, &[]);
 }
 
 #[derive(Default)]
