@@ -2,10 +2,10 @@ use crate::buffered_solver::BufferedSolver;
 use crate::egraph::Children;
 use crate::euf::{FullFunctionInfo, FunctionInfo, SatSolver, EUF};
 use crate::explain::Justification;
-use crate::intern::{DisplayInterned, InternInfo, Sort, BOOL_SORT};
+use crate::intern::*;
 use crate::junction::*;
 use crate::sp_insert_map::SPInsertMap;
-use crate::util::{display_debug, format_args2, DefaultHashBuilder, Either};
+use crate::util::{display_debug, pairwise_sym, format_args2, DefaultHashBuilder, Either};
 use crate::Symbol;
 use batsat::{lbool, Callbacks, Lit, SolverInterface, SolverOpts, Var};
 use egg::Id;
@@ -13,7 +13,6 @@ use hashbrown::HashMap;
 use log::debug;
 use no_std_compat::prelude::v1::*;
 use perfect_derive::perfect_derive;
-use std::borrow::BorrowMut;
 use std::fmt::{Debug, Formatter};
 use std::mem;
 use std::ops::{BitXor, Deref, Not};
@@ -31,6 +30,7 @@ pub struct Solver {
     euf: EUF,
     pending_equalities: Vec<(Id, Id)>,
     sat: BufferedSolver<BatSolver>,
+    junction_buf: Vec<Lit>,
     function_info_buf: FunctionInfo,
     ifs: SPInsertMap<(Lit, Id, Id), Id>,
     pub intern: InternInfo,
@@ -271,14 +271,9 @@ impl Solver {
 
     /// Collapse a [`Conjunction`] or [`Disjunction`] into a [`BoolExp`]
     ///
-    /// To reuse memory you can pass mutable reference instead of an owned value
-    /// Doing this will leave `j` in an unspecified state, so it should be
-    /// [`clear`](Junction::clear)ed before it is used again
-    pub fn collapse_bool<const IS_AND: bool>(
-        &mut self,
-        mut j: impl BorrowMut<Junction<IS_AND>> + Debug,
-    ) -> BoolExp {
-        let j = j.borrow_mut();
+    /// [`new_junction`](Self::new_junction) returns an empty [`Conjunction`] or [`Disjunction`]
+    /// which reuses memory from the last call
+    pub fn collapse_bool<const IS_AND: bool>(&mut self, mut j: Junction<IS_AND>) -> BoolExp {
         debug!("{j:?} was collapsed to ...");
         let res = match j.absorbing {
             true => BoolExp::Const(!IS_AND),
@@ -286,7 +281,18 @@ impl Solver {
             false => BoolExp::Unknown(self.andor_reuse(&mut j.lits, IS_AND)),
         };
         debug!("... {res}");
+        self.junction_buf = j.lits;
+        self.junction_buf.clear();
         res
+    }
+
+    /// Returns an empty [`Conjunction`] or [`Disjunction`]  which reuses memory from the last call
+    /// to [`collapse_bool`](Self::collapse_bool)
+    pub fn new_junction<const IS_AND: bool>(&mut self) -> Junction<IS_AND> {
+        Junction {
+            absorbing: false,
+            lits: mem::take(&mut self.junction_buf),
+        }
     }
 
     pub fn xor(&mut self, b1: BoolExp, b2: BoolExp) -> BoolExp {
@@ -596,13 +602,130 @@ impl Solver {
         res
     }
 
+    pub(crate) fn add_sexp(
+        &mut self,
+        f: Symbol,
+        mut children: impl DoubleEndedIterator<Item = Exp>,
+        target_sort: Sort,
+    ) -> Exp {
+        let res: Exp = match f {
+            TRUE_SYM => BoolExp::TRUE.into(),
+            FALSE_SYM => BoolExp::FALSE.into(),
+            AND_SYM => {
+                let mut c: Conjunction = self.new_junction();
+                c.extend(children.map(|x| self.canonize(x.as_bool().unwrap())));
+                self.collapse_bool(c).into()
+            }
+            OR_SYM => {
+                let mut d: Disjunction = self.new_junction();
+                d.extend(children.map(|x| self.canonize(x.as_bool().unwrap())));
+                self.collapse_bool(d).into()
+            }
+            NOT_SYM => {
+                let res = !children.next().unwrap().as_bool().unwrap();
+                debug_assert!(children.next().is_none());
+                self.canonize(res).into()
+            }
+            IMP_SYM => {
+                let mut d: Disjunction = self.new_junction();
+                let mut neg_bool_children = children.map(|x| !self.canonize(x.as_bool().unwrap()));
+                let last = !neg_bool_children.next_back().unwrap();
+                d.extend(neg_bool_children);
+                d.push(last);
+                self.collapse_bool(d).into()
+            }
+            XOR_SYM => children
+                .fold(BoolExp::FALSE, |b1, b2| {
+                    self.xor(b1, self.canonize(b2.as_bool().unwrap()))
+                })
+                .into(),
+            EQ_SYM => {
+                let mut c: Conjunction = self.new_junction();
+                let exp1 = children.next().unwrap();
+                let (id1, _) = self.id_sort(exp1);
+                c.extend(children.map(|x| {
+                    let id2 = self.id_sort(x).0;
+                    self.raw_eq(id1, id2)
+                }));
+                self.collapse_bool(c).into()
+            }
+            DISTINCT_SYM => {
+                let ids: Vec<_> = children.map(|child| self.id_sort(child).0).collect();
+                let mut c: Conjunction = self.new_junction();
+                c.extend(pairwise_sym(&ids).map(|(id1, id2)| !self.raw_eq(*id1, *id2)));
+                self.collapse_bool(c).into()
+            }
+            ITE_SYM | IF_SYM => {
+                let mut canonized = children.map(|x| self.canonize(x));
+                let [i, t, e] = std::array::from_fn(|_| canonized.next().unwrap());
+                debug_assert!(canonized.next().is_none());
+                self.ite(i.as_bool().unwrap(), t, e).unwrap()
+            }
+            f => {
+                let children: Children = children.map(|x| self.id_sort(x).0).collect();
+                self.sorted_fn(f, children, target_sort)
+            }
+        };
+        debug_assert_eq!(self.sort(res), target_sort);
+        res
+    }
+
+    pub(crate) fn assert_sexp(
+        &mut self,
+        f: Symbol,
+        mut children: impl DoubleEndedIterator<Item = Exp>,
+        negate: bool,
+        target_sort: Sort,
+    ) {
+        match (f, negate) {
+            (EQ_SYM, false) => {
+                let exp1 = children.next().unwrap();
+                let (id1, _) = self.id_sort(exp1);
+                for child in children {
+                    let id2 = self.id_sort(child).0;
+                    self.assert_raw_eq(id1, id2);
+                }
+            }
+            (DISTINCT_SYM, false) => {
+                let child1 = children.next().unwrap();
+                match child1.0 {
+                    EExp::Bool(b) => {
+                        if let Some(child2) = children.next() {
+                            if let Some(_) = children.next() {
+                                // it is impossible to have more than 3 distinct booleans
+                                self.assert(BoolExp::FALSE)
+                            } else {
+                                let xor = self.xor(b, child2.as_bool().unwrap());
+                                self.assert(xor)
+                            }
+                        }
+                    }
+                    EExp::Uninterpreted(u) => {
+                        let rest = children.map(|child| match child.0 {
+                            EExp::Bool(_) => panic!(),
+                            EExp::Uninterpreted(u) => u.id,
+                        });
+                        self.assert_distinct([u.id].into_iter().chain(rest))
+                    }
+                }
+            }
+            _ => {
+                let exp = self.add_sexp(f, children, target_sort);
+                self.assert(exp.as_bool().unwrap() ^ negate)
+            }
+        };
+    }
+
     pub(crate) fn last_unsat_core(&self) -> &[Lit] {
         self.sat.unsat_core()
     }
 
-    pub fn function_info(&mut self) -> (FullFunctionInfo<'_>, &Self) {
+    pub fn init_function_info(&mut self) {
         self.euf.function_info(&mut self.function_info_buf);
-        (self.function_info_buf.with_euf(&self.euf), &*self)
+    }
+
+    pub fn function_info(&self) -> FullFunctionInfo<'_> {
+        self.function_info_buf.with_euf(&self.euf)
     }
     pub fn sat_options(&self) -> SolverOpts {
         self.sat.options()

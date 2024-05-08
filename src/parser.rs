@@ -1,16 +1,12 @@
-use crate::egraph::Children;
+use crate::ast_solver::{AstSolver, SExp};
 use crate::euf::FullFunctionInfo;
 use crate::full_buf_read::FullBufRead;
-use crate::intern::{
-    DisplayInterned, InternInfo, Sort, Symbol, WithIntern, BOOL_SORT, BOOL_SYM, FALSE_SYM, TRUE_SYM,
-};
-use crate::junction::{Conjunction, Disjunction};
+use crate::intern::*;
 use crate::parser::Error::*;
 use crate::parser_core::{ParseError, SexpParser, SexpToken, SpanRange};
-use crate::solver::{BoolExp, Exp, SolveResult, Solver, UnsatCoreConjunction};
+use crate::solver::{SolveResult, UnsatCoreConjunction};
 use crate::util::{format_args2, parenthesized, powi, Bind, DefaultHashBuilder};
 use core::fmt::Arguments;
-use egg::Id;
 use hashbrown::HashMap;
 use log::debug;
 use no_std_compat::prelude::v1::*;
@@ -73,10 +69,6 @@ enum Error {
         actual: Sort,
         expected: Sort,
     },
-    IteSortMismatch {
-        left: Sort,
-        right: Sort,
-    },
     BindSortMismatch(Sort),
     MissingArgument {
         f: StrSym,
@@ -124,16 +116,12 @@ impl DisplayInterned for Error {
                 arg_n,
                 actual,
                 expected,
-            } => write!(fmt, "the {arg_n}th argument of the function {} has sort {} but should have sort {}", f.with_intern(i), actual.with_intern(i), expected.with_intern(i)),
+            } => write!(fmt, "argument {arg_n} of the function `{}` has sort `{}` but should have sort `{}`", f.with_intern(i), actual.with_intern(i), expected.with_intern(i)),
             AsSortMismatch {
                 f,
                 actual,
                 expected
-            } => write!(fmt, "the function {} has return sort {} but should have sort {} because of as", f.with_intern(i), actual.with_intern(i), expected.with_intern(i)),
-            IteSortMismatch {
-                left,
-                right,
-            } => write!(fmt, "the left side of the ite expression has sort {} but the right side has sort {}", left.with_intern(i), right.with_intern(i)),
+            } => write!(fmt, "the function `{}` has return sort `{}` but should have sort `{}` because of as", f.with_intern(i), actual.with_intern(i), expected.with_intern(i)),
             BindSortMismatch(s) => write!(fmt, "the definition had the incorrect sort {}", s.with_intern(i)),
             MissingArgument {
                 f,
@@ -236,7 +224,7 @@ struct FnSort {
 #[derive(Clone)]
 enum Bound {
     Fn(FnSort),
-    Const(Exp),
+    Const((SExp, Sort)),
 }
 
 macro_rules! enum_str {
@@ -306,16 +294,7 @@ enum_str! {Smt2Command{
 }}
 
 enum_str! {ExpKind{
-    "and" => And(0),
-    "or" => Or(0),
-    "not" => Not(1),
-    "=>" => Imp(1),
-    "xor" => Xor(0),
-    "=" => Eq(1),
-    "distinct" => Distinct(1),
     "let" => Let(2),
-    "if" => If(3),
-    "ite" => Ite(3),
     "!" => Annot(3),
 }}
 
@@ -397,14 +376,14 @@ struct Parser<W: Write> {
     bound: HashMap<Symbol, Bound, DefaultHashBuilder>,
     /// List of global variables in the order defined
     /// Used to remove global variable during `(pop)`
-    global_stack: Vec<Symbol>,
+    global_defs: Vec<Symbol>,
     /// List of let bound variable with the old value they are shadowing
     let_bound_stack: Vec<(Symbol, Option<Bound>)>,
     /// A symbol we are currently defining (it cannot be used with :named even though it's not bound
     /// yet
     currently_defining: Option<Symbol>,
     declared_sorts: HashMap<Symbol, u32, DefaultHashBuilder>,
-    sort_stack: Vec<Symbol>,
+    sort_defs: Vec<Symbol>,
     /// assertions named a top level that we always add to assumption list of `check_sat` instead
     /// of immediately asserting.
     /// Between a command `(check-sat-assuming)` and the next destructive command,
@@ -414,7 +393,14 @@ struct Parser<W: Write> {
     // see above
     old_named_assertions: u32,
     push_info: Vec<PushInfo>,
-    core: Solver,
+    /// While parsing expressions this is used to store pointers into the ast with the invariant
+    /// that it is always the same at the end of a call that it was at the start of the call,
+    /// unless the call returns an error in which case it should be cleared
+    sexp_stack: Vec<SExp>,
+    /// Similar to `sexp_stack` but stores the sorts of the expressions rather than there position in
+    /// the ast
+    sort_stack: Vec<Sort>,
+    core: AstSolver,
     writer: PrintSuccessWriter<W>,
     state: State,
     options: Options,
@@ -508,247 +494,67 @@ impl<'a, R: FullBufRead> CountingParser<'a, R> {
             Ok(())
         }
     }
-
-    /// Set the minimum expected arguments if it is only known dynamically
-    fn set_minimum_expected(&mut self, minimum_expected: usize) {
-        self.minimum_expected = minimum_expected
-    }
 }
 
-fn pairwise_sym<T>(slice: &[T]) -> impl Iterator<Item = (&T, &T)> {
-    (0..slice.len())
-        .flat_map(move |i| (i + 1..slice.len()).map(move |j| (i, j)))
-        .map(|(i, j)| (&slice[i], &slice[j]))
-}
-
-trait ExpParser {
-    type Out;
-
-    fn sort<W: Write>(&self, out: &Self::Out, p: &Parser<W>) -> Sort;
-
-    fn parse<W: Write, R: FullBufRead>(
-        &self,
-        p: &mut Parser<W>,
-        f: ExpKind,
-        rest: CountingParser<R>,
-    ) -> Result<Self::Out>;
-}
-
-struct BaseExpParser;
-
-impl ExpParser for BaseExpParser {
-    type Out = Exp;
-
-    fn sort<W: Write>(&self, out: &Exp, p: &Parser<W>) -> Sort {
-        p.core.sort(*out)
-    }
-    fn parse<W: Write, R: FullBufRead>(
-        &self,
-        p: &mut Parser<W>,
-        f: ExpKind,
-        mut rest: CountingParser<R>,
-    ) -> Result<Exp> {
-        let res = match f {
-            ExpKind::Let => unreachable!(),
-            ExpKind::Not => {
-                let x = p.parse_bool(rest.next_full()?)?;
-                rest.finish()?;
-                (!x).into()
-            }
-            ExpKind::And => {
-                let mut iter = rest.map_full(|token| p.parse_bool(token?));
-                let conj = iter.by_ref().collect::<Result<Conjunction>>()?;
-                iter.try_for_each(|x| x.map(drop))?;
-                drop(iter);
-                p.core.collapse_bool(conj).into()
-            }
-            ExpKind::Or => {
-                let mut iter = rest.map_full(|token| p.parse_bool(token?));
-                let disj = iter.by_ref().collect::<Result<Disjunction>>()?;
-                iter.try_for_each(|x| x.map(drop))?;
-                drop(iter);
-                p.core.collapse_bool(disj).into()
-            }
-            ExpKind::Imp => {
-                let mut last = p.parse_bool(rest.next_full()?)?;
-                let not_last = rest.map_full(|token| {
-                    let item = p.parse_bool(token?)?;
-                    Ok(!std::mem::replace(&mut last, item))
-                });
-                let res = not_last.collect::<Result<Disjunction>>()? | last;
-                p.core.collapse_bool(res).into()
-            }
-            ExpKind::Xor => {
-                let mut res = BoolExp::FALSE;
-                rest.map_full(|token| {
-                    let parsed = p.parse_bool(token?)?;
-                    res = p.core.xor(res, parsed);
-                    Ok(())
-                })
-                .collect::<Result<()>>()?;
-                res.into()
-            }
-            ExpKind::Eq => {
-                let exp1 = p.parse_exp(rest.next()?)?;
-                let (id1, sort1) = p.core.id_sort(exp1);
-                let conj = rest
-                    .map_full(|x| {
-                        let id2 = p.parse_id(x?, sort1)?;
-                        Ok(p.core.raw_eq(id1, id2))
-                    })
-                    .collect::<Result<Conjunction>>()?;
-                p.core.collapse_bool(conj).into()
-            }
-            ExpKind::Distinct => {
-                let exp1 = p.parse_exp(rest.next()?)?;
-                let (id1, sort1) = p.core.id_sort(exp1);
-                let iter = rest.map_full(|x| p.parse_id(x?, sort1));
-                let ids = [Ok(id1)]
-                    .into_iter()
-                    .chain(iter)
-                    .collect::<Result<Vec<Id>>>()?;
-                let conj: Conjunction = pairwise_sym(&ids)
-                    .map(|(&id1, &id2)| !p.core.raw_eq(id1, id2))
-                    .collect();
-                p.core.collapse_bool(conj).into()
-            }
-            ExpKind::Ite | ExpKind::If => {
-                let i = p.parse_bool(rest.next_full()?)?;
-                let t = p.parse_exp(rest.next()?)?;
-                let e = p.parse_exp(rest.next()?)?;
-                rest.finish()?;
-                let err_m = |(left, right)| IteSortMismatch { left, right };
-                p.core.ite(i, t, e).map_err(err_m)?
-            }
-            ExpKind::Annot => {
-                let exp = p.parse_exp(rest.next()?)?;
-                p.parse_annot_after_exp(exp, rest)?;
-                exp
-            }
-            ExpKind::Unknown(f) => {
-                // Uninterpreted function
-                let sig = p.bound.get(&f).ok_or(Unbound(f))?.clone();
-                match sig {
-                    Bound::Fn(sig) => {
-                        rest.set_minimum_expected(sig.args.len());
-                        let mut children = Children::new();
-                        for sort in sig.args.iter().copied() {
-                            children.push(p.parse_id(rest.next_full()?, sort)?)
-                        }
-                        rest.finish()?;
-                        p.core.sorted_fn(f, children, sig.ret)
-                    }
-                    Bound::Const(c) => {
-                        rest.finish()?;
-                        p.core.canonize(c)
-                    }
-                }
-            }
-        };
-        Ok(res)
-    }
-}
-
-struct AssertExpParser {
-    // assert (exp ^ self.negate)
-    negate: bool,
-    top_level: bool,
-}
-
-impl ExpParser for AssertExpParser {
-    type Out = core::result::Result<(), Sort>;
-
-    fn sort<W: Write>(&self, out: &Self::Out, p: &Parser<W>) -> Sort {
-        match out {
-            Ok(()) => p.core.bool_sort(),
-            Err(s) => *s,
+fn sort_check(sym: Symbol, args: &[Sort]) -> Result<Sort> {
+    let f = StrSym::Sym(sym);
+    let check_sort = |arg_n, expected| {
+        if args[arg_n] == expected {
+            Ok(())
+        } else {
+            Err(SortMismatch {
+                f,
+                arg_n,
+                actual: args[arg_n],
+                expected,
+            })
         }
-    }
-    fn parse<W: Write, R: FullBufRead>(
-        &self,
-        p: &mut Parser<W>,
-        f: ExpKind,
-        mut rest: CountingParser<R>,
-    ) -> Result<Self::Out> {
-        match (f, self.negate) {
-            (ExpKind::And, neg @ false) | (ExpKind::Or, neg @ true) => {
-                rest.map_full(|token| p.parse_assert(token?, neg, false))
-                    .collect::<Result<()>>()?;
+    };
+    let check_len = |min: usize, max: Option<usize>| {
+        if args.len() < min {
+            return Err(MissingArgument {
+                f,
+                actual: args.len(),
+                expected: min,
+            });
+        } else if let Some(max) = max {
+            if args.len() > max {
+                return Err(ExtraArgument { f, expected: max });
             }
-            (ExpKind::Not, neg) => {
-                p.parse_assert(rest.next_full()?, !neg, false)?;
+        }
+        Ok(())
+    };
+    match sym {
+        TRUE_SYM | FALSE_SYM => {
+            check_len(0, Some(0))?;
+            Ok(BOOL_SORT)
+        }
+        AND_SYM | OR_SYM | IMP_SYM | XOR_SYM => {
+            for (i, _) in args.iter().enumerate() {
+                check_sort(i, BOOL_SORT)?;
             }
-            (ExpKind::Eq, false) => {
-                let exp1 = p.parse_exp(rest.next()?)?;
-                let (id1, sort1) = p.core.id_sort(exp1);
-                rest.map_full(|x| {
-                    let id2 = p.parse_id(x?, sort1)?;
-                    Ok(p.core.assert_raw_eq(id1, id2))
-                })
-                .collect::<Result<()>>()?;
+            Ok(BOOL_SORT)
+        }
+        NOT_SYM => {
+            check_len(1, Some(1))?;
+            check_sort(0, BOOL_SORT)?;
+            Ok(BOOL_SORT)
+        }
+        EQ_SYM | DISTINCT_SYM => {
+            check_len(1, None)?;
+            let first_sort = args[0];
+            for (i, _) in args.iter().enumerate().skip(1) {
+                check_sort(i, first_sort)?;
             }
-            (ExpKind::Distinct, false) => {
-                let exp1 = p.parse_exp(rest.next()?)?;
-                let (id1, sort1) = p.core.id_sort(exp1);
-                let iter = rest.map_full(|x| p.parse_id(x?, sort1));
-                let ids = [Ok(id1)]
-                    .into_iter()
-                    .chain(iter)
-                    .collect::<Result<Vec<Id>>>()?;
-                p.core.assert_distinct(ids)
-            }
-            (ExpKind::Unknown(f), neg) => {
-                let sig = p.bound.get(&f).ok_or(Unbound(f))?.clone();
-                match sig {
-                    Bound::Fn(sig) => {
-                        rest.set_minimum_expected(sig.args.len());
-                        let mut children = Children::new();
-                        for sort in sig.args.iter().copied() {
-                            children.push(p.parse_id(rest.next_full()?, sort)?)
-                        }
-                        rest.finish()?;
-                        if sig.ret != p.core.bool_sort() {
-                            return Ok(Err(sig.ret));
-                        }
-                        p.core.assert_bool_fn(f, children, neg);
-                    }
-                    Bound::Const(exp) => {
-                        rest.finish()?;
-                        match exp.as_bool() {
-                            None => return Ok(Err(p.core.sort(exp))),
-                            Some(b) => p.core.assert(b ^ neg),
-                        }
-                    }
-                }
-            }
-            (ExpKind::Annot, neg) => {
-                if self.top_level {
-                    debug_assert!(!neg);
-                    let exp = p.parse_exp(rest.next()?)?;
-                    let name = p.parse_annot_after_exp(exp, rest)?;
-                    match exp.as_bool() {
-                        None => return Ok(Err(p.core.sort(exp))),
-                        Some(b) => {
-                            p.named_assertions.extend([(b, UnsatCoreElt::Sym(name))]);
-                            p.old_named_assertions = p.named_assertions.push();
-                        }
-                    }
-                } else {
-                    p.parse_assert(rest.next_full()?, neg, false)?;
-                    // since we asserted exp ^ neg, exp will always equal !neg as long as the
-                    // problem is satisfiable
-                    p.parse_annot_after_exp(BoolExp::Const(!neg).into(), rest)?;
-                }
-            }
-            (_, neg) => {
-                let exp = BaseExpParser.parse(p, f, rest)?;
-                match exp.as_bool() {
-                    None => return Ok(Err(p.core.sort(exp))),
-                    Some(b) => p.core.assert(b ^ neg),
-                }
-            }
-        };
-        Ok(Ok(()))
+            Ok(BOOL_SORT)
+        }
+        ITE_SYM | IF_SYM => {
+            check_len(3, Some(3))?;
+            check_sort(0, BOOL_SORT)?;
+            check_sort(2, args[1])?;
+            Ok(args[1])
+        }
+        _ => Err(Unbound(sym)),
     }
 }
 
@@ -756,25 +562,23 @@ impl<W: Write> Parser<W> {
     fn new(writer: W) -> Self {
         let mut res = Parser {
             bound: Default::default(),
-            global_stack: Default::default(),
+            global_defs: Default::default(),
             let_bound_stack: Default::default(),
             push_info: vec![],
+            sexp_stack: vec![],
             declared_sorts: Default::default(),
             core: Default::default(),
             writer: PrintSuccessWriter::new(writer),
             state: State::Init,
-            sort_stack: vec![],
+            sort_defs: vec![],
             last_status_info: None,
             currently_defining: None,
             named_assertions: UnsatCoreConjunction::default(),
             old_named_assertions: 0,
             options: Default::default(),
+            sort_stack: vec![],
         };
         res.declared_sorts.insert(BOOL_SYM, 0);
-        res.bound
-            .insert(TRUE_SYM, Bound::Const(BoolExp::TRUE.into()));
-        res.bound
-            .insert(FALSE_SYM, Bound::Const(BoolExp::FALSE.into()));
         res
     }
 
@@ -783,21 +587,20 @@ impl<W: Write> Parser<W> {
         let SexpToken::Symbol(s) = rest.next()? else {
             return Err(InvalidExp);
         };
-        let s = ExpKind::from_str(s, &mut self.core.intern);
+        let s = ExpKind::from_str(s, self.core.intern_mut());
         let sort = self.parse_sort(rest.next()?)?;
         rest.finish()?;
         Ok((s, sort))
     }
 
-    fn parse_exp_gen<R: FullBufRead, P: ExpParser>(
+    fn parse_sexp<R: FullBufRead>(
         &mut self,
         token: SexpToken<R>,
-        p: &P,
-    ) -> Result<P::Out> {
+    ) -> Result<((SExp, Sort), Option<Symbol>)> {
         match token {
             SexpToken::Symbol(s) => {
-                let exp = ExpKind::from_str(s, &mut self.core.intern);
-                SexpParser::with_empty(|l| self.parse_fn_exp_gen(exp, l, None, p))
+                let exp = ExpKind::from_str(s, self.core.intern_mut());
+                SexpParser::with_empty(|l| self.parse_fn_sexp(exp, l, None))
             }
             SexpToken::String(_) => Err(Unsupported("strings")),
             SexpToken::Number(_) => Err(Unsupported("arithmetic")),
@@ -807,7 +610,7 @@ impl<W: Write> Parser<W> {
                 let status = match l.next().ok_or(InvalidExp)?? {
                     SexpToken::Symbol("as") => None,
                     SexpToken::Symbol(s) => {
-                        Some((ExpKind::from_str(s, &mut self.core.intern), None))
+                        Some((ExpKind::from_str(s, self.core.intern_mut()), None))
                     }
                     SexpToken::List(mut l2) => {
                         if matches!(l2.next().ok_or(InvalidExp)??, SexpToken::Symbol("as")) {
@@ -820,97 +623,95 @@ impl<W: Write> Parser<W> {
                     _ => return Err(InvalidExp),
                 };
                 if let Some((s, sort)) = status {
-                    self.parse_fn_exp_gen(s, l, sort, p)
+                    self.parse_fn_sexp(s, l, sort)
                 } else {
                     let (s, sort) = self.handle_as(l)?;
-                    SexpParser::with_empty(|l| self.parse_fn_exp_gen(s, l, Some(sort), p))
+                    SexpParser::with_empty(|l| self.parse_fn_sexp(s, l, Some(sort)))
                 }
             }
             SexpToken::Keyword(_) => Err(InvalidExp),
         }
     }
 
-    fn parse_bool<R: FullBufRead>(&mut self, (token, arg_n, f): InfoToken<R>) -> Result<BoolExp> {
-        let exp = self.parse_exp(token)?;
-        exp.as_bool().ok_or_else(|| SortMismatch {
-            f,
-            arg_n,
-            actual: self.core.id_sort(exp).1,
-            expected: self.core.bool_sort(),
-        })
-    }
-
-    // assert token ^ negate
-    fn parse_assert<R: FullBufRead>(
+    fn parse_bool<R: FullBufRead>(
         &mut self,
         (token, arg_n, f): InfoToken<R>,
-        negate: bool,
-        top_level: bool,
-    ) -> Result<()> {
-        let exp = self.parse_exp_gen(token, &AssertExpParser { negate, top_level })?;
-        exp.map_err(|actual| SortMismatch {
-            f,
-            arg_n,
-            actual,
-            expected: self.core.bool_sort(),
-        })
-    }
-
-    fn parse_id<R: FullBufRead>(
-        &mut self,
-        (token, arg_n, f): InfoToken<R>,
-        expected: Sort,
-    ) -> Result<Id> {
-        let exp = self.parse_exp(token)?;
-        let (id, actual) = self.core.id_sort(exp);
-        if actual != expected {
-            Err(SortMismatch {
-                f: f.into(),
-                arg_n,
-                actual,
-                expected,
-            })
+    ) -> Result<(SExp, Option<Symbol>)> {
+        let ((sexp, sort), named) = self.parse_sexp(token)?;
+        if sort == BOOL_SORT {
+            Ok((sexp, named))
         } else {
-            Ok(id)
+            Err(SortMismatch {
+                f,
+                arg_n,
+                actual: sort,
+                expected: BOOL_SORT,
+            })
         }
     }
 
-    fn parse_binding<R: FullBufRead>(&mut self, token: SexpToken<R>) -> Result<(Symbol, Exp)> {
+    /// Returns a function that corresponds to parsing `token`, it should only be called if the
+    /// entire assert command parses successfully, i.e., it receives no more arguments
+    fn parse_assert<'a, 'b, R: FullBufRead>(
+        &'a mut self,
+        token: InfoToken<'b, R>,
+    ) -> Result<impl FnOnce() -> () + 'a> {
+        let (sexp, named) = self.parse_bool(token)?;
+        Ok(move || {
+            if let Some(x) = named {
+                if self.options.produces_unsat_cores {
+                    // assert of :named expression that needs to appear in unsat cores
+                    self.core.flush();
+                    let res = self.core.resolve(sexp);
+                    self.named_assertions
+                        .extend([(res.as_bool().unwrap(), UnsatCoreElt::Sym(x))]);
+                    return;
+                }
+            }
+            // normal assert
+            self.core.assert(sexp, false)
+        })
+    }
+
+    fn parse_binding<R: FullBufRead>(
+        &mut self,
+        token: SexpToken<R>,
+    ) -> Result<(Symbol, (SExp, Sort))> {
         match token {
             SexpToken::List(mut l) => {
                 let sym = match l.next().ok_or(InvalidBinding)?? {
-                    SexpToken::Symbol(s) => self.core.intern.symbols.intern(s),
+                    SexpToken::Symbol(s) => self.core.intern_mut().symbols.intern(s),
                     _ => return Err(InvalidBinding),
                 };
-                let exp = self.parse_exp(l.next().ok_or(InvalidBinding)??)?;
+                let exp = self.parse_sexp(l.next().ok_or(InvalidBinding)??)?.0;
                 Ok((sym, exp))
             }
             _ => Err(InvalidBinding),
         }
     }
 
-    fn parse_annot_after_exp<R: FullBufRead>(
+    fn parse_annot_after_sexp<R: FullBufRead>(
         &mut self,
-        exp: Exp,
+        sexp: (SExp, Sort),
         mut rest: CountingParser<R>,
     ) -> Result<Symbol> {
         let SexpToken::Keyword(k) = rest.next()? else {
             return Err(InvalidAnnot);
         };
         if k != "named" {
-            return Err(InvalidAnnotAttr(self.core.intern.symbols.intern(k)));
+            return Err(InvalidAnnotAttr(self.core.intern_mut().symbols.intern(k)));
         }
         let SexpToken::Symbol(s) = rest.next()? else {
             return Err(InvalidAnnot);
         };
-        let s = self.core.intern.symbols.intern(s);
+        let s = self.core.intern_mut().symbols.intern(s);
         rest.finish()?;
         if self.bound.contains_key(&s) || self.currently_defining == Some(s) {
             return Err(NamedShadow(s));
         }
         // we now know that `s` isn't bound anywhere, so we can insert it without shadowing
         // a let bound variable that should have higher priority
-        self.insert_bound(s, Bound::Const(exp));
+        self.insert_bound(s, Bound::Const(sexp));
         Ok(s)
     }
 
@@ -923,18 +724,17 @@ impl<W: Write> Parser<W> {
         }
     }
     fn undo_base_bindings(&mut self, old_len: usize) {
-        for name in self.global_stack.drain(old_len..).rev() {
+        for name in self.global_defs.drain(old_len..).rev() {
             self.bound.remove(&name);
         }
     }
 
-    fn parse_fn_exp_gen<R: FullBufRead, P: ExpParser>(
+    fn parse_fn_sexp<R: FullBufRead>(
         &mut self,
         f: ExpKind,
         rest: SexpParser<R>,
         expect_res: Option<Sort>,
-        p: &P,
-    ) -> Result<P::Out> {
+    ) -> Result<((SExp, Sort), Option<Symbol>)> {
         let mut rest = f.bind(rest);
         let res = match f {
             ExpKind::Let => {
@@ -953,15 +753,87 @@ impl<W: Write> Parser<W> {
                 for (name, bound) in &mut self.let_bound_stack[old_len..] {
                     *bound = self.bound.insert(*name, bound.take().unwrap())
                 }
-                let exp = self.parse_exp_gen(body, p)?;
+                let res = self.parse_sexp(body)?.0;
                 rest.finish()?;
                 self.undo_let_bindings(old_len);
-                exp
+                (res, None)
             }
-            _ => p.parse(self, f, rest)?,
+            ExpKind::Annot => {
+                let res = self.parse_sexp(rest.next()?)?.0;
+                let s = self.parse_annot_after_sexp(res, rest)?;
+                (res, Some(s))
+            }
+            ExpKind::Unknown(s) => {
+                let stack_len = self.sexp_stack.len();
+                rest.map_full(|x| {
+                    let (sexp, sort) = self.parse_sexp(x?.0)?.0;
+                    self.sexp_stack.push(sexp);
+                    self.sort_stack.push(sort);
+                    Ok(())
+                })
+                .collect::<Result<()>>()?;
+                let args = &self.sexp_stack[stack_len..];
+                let arg_sorts = &self.sort_stack[stack_len..];
+                let intern = self.core.intern();
+                debug!(
+                    "sort_check({}, {})",
+                    s.with_intern(intern),
+                    parenthesized(arg_sorts.iter().map(|x| x.with_intern(intern)), " ")
+                );
+                let res = match self.bound.get(&s) {
+                    Some(Bound::Const(res)) => {
+                        if arg_sorts.len() != 0 {
+                            return Err(ExtraArgument {
+                                f: s.into(),
+                                expected: 0,
+                            });
+                        }
+                        *res
+                    }
+                    Some(Bound::Fn(f)) => {
+                        if &*f.args != arg_sorts {
+                            if arg_sorts.len() < f.args.len() {
+                                return Err(MissingArgument {
+                                    f: s.into(),
+                                    actual: arg_sorts.len(),
+                                    expected: f.args.len(),
+                                });
+                            } else if arg_sorts.len() > f.args.len() {
+                                return Err(ExtraArgument {
+                                    f: s.into(),
+                                    expected: f.args.len(),
+                                });
+                            } else {
+                                for (arg_n, (&actual, &expected)) in
+                                    arg_sorts.iter().zip(&f.args).enumerate()
+                                {
+                                    if actual != expected {
+                                        return Err(SortMismatch {
+                                            f: s.into(),
+                                            arg_n,
+                                            actual,
+                                            expected,
+                                        });
+                                    }
+                                }
+                            }
+                        }
+                        let sexp = self.core.add_sexp(s, args, f.ret);
+                        (sexp, f.ret)
+                    }
+                    None => {
+                        let sort = sort_check(s, arg_sorts)?;
+                        let sexp = self.core.add_sexp(s, args, sort);
+                        (sexp, sort)
+                    }
+                };
+                self.sexp_stack.truncate(stack_len);
+                self.sort_stack.truncate(stack_len);
+                (res, None)
+            }
         };
         if let Some(expected) = expect_res {
-            let actual = p.sort(&res, &self);
+            let actual = res.0 .1;
             if actual != expected {
                 return Err(AsSortMismatch {
                     f,
@@ -971,10 +843,6 @@ impl<W: Write> Parser<W> {
             }
         };
         return Ok(res);
-    }
-
-    fn parse_exp<R: FullBufRead>(&mut self, token: SexpToken<R>) -> Result<Exp> {
-        self.parse_exp_gen(token, &BaseExpParser)
     }
 
     fn create_sort(&mut self, name: Symbol, params: &[Sort]) -> Result<Sort> {
@@ -990,19 +858,19 @@ impl<W: Write> Parser<W> {
                 f: name.into(),
                 expected: *x as usize,
             }),
-            _ => Ok(self.core.intern.sorts.intern(name, params)),
+            _ => Ok(self.core.intern_mut().sorts.intern(name, params)),
         }
     }
 
     fn parse_sort<R: FullBufRead>(&mut self, token: SexpToken<R>) -> Result<Sort> {
         match token {
             SexpToken::Symbol(s) => {
-                let s = self.core.intern.symbols.intern(s);
+                let s = self.core.intern_mut().symbols.intern(s);
                 self.create_sort(s, &[])
             }
             SexpToken::List(mut l) => {
                 let name = match l.next().ok_or(InvalidSort)?? {
-                    SexpToken::Symbol(s) => self.core.intern.symbols.intern(s),
+                    SexpToken::Symbol(s) => self.core.intern_mut().symbols.intern(s),
                     _ => return Err(InvalidSort),
                 };
                 let params = l.map(|x| self.parse_sort(x?)).collect::<Result<Vec<_>>>()?;
@@ -1025,7 +893,8 @@ impl<W: Write> Parser<W> {
         name: Smt2Command,
         rest: SexpParser<R>,
     ) -> Result<()> {
-        let old_len = self.global_stack.len();
+        let old_global_len = self.global_defs.len();
+        let old_ast_len = self.core.get_restore_point();
         self.writer.print_success = self.options.print_success;
         match self.parse_command_h(name, rest) {
             Ok(()) => {
@@ -1035,8 +904,11 @@ impl<W: Write> Parser<W> {
                 Ok(())
             }
             Err(err) => {
-                self.undo_base_bindings(old_len);
+                self.undo_base_bindings(old_global_len);
                 self.named_assertions.pop_to(self.old_named_assertions);
+                self.core.restore_to(old_ast_len);
+                self.sexp_stack.clear();
+                self.sort_stack.clear();
                 Err(err)
             }
         }
@@ -1053,13 +925,13 @@ impl<W: Write> Parser<W> {
                 let SexpToken::Symbol(name) = rest.next()? else {
                     return Err(InvalidCommand);
                 };
-                let name = self.core.intern.symbols.intern(name);
+                let name = self.core.intern_mut().symbols.intern(name);
                 if self.declared_sorts.contains_key(&name) {
                     return Err(Shadow(name));
                 }
                 let args = rest.try_next_parse()?.unwrap_or(0);
                 rest.finish()?;
-                self.sort_stack.push(name);
+                self.sort_defs.push(name);
                 self.declared_sorts.insert(name, args);
             }
             Smt2Command::GetUnsatCore => {
@@ -1077,7 +949,7 @@ impl<W: Write> Parser<W> {
                     .core(self.core.last_unsat_core())
                     .map(|x| match *x {
                         UnsatCoreElt::Span(s) => rest.p.lookup_range(s),
-                        UnsatCoreElt::Sym(s) => self.core.intern.symbols.resolve(s),
+                        UnsatCoreElt::Sym(s) => self.core.intern().symbols.resolve(s),
                     });
                 if let Some(x) = iter.next() {
                     write!(self.writer, "{x}");
@@ -1099,13 +971,15 @@ impl<W: Write> Parser<W> {
                     return Err(InvalidCommand);
                 };
                 let values = l
-                    .zip_map_full(iter::repeat(()), |x, ()| self.parse_exp(x?))
+                    .zip_map_full(iter::repeat(()), |x, ()| Ok(self.parse_sexp(x?)?.0 .0))
                     .collect::<Result<Vec<_>>>()?;
                 drop(l);
+                self.core.flush();
                 write!(self.writer, "(");
-                let mut iter = values.into_iter().map(|(exp, span)| {
+                let mut iter = values.into_iter().map(|(sexp, span)| {
+                    let exp = self.core.resolve(sexp);
                     (
-                        exp.with_intern(&self.core.intern),
+                        exp.with_intern(self.core.intern()),
                         rest.p.lookup_range(span),
                     )
                 });
@@ -1126,7 +1000,9 @@ impl<W: Write> Parser<W> {
                 if !self.options.produce_models {
                     return Err(ProduceModelFalse);
                 }
-                let (funs, core) = self.core.function_info();
+                self.core.flush();
+                self.core.init_function_info();
+                let funs = self.core.function_info();
                 writeln!(self.writer, "(");
                 let mut bound: Vec<_> = self
                     .bound
@@ -1134,14 +1010,14 @@ impl<W: Write> Parser<W> {
                     .copied()
                     .filter(|k| !matches!(*k, TRUE_SYM | FALSE_SYM))
                     .collect();
-                let intern = &core.intern;
+                let intern = self.core.intern();
                 bound.sort_unstable_by_key(|x| intern.symbols.resolve(*x));
                 for k in bound {
                     let k_i = k.with_intern(intern);
                     match &self.bound[&k] {
-                        Bound::Const(x) => {
-                            let x = core.canonize(*x);
-                            let sort = core.sort(x).with_intern(intern);
+                        Bound::Const((x, sort)) => {
+                            let x = self.core.resolve(*x);
+                            let sort = sort.with_intern(intern);
                             let x = x.with_intern(intern);
                             writeln!(self.writer, " (define-fun {k_i} () {sort} {x})");
                         }
@@ -1263,7 +1139,7 @@ impl<W: Write> Parser<W> {
         let SexpToken::Symbol(name) = token else {
             return Err(InvalidCommand);
         };
-        let name = self.core.intern.symbols.intern(name);
+        let name = self.core.intern_mut().symbols.intern(name);
         if self.bound.contains_key(&name) {
             return Err(Shadow(name));
         }
@@ -1272,16 +1148,12 @@ impl<W: Write> Parser<W> {
 
     fn clear(&mut self) {
         self.push_info.clear();
-        self.global_stack.clear();
+        self.global_defs.clear();
         self.bound.clear();
         self.core.clear();
         self.declared_sorts.clear();
-        self.sort_stack.clear();
+        self.sort_defs.clear();
         self.declared_sorts.insert(BOOL_SYM, 0);
-        self.bound
-            .insert(TRUE_SYM, Bound::Const(BoolExp::TRUE.into()));
-        self.bound
-            .insert(FALSE_SYM, Bound::Const(BoolExp::FALSE.into()));
         self.named_assertions.pop_to(0);
         self.old_named_assertions = 0;
         self.state = State::Init;
@@ -1334,8 +1206,9 @@ impl<W: Write> Parser<W> {
                 self.define_const(name, rest)?;
             }
             Smt2Command::Assert => {
-                self.parse_assert(rest.next_full()?, false, self.options.produce_models)?;
+                let assert = self.parse_assert(rest.next_full()?)?;
                 rest.finish()?;
+                assert();
             }
             Smt2Command::CheckSat => {
                 self.old_named_assertions = self.named_assertions.push();
@@ -1351,13 +1224,18 @@ impl<W: Write> Parser<W> {
                 };
                 let conj = l
                     .zip_map_full(0.., |token, i| {
-                        self.parse_bool((token?, i, name.to_str_sym()))
+                        Ok(self.parse_bool((token?, i, name.to_str_sym()))?.0)
                     })
                     .collect::<Result<Vec<_>>>()?;
                 drop(l);
                 rest.finish()?;
-                self.named_assertions
-                    .extend(conj.into_iter().map(|(b, s)| (b, UnsatCoreElt::Span(s))));
+                self.core.flush();
+                self.named_assertions.extend(conj.into_iter().map(|(b, s)| {
+                    (
+                        self.core.resolve(b).as_bool().unwrap(),
+                        UnsatCoreElt::Span(s),
+                    )
+                }));
                 let res = self
                     .core
                     .check_sat_assuming_preserving_trail(self.named_assertions.parts().0);
@@ -1369,8 +1247,8 @@ impl<W: Write> Parser<W> {
                 for _ in 0..n {
                     self.core.push();
                     let info = PushInfo {
-                        bound: self.global_stack.len() as u32,
-                        sort: self.sort_stack.len() as u32,
+                        bound: self.global_defs.len() as u32,
+                        sort: self.sort_defs.len() as u32,
                         named_assert: self.named_assertions.push(),
                     };
                     self.push_info.push(info);
@@ -1389,7 +1267,7 @@ impl<W: Write> Parser<W> {
                     let info = info.unwrap();
                     self.undo_base_bindings(info.bound as usize);
 
-                    for s in self.sort_stack.drain(info.sort as usize..).rev() {
+                    for s in self.sort_defs.drain(info.sort as usize..).rev() {
                         self.declared_sorts.remove(&s);
                     }
                     self.named_assertions.pop_to(info.named_assert)
@@ -1419,10 +1297,10 @@ impl<W: Write> Parser<W> {
     ) -> Result<()> {
         let sort = self.parse_sort(rest.next()?)?;
         self.currently_defining = Some(name);
-        let ret = self.parse_exp(rest.next()?)?;
+        let ret = self.parse_sexp(rest.next()?)?.0;
         self.currently_defining = None;
-        if sort != self.core.sort(ret) {
-            return Err(BindSortMismatch(self.core.sort(ret)));
+        if sort != ret.1 {
+            return Err(BindSortMismatch(ret.1));
         }
         rest.finish()?;
         self.insert_bound(name, Bound::Const(ret));
@@ -1432,27 +1310,24 @@ impl<W: Write> Parser<W> {
     fn insert_bound(&mut self, name: Symbol, val: Bound) {
         let res = self.bound.insert(name, val);
         debug_assert!(res.is_none());
-        self.global_stack.push(name)
+        self.global_defs.push(name)
     }
 
     fn declare_const(&mut self, name: Symbol, ret: Sort) {
-        let exp = if ret == self.core.bool_sort() {
-            self.core.fresh_bool().into()
-        } else {
-            self.core.sorted_fn(name, Children::new(), ret)
-        };
+        let sexp = self.core.declare_const(name, ret);
         debug!(
-            "{} is bound to {exp:?}",
-            name.with_intern(&self.core.intern)
+            "{} is bound to {:?}",
+            name.with_intern(&self.core.intern()),
+            self.core.resolve(sexp)
         );
-        self.insert_bound(name, Bound::Const(exp));
+        self.insert_bound(name, Bound::Const((sexp, ret)));
     }
 
     fn parse_command_token<R: FullBufRead>(&mut self, t: SexpToken<R>) -> Result<()> {
         match t {
             SexpToken::List(mut l) => {
                 let s = match l.next().ok_or(InvalidCommand)?? {
-                    SexpToken::Symbol(s) => Smt2Command::from_str(s, &mut self.core.intern),
+                    SexpToken::Symbol(s) => Smt2Command::from_str(s, self.core.intern_mut()),
                     _ => return Err(InvalidCommand),
                 };
                 self.parse_command(s, l)
@@ -1466,7 +1341,7 @@ impl<W: Write> Parser<W> {
             data,
             self,
             |this, t| this.parse_command_token(t?),
-            |this, e| writeln!(err, "{}", e.map(|x| x.with_intern(&this.core.intern))).unwrap(),
+            |this, e| writeln!(err, "{}", e.map(|x| x.with_intern(this.core.intern()))).unwrap(),
         );
     }
 }

@@ -2,6 +2,7 @@ use batsat::intmap::AsIndex;
 use no_std_compat::prelude::v1::*;
 use std::marker::PhantomData;
 
+#[derive(Clone)]
 pub struct SliceVec<I: AsIndex, T, S> {
     slice_data: Vec<S>,
     data: Vec<(T, u32)>,
@@ -46,5 +47,21 @@ impl<I: AsIndex, T, S> SliceVec<I, T, S> {
         let (data, end) = &self.data[next];
         let (_, start) = &self.data[idx2];
         (data, self.range_to_slice(*start, *end))
+    }
+
+    pub fn len(&self) -> u32 {
+        self.data.len() as u32 - 1
+    }
+
+    pub fn truncate(&mut self, new_len: u32) {
+        let new_len = new_len as usize;
+        let slice_len = self.data[new_len].1 as usize;
+        self.slice_data.truncate(slice_len);
+        self.data.truncate(new_len + 1)
+    }
+
+    pub fn clear(&mut self) {
+        self.data.truncate(1);
+        self.slice_data.clear();
     }
 }

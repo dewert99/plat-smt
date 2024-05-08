@@ -120,3 +120,9 @@ pub fn powi(mut f: f64, mut exp: u32) -> f64 {
 fn test_powi() {
     debug_assert_eq!(powi(0.1, 5), 0.1f64.powi(5))
 }
+
+pub(crate) fn pairwise_sym<T>(slice: &[T]) -> impl Iterator<Item = (&T, &T)> {
+    (0..slice.len())
+        .flat_map(move |i| (i + 1..slice.len()).map(move |j| (i, j)))
+        .map(|(i, j)| (&slice[i], &slice[j]))
+}
