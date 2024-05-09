@@ -699,6 +699,7 @@ impl Solver {
                                 self.assert(xor)
                             }
                         }
+                        // a single element is always distinct
                     }
                     EExp::Uninterpreted(u) => {
                         let rest = children.map(|child| match child.0 {

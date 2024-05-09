@@ -28,7 +28,7 @@ impl AstSolverInner {
     pub fn assert(&mut self, term: SExp, negate: bool) {
         if term.as_index() < self.resolved.len() {
             self.core
-                .assert(self.resolved[term.as_index()].as_bool().unwrap())
+                .assert(self.resolved[term.as_index()].as_bool().unwrap() ^ negate)
         } else {
             let assert = &mut self.assert[negate as usize];
             assert.reserve(term);
