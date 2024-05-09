@@ -4,7 +4,8 @@ use crate::euf::{FullFunctionInfo, FunctionInfo, SatSolver, EUF};
 use crate::explain::Justification;
 use crate::intern::{DisplayInterned, InternInfo, Sort, BOOL_SORT};
 use crate::junction::*;
-use crate::util::{display_debug, DefaultHashBuilder, Either};
+use crate::sp_insert_map::SPInsertMap;
+use crate::util::{display_debug, format_args2, DefaultHashBuilder, Either};
 use crate::Symbol;
 use batsat::{lbool, Callbacks, Lit, SolverInterface, SolverOpts, Var};
 use egg::Id;
@@ -14,6 +15,7 @@ use no_std_compat::prelude::v1::*;
 use perfect_derive::perfect_derive;
 use std::borrow::BorrowMut;
 use std::fmt::{Debug, Formatter};
+use std::mem;
 use std::ops::{BitXor, Deref, Not};
 
 #[derive(Default)]
@@ -30,6 +32,7 @@ pub struct Solver {
     pending_equalities: Vec<(Id, Id)>,
     sat: BufferedSolver<BatSolver>,
     function_info_buf: FunctionInfo,
+    ifs: SPInsertMap<(Lit, Id, Id), Id>,
     pub intern: InternInfo,
 }
 
@@ -362,6 +365,37 @@ impl Solver {
         self.assert_raw_eq(id1, id2);
     }
 
+    pub fn assert_inv(&self) {
+        if let Some((_, id)) = self.ifs.entries.last() {
+            assert!(*id < self.euf.len_id())
+        }
+    }
+
+    fn raw_ite(&mut self, i: Lit, t: Id, e: Id, s: Sort) -> Exp {
+        let mut ifs = mem::take(&mut self.ifs);
+        let id = ifs.get_or_insert((i, t, e), || {
+            let sym = self
+                .intern
+                .symbols
+                .gen_sym(&format_args2!("if|{i:?}|id{t}|id{e}"));
+            let fresh = self.sorted_fn(sym, Children::new(), s);
+            let fresh_id = self.id_sort(fresh).0;
+            let eqt = self.raw_eq(fresh_id, t);
+            let BoolExp::Unknown(eqt) = eqt else {
+                unreachable!()
+            };
+            let eqe = self.raw_eq(fresh_id, e);
+            let BoolExp::Unknown(eqe) = eqe else {
+                unreachable!()
+            };
+            self.sat.add_clause([!i, eqt]);
+            self.sat.add_clause([i, eqe]);
+            fresh_id
+        });
+        self.ifs = ifs;
+        self.euf.id_to_exp(id)
+    }
+
     /// Produce an expression representing that is equivalent to `t` if `i` is true or `e` otherwise
     ///
     /// If `t` and `e` have different sorts returns an error containing both sorts
@@ -377,23 +411,7 @@ impl Solver {
             BoolExp::Unknown(u) => {
                 let tid = self.id_sort(t).0;
                 let eid = self.id_sort(e).0;
-                let sym = self
-                    .intern
-                    .symbols
-                    .intern(&format!("if|{u:?}|id{tid}|id{eid}"));
-                let fresh = self.sorted_fn(sym, Children::new(), tsort);
-                let fresh_id = self.id_sort(fresh).0;
-                let eqt = self.raw_eq(fresh_id, tid);
-                let BoolExp::Unknown(eqt) = eqt else {
-                    unreachable!()
-                };
-                let eqe = self.raw_eq(fresh_id, eid);
-                let BoolExp::Unknown(eqe) = eqe else {
-                    unreachable!()
-                };
-                self.sat.add_clause([!u, eqt]);
-                self.sat.add_clause([u, eqe]);
-                fresh
+                self.raw_ite(u, tid, eid, tsort)
             }
         };
         debug!("{res:?} is bound to (ite {i:?} {t:?} {e:?})");
@@ -520,12 +538,14 @@ impl Solver {
             self.sat.assumptions_mut().truncate(new_level);
             self.euf
                 .smt_pop_to(new_level, self.sat.assumptions().last().copied());
+            self.ifs.remove_after(self.euf.len_id());
         }
     }
 
     pub fn clear(&mut self) {
         self.sat.reset();
         self.euf.clear();
+        self.ifs.clear();
     }
 
     /// Like [`check_sat_assuming`](Solver::check_sat_assuming) but takes in an
