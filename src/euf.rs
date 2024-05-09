@@ -673,6 +673,12 @@ impl EUFInner {
     pub fn has_parents(&self, id: Id) -> bool {
         self.egraph[id].parents().len() > 0
     }
+
+    /// Returns an `Id` one past the last `Id`, such that an `Id` `id` is valid iff
+    /// `id < self.len_id()`
+    pub fn len_id(&self) -> Id {
+        Id::from(self.egraph.number_of_uncanonical_nodes())
+    }
 }
 
 #[perfect_derive(Default)]

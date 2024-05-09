@@ -14,6 +14,7 @@ pub mod junction;
 mod parser;
 pub mod parser_core;
 mod solver;
+mod sp_insert_map;
 mod theory;
 mod util;
 
