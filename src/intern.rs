@@ -101,6 +101,7 @@ impl SymbolInfo {
             panic!("Too many symbols");
         }
         let res = res as u32;
+        #[cfg(debug_assertions)] // this is only useful for logging
         write!(&mut self.symbol_data, "{name}|{res}").unwrap();
         self.symbol_indices.push(self.symbol_data.len());
         Symbol(res)
