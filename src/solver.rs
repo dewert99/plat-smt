@@ -692,7 +692,7 @@ impl<T> UnsatCoreConjunction<T> {
             self.conj.absorbing = false;
             self.info.false_by = None;
             for l in self.conj.lits.drain(push_info as usize..) {
-                self.info.data.remove(&l);
+                self.info.data.remove(&!l);
             }
         }
     }
