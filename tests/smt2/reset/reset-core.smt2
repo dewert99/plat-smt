@@ -1,0 +1,8 @@
+(declare-const a Bool)
+(check-sat-assuming (a))
+(reset)
+(push)
+(declare-const b Bool)
+(assert b)
+(check-sat-assuming ((not b)))
+(get-unsat-core)

@@ -78,21 +78,31 @@ fn test_sequential(init_command: &str, split_command: &str, exact: bool) {
     let mut file_buf = Vec::new();
     file_buf.extend_from_slice(init_command.as_bytes());
     let path = Path::new("tests/smt2");
-    for x in path.read_dir().unwrap().filter_map(Result::ok) {
-        let mut path = x.path();
-        if path.extension() == Some("smt2".as_ref()) {
-            info!("Adding file {:?}", path);
-            File::open(&path)
-                .unwrap()
-                .read_to_end(&mut file_buf)
-                .unwrap();
-            file_buf.extend_from_slice(split_command.as_bytes());
-            path.set_extension("stdout");
-            File::open(&path)
-                .unwrap()
-                .read_to_end(&mut expect_out)
-                .unwrap();
-        }
+    let mut paths: Vec<_> = path
+        .read_dir()
+        .unwrap()
+        .filter_map(|x| {
+            let path = x.ok()?.path();
+            if path.extension() == Some("smt2".as_ref()) {
+                Some(path)
+            } else {
+                None
+            }
+        })
+        .collect();
+    paths.sort_unstable();
+    for mut path in paths {
+        info!("Adding file {:?}", path);
+        File::open(&path)
+            .unwrap()
+            .read_to_end(&mut file_buf)
+            .unwrap();
+        file_buf.extend_from_slice(split_command.as_bytes());
+        path.set_extension("stdout");
+        File::open(&path)
+            .unwrap()
+            .read_to_end(&mut expect_out)
+            .unwrap();
     }
     interp_smt2(&*file_buf, &mut out, &mut err);
     assert_eq!(&err, "");
