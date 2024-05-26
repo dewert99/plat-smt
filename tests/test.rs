@@ -1,5 +1,5 @@
-use bat_egg_smt::interp_smt2;
 use log::info;
+use plat_smt::interp_smt2;
 use rstest::rstest;
 use std::fs::{remove_file, File};
 use std::io::{BufWriter, Read};

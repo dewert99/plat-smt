@@ -1,5 +1,5 @@
-use batsat::{Lit, SolverInterface};
 use no_std_compat::prelude::v1::*;
+use platsat::{Lit, SolverInterface};
 use std::ops::{Deref, DerefMut};
 
 #[derive(Default)]

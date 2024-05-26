@@ -1,8 +1,8 @@
 use no_std_compat::prelude::v1::*;
 // https://www.cs.upc.edu/~oliveras/rta05.pdf
 // 2.1 Union-find with an O(k log n) Explain operation
-use batsat::intmap::AsIndex;
-use batsat::Lit;
+use platsat::intmap::AsIndex;
+use platsat::Lit;
 use std::fmt::{Debug, Formatter};
 use std::ops::{Deref, DerefMut};
 
@@ -10,13 +10,13 @@ use crate::approx_bitset::{ApproxBitSet, IdSet};
 use crate::egraph::{SymbolLang, EQ_OP};
 use crate::euf::EClass;
 use crate::util::{minmax, DefaultHashBuilder};
-use batsat::LSet;
-use egg::raw::RawEGraph;
-use egg::{raw::Language, Id};
 use hashbrown::hash_map::Entry;
 use hashbrown::{HashMap, HashSet};
 use log::{debug, trace};
 use perfect_derive::perfect_derive;
+use plat_egg::raw::RawEGraph;
+use plat_egg::{raw::Language, Id};
+use platsat::LSet;
 
 // either a `Lit` that represents the equality
 // or a hash an explanation of the equality
@@ -138,7 +138,7 @@ impl Debug for Justification {
 }
 
 mod ejust {
-    use batsat::Lit;
+    use platsat::Lit;
 
     #[derive(Debug)]
     pub(crate) enum Justification {
@@ -281,7 +281,9 @@ impl<'a, X> DerefMut for ExplainState<'a, X> {
     }
 }
 
-impl<'x> ExplainState<'x, &'x RawEGraph<SymbolLang, EClass, egg::raw::semi_persistent1::UndoLog>> {
+impl<'x>
+    ExplainState<'x, &'x RawEGraph<SymbolLang, EClass, plat_egg::raw::semi_persistent1::UndoLog>>
+{
     // Requires `left` != `right`
     // `result.1` is true when the `old_root` from `result.0` corresponds to left
     fn max_assoc_union_gen<S: IdSet>(

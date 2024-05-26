@@ -1,9 +1,9 @@
 use crate::Symbol;
-use batsat::LSet;
-pub use egg::raw::semi_persistent1::PushInfo;
-use egg::raw::{semi_persistent1::UndoLog, EGraphResidual, Language, RawEClass, RawEGraph};
-use egg::Id;
 use no_std_compat::prelude::v1::*;
+pub use plat_egg::raw::semi_persistent1::PushInfo;
+use plat_egg::raw::{semi_persistent1::UndoLog, EGraphResidual, Language, RawEClass, RawEGraph};
+use plat_egg::Id;
+use platsat::LSet;
 use smallvec::SmallVec;
 use std::cmp::Ordering;
 use std::fmt::{Debug, Formatter};
@@ -217,7 +217,7 @@ impl EGraph<EClass> {
             self,
             |x| &mut x.inner,
             SymbolLang::new(op, children),
-            // Note unlike the EGraph in egg we only use explanations for clause learning,
+            // Note unlike the EGraph in plat_egg we only use explanations for clause learning,
             // so we do not need to distinguish between nodes that are
             // equivalent modulo ground equalities
             |_, id, _| Some(id),
@@ -241,7 +241,7 @@ impl EGraph<EClass> {
             &mut (self, mk_data),
             |(this, _)| &mut this.inner,
             SymbolLang::new(op, children),
-            // Note unlike the EGraph in egg we only use explanations for clause learning,
+            // Note unlike the EGraph in plat_egg we only use explanations for clause learning,
             // so we do not need to distinguish between nodes that are
             // equivalent modulo ground equalities
             |_, _, _| None,

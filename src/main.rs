@@ -1,5 +1,5 @@
 #![forbid(unsafe_code)]
-use bat_egg_smt::FullBufRead;
+use plat_smt::FullBufRead;
 use std::fs::File;
 use std::io::{empty, stderr, stdin, stdout, Read};
 
@@ -90,7 +90,7 @@ fn main() {
     } else {
         Either::Right(empty())
     };
-    bat_egg_smt::interp_smt2(
+    plat_smt::interp_smt2(
         FullBufReader::new(reader, buf),
         WrapWrite(stdout()),
         WrapWrite(stderr()),

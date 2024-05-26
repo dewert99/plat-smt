@@ -1,22 +1,22 @@
 use crate::util::DefaultHashBuilder;
-use batsat::theory::Theory as BatTheory;
-use batsat::{Lit, TheoryArg};
 use hashbrown::HashMap;
 use log::{debug, trace};
 use no_std_compat::prelude::v1::*;
 use perfect_derive::perfect_derive;
+use platsat::theory::Theory as BatTheory;
+use platsat::{Lit, TheoryArg};
 use std::cmp::max;
 use std::ops::{Deref, DerefMut};
 
 // The implementation of push/pop is somewhat unexpected
 //
-// Since `batsat` uses non-chronological backtracking in can try to get EUF to pop to earlier
+// Since `platsat` uses non-chronological backtracking in can try to get EUF to pop to earlier
 // assertion levels during a check-sat. To work around this EUF keeps track of the
-// assertion level, and suppresses calls from `batsat` that would have it pop too far.
+// assertion level, and suppresses calls from `platsat` that would have it pop too far.
 // Instead, it enters a state where it doesn't make any propagations or raise any conflicts,
-// since it has access to information `batsat` assumes it shouldn't have access to yet.
-// Since `batsat` requires proportions to be made as soon as possible
-// (https://github.com/c-cube/batsat/issues/16), EUF always includes a literal representing
+// since it has access to information `platsat` assumes it shouldn't have access to yet.
+// Since `platsat` requires proportions to be made as soon as possible
+// (https://github.com/c-cube/platsat/issues/16), EUF always includes a literal representing
 // the current assertion level to its explanations, which makes them appear as though the
 // proportions couldn't have happened any sooner.
 

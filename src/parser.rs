@@ -10,10 +10,10 @@ use crate::parser_core::{ParseError, SexpParser, SexpToken, SpanRange};
 use crate::solver::{BoolExp, Exp, SolveResult, Solver, UnsatCoreConjunction};
 use crate::util::{format_args2, parenthesized, powi, Bind, DefaultHashBuilder};
 use core::fmt::Arguments;
-use egg::Id;
 use hashbrown::HashMap;
 use log::debug;
 use no_std_compat::prelude::v1::*;
+use plat_egg::Id;
 use smallvec::SmallVec;
 use std::fmt::Formatter;
 use std::fmt::Write;
@@ -1190,7 +1190,7 @@ impl<W: Write> Parser<W> {
                     SetOption::RandomVarFreq(x) => prev_option.random_var_freq = x,
                     SetOption::RandomSeed(mut x) | SetOption::BaseRandomSeed(mut x) => {
                         if x <= 0.0 {
-                            // ensure x is positive since this is required by `batsat`
+                            // ensure x is positive since this is required by `platsat`
                             x = -x + f64::MIN_POSITIVE;
                         }
                         prev_option.random_seed = x
