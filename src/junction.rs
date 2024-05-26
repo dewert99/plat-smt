@@ -1,6 +1,6 @@
 use crate::solver::BoolExp;
-use batsat::Lit;
 use no_std_compat::prelude::v1::*;
+use platsat::Lit;
 use std::fmt::{Debug, Formatter};
 use std::ops::{BitAnd, BitOr};
 

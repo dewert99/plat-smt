@@ -30,36 +30,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d468802bab17cbc0cc575e9b053f41e72aa36bfa6b7f55e3529ffa43161b97fa"
 
 [[package]]
-name = "bat_egg_smt"
-version = "0.1.0"
-dependencies = [
- "batsat",
- "codspeed-criterion-compat",
- "egg",
- "env_logger",
- "hashbrown",
- "log",
- "no-std-compat",
- "perfect-derive",
- "rstest",
- "rustc-hash",
- "smallvec",
- "thiserror-no-std",
- "walkdir",
-]
-
-[[package]]
-name = "batsat"
-version = "0.5.0"
-source = "git+https://github.com/dewert99/batsat?branch=no_std#e4bdca3b52e02d880f3835b78af8a260ce27665c"
-dependencies = [
- "bit-vec",
- "bytemuck",
- "log",
- "no-std-compat",
-]
-
-[[package]]
 name = "bit-vec"
 version = "0.6.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -267,19 +237,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7a81dae078cea95a014a339291cec439d2f232ebe854a9d672b796c6afafa9b7"
 
 [[package]]
-name = "egg"
-version = "0.9.5"
-source = "git+https://github.com/dewert99/egg?branch=main#788095ac1a6ce989ddb4c02dab7123e9f3f21dbc"
-dependencies = [
- "hashbrown",
- "log",
- "no-std-compat",
- "rustc-hash",
- "saturating",
- "smallvec",
-]
-
-[[package]]
 name = "either"
 version = "1.10.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -437,6 +394,49 @@ dependencies = [
  "proc-macro2",
  "quote",
  "syn 2.0.52",
+]
+
+[[package]]
+name = "plat-egg"
+version = "0.9.5"
+source = "git+https://github.com/dewert99/plat-egg?branch=main#b97e663477616e3203899ee7a4358ac88505eac8"
+dependencies = [
+ "hashbrown",
+ "log",
+ "no-std-compat",
+ "rustc-hash",
+ "saturating",
+ "smallvec",
+]
+
+[[package]]
+name = "plat-smt"
+version = "0.1.0"
+dependencies = [
+ "codspeed-criterion-compat",
+ "env_logger",
+ "hashbrown",
+ "log",
+ "no-std-compat",
+ "perfect-derive",
+ "plat-egg",
+ "platsat",
+ "rstest",
+ "rustc-hash",
+ "smallvec",
+ "thiserror-no-std",
+ "walkdir",
+]
+
+[[package]]
+name = "platsat"
+version = "0.5.0"
+source = "git+https://github.com/dewert99/platsat?branch=main#5052149e78329f35f14bed0cdf3b213d025d22be"
+dependencies = [
+ "bit-vec",
+ "bytemuck",
+ "log",
+ "no-std-compat",
 ]
 
 [[package]]

@@ -30,7 +30,7 @@ jobs:
         with:
           channel: stable
           cache-target: release
-      - run: cargo test --release --package bat_egg_smt --test test test_smtlib_benchmarks
+      - run: cargo test --release --package plat-smt --test test test_smtlib_benchmarks
   test-more:
     name: StarExec SMT tests with extra equalities and randomized activations
     runs-on: ubuntu-latest
@@ -42,9 +42,9 @@ jobs:
         with:
           channel: stable
           cache-target: release
-      - run: cargo test --release --features test_add_more_mid_search_equalities --package bat_egg_smt --test test test_smtlib_benchmarks
-      - run: SEED=1 cargo test --release --features test_add_more_mid_search_equalities --package bat_egg_smt --test test test_smtlib_benchmarks
-      - run: SEED=1 cargo test --release --package bat_egg_smt --test test test_smtlib_benchmarks
+      - run: cargo test --release --features test_add_more_mid_search_equalities --package plat-smt --test test test_smtlib_benchmarks
+      - run: SEED=1 cargo test --release --features test_add_more_mid_search_equalities --package plat-smt --test test test_smtlib_benchmarks
+      - run: SEED=1 cargo test --release --package plat-smt --test test test_smtlib_benchmarks
 
   benchmarks:
     needs: [test-starexec-bench]

@@ -1,5 +1,5 @@
-use bat_egg_smt::interp_smt2;
 use codspeed_criterion_compat::{black_box, criterion_group, criterion_main, Criterion};
+use plat_smt::interp_smt2;
 use std::fs::File;
 use std::io::{read_to_string, Read};
 use std::path::Path;

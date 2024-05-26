@@ -1,4 +1,4 @@
-This is a toy Rust SMT solver build using [batsat](https://github.com/c-cube/batsat) and [egg](https://github.com/dewert99/egg)
+This is a toy Rust SMT solver build using [platsat](https://github.com/dewert99/platsat) and [plat-egg](https://github.com/dewert99/plat-egg)
 that accepts a subset of SMT2LIB syntax for the logic `QF_UF`
 
 ## Supported syntax:
@@ -35,7 +35,7 @@ for example random initial activations would be enabled with:
 
 `(set-option :sat.rnd_init_act true)`
 
-`bat_egg_smt` also supports the SMT-LIB standard parameters:
+`plat-smt` also supports the SMT-LIB standard parameters:
 * `:produce-models` (default `true`) 
 * `:produce-unsat-cores` (default `true`)
 * `:print-success` (default `false`)

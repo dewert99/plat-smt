@@ -7,12 +7,12 @@ use crate::junction::*;
 use crate::sp_insert_map::SPInsertMap;
 use crate::util::{display_debug, format_args2, DefaultHashBuilder, Either};
 use crate::Symbol;
-use batsat::{lbool, Callbacks, Lit, SolverInterface, SolverOpts, Var};
-use egg::Id;
 use hashbrown::HashMap;
 use log::debug;
 use no_std_compat::prelude::v1::*;
 use perfect_derive::perfect_derive;
+use plat_egg::Id;
+use platsat::{lbool, Callbacks, Lit, SolverInterface, SolverOpts, Var};
 use std::borrow::BorrowMut;
 use std::fmt::{Debug, Formatter};
 use std::mem;
@@ -21,7 +21,7 @@ use std::ops::{BitXor, Deref, Not};
 #[derive(Default)]
 struct NoCb;
 impl Callbacks for NoCb {}
-type BatSolver = batsat::Solver<NoCb>;
+type BatSolver = platsat::Solver<NoCb>;
 
 /// The main solver structure including the sat solver and egraph.
 ///
