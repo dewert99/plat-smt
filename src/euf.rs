@@ -267,7 +267,7 @@ impl Theory<EUF> for EUFInner {
         if let Some(id) = this.lit_ids[p].expand() {
             let const_bool = this.id_for_bool(true);
             if this.egraph.find(id) == this.egraph.find(const_bool) {
-                let res = this.explain(id, const_bool, false, is_final);
+                let (res, _) = this.explain(id, const_bool, false, is_final);
                 if !res.has(p) {
                     debug!("EUF explains {p:?} by {:?}", res.as_slice());
                     return &this.explanation;
@@ -281,7 +281,7 @@ impl Theory<EUF> for EUFInner {
         }
         if let Some(id) = this.lit_ids[!p].expand() {
             let const_bool = this.id_for_bool(false);
-            let res = this.explain(id, const_bool, false, is_final);
+            let (res, _) = this.explain(id, const_bool, false, is_final);
             debug!("EUF explains {p:?} by {:?}", res.as_slice());
             return res;
         }
@@ -385,7 +385,7 @@ impl<'a, S: 'a + SatSolver> MergeContext<'a, S> {
 }
 
 impl EUF {
-    fn explain(&mut self, id1: Id, id2: Id, negate: bool, is_final: bool) -> &LSet {
+    fn explain(&mut self, id1: Id, id2: Id, negate: bool, is_final: bool) -> (&LSet, bool) {
         let base_unions = self
             .base_marker()
             .map(|x| x.egraph.number_of_unions())
@@ -402,7 +402,7 @@ impl EUF {
         if this.assertion_level_lit != Lit::UNDEF {
             this.explanation.insert(this.assertion_level_lit ^ negate);
         }
-        this.egraph.explain_equivalence(
+        let used_congruence = this.egraph.explain_equivalence(
             id1,
             id2,
             &mut this.explanation,
@@ -411,14 +411,14 @@ impl EUF {
             last_unions,
             &mut this.eq_ids,
         );
-        &this.explanation
+        (&this.explanation, used_congruence)
     }
 
     fn conflict(&mut self, acts: &mut impl SatSolver, id1: Id, id2: Id) {
         self.explanation.clear();
-        let res = self.explain(id1, id2, true, false);
+        let (res, used_congruence) = self.explain(id1, id2, true, false);
         debug!("EUF Conflict by {:?}", res.as_slice());
-        acts.raise_conflict(res, false)
+        acts.raise_conflict(res, used_congruence)
     }
 
     pub(crate) fn rebuild(&mut self, acts: &mut impl SatSolver) -> Result {

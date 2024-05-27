@@ -306,6 +306,7 @@ impl EGraph<EClass> {
         self.inner.clear();
     }
 
+    /// Returns whether the explanation used congruence
     pub fn explain_equivalence(
         &mut self,
         id1: Id,
@@ -315,8 +316,8 @@ impl EGraph<EClass> {
         base_unions: usize,
         last_unions: usize,
         eq_ids: &mut EqIds,
-    ) {
-        self.explain
+    ) -> bool {
+        let mut explain = self.explain
             .promote(
                 &self.inner,
                 res,
@@ -324,8 +325,9 @@ impl EGraph<EClass> {
                 base_unions as u32,
                 last_unions as u32,
                 eq_ids,
-            )
-            .explain_equivalence(id1, id2)
+            );
+        explain.explain_equivalence(id1, id2);
+        explain.used_congruence()
     }
 }
 

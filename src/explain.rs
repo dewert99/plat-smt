@@ -212,6 +212,7 @@ pub(crate) struct ExplainState<'a, X> {
     // decision level than the current one
     last_unions: u32,
     eq_ids: &'a mut EqIds,
+    used_congruence: bool,
 }
 
 impl Explain {
@@ -263,6 +264,7 @@ impl Explain {
             out,
             eq_ids,
             last_unions,
+            used_congruence: false,
         }
     }
 }
@@ -284,6 +286,9 @@ impl<'a, X> DerefMut for ExplainState<'a, X> {
 impl<'x>
     ExplainState<'x, &'x RawEGraph<SymbolLang, EClass, plat_egg::raw::semi_persistent1::UndoLog>>
 {
+    pub(crate) fn used_congruence(&self) -> bool {
+        self.used_congruence
+    }
     // Requires `left` != `right`
     // `result.1` is true when the `old_root` from `result.0` corresponds to left
     fn max_assoc_union_gen<S: IdSet>(
@@ -381,6 +386,7 @@ impl<'x>
                 return;
             }
         }
+        self.used_congruence = true;
         trace!("id{left} = id{right} by fused congruence {flip}");
         let current_node = self.raw.id_to_node(left);
         let next_node = self.raw.id_to_node(right);
