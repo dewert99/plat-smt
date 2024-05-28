@@ -431,7 +431,7 @@ dependencies = [
 [[package]]
 name = "platsat"
 version = "0.5.0"
-source = "git+https://github.com/dewert99/platsat?branch=main#5052149e78329f35f14bed0cdf3b213d025d22be"
+source = "git+https://github.com/dewert99/platsat?branch=main#5d0ab981276456e50a083028586ecf367a4c001e"
 dependencies = [
  "bit-vec",
  "bytemuck",

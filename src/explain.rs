@@ -204,7 +204,6 @@ pub struct Explain {
 pub(crate) struct ExplainState<'a, X> {
     explain: &'a mut Explain,
     out: &'a mut LSet,
-    negate: bool,
     raw: X,
     // unions in union_info before base_unions are proved at the base decision level
     base_unions: u32,
@@ -249,7 +248,6 @@ impl Explain {
         &'a mut self,
         raw: X,
         out: &'a mut LSet,
-        negate: bool,
         base_unions: u32,
         last_unions: u32,
         eq_ids: &'a mut EqIds,
@@ -260,7 +258,6 @@ impl Explain {
             explain: self,
             raw,
             base_unions,
-            negate,
             out,
             eq_ids,
             last_unions,
@@ -543,7 +540,7 @@ impl<'x>
     }
 
     fn add_just(&mut self, just: Lit) {
-        self.out.insert(just ^ self.negate)
+        self.out.insert(!just)
     }
 
     pub fn explain_equivalence(&mut self, left: Id, right: Id) {

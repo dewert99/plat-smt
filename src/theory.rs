@@ -5,6 +5,7 @@ use no_std_compat::prelude::v1::*;
 use perfect_derive::perfect_derive;
 use platsat::theory::Theory as BatTheory;
 use platsat::{Lit, TheoryArg};
+use platsat::core::ExplainTheoryArg;
 use std::cmp::max;
 use std::ops::{Deref, DerefMut};
 
@@ -50,9 +51,8 @@ pub trait Theory<Wrap: DerefMut<Target = Self>> {
     /// If the theory uses `TheoryArgument::propagate`, it must implement
     /// this function to explain the propagations.
     ///
-    /// `p` is the literal that has been propagated by the theory in a prefix
-    /// of the current trail.
-    fn explain_propagation(this: &mut Wrap, p: Lit, is_final: bool) -> &[Lit];
+    /// Set [`BatTheory::explain_propagation_clause`] for explanation details
+    fn explain_propagation<'a>(this: &'a mut Wrap, p: Lit, acts: &mut ExplainTheoryArg, is_final: bool) -> &'a [Lit];
 
     /// Sets the "assertion_level_lit"
     ///
@@ -73,6 +73,15 @@ struct PushInfo<X> {
     model_len: u32,
 }
 
+#[derive(Debug)]
+struct ExplainBuf([Lit; 2]);
+
+impl Default for ExplainBuf {
+    fn default() -> Self {
+        ExplainBuf([Lit::UNDEF; 2])
+    }
+}
+
 #[perfect_derive(Default, Debug)]
 pub struct IncrementalWrapper<Th: Theory<IncrementalWrapper<Th>>> {
     th: Th,
@@ -82,6 +91,7 @@ pub struct IncrementalWrapper<Th: Theory<IncrementalWrapper<Th>>> {
     prop_log: Vec<Lit>,
     // explanations for lits in prop_log (always the appropriate assertion level lit)
     prop_explain: HashMap<Lit, Lit, DefaultHashBuilder>,
+    explain_buf: ExplainBuf,
     // whether we've handled prop_log since the last push or pop
     done_prop_log: bool,
     sat_level: u32,
@@ -218,23 +228,21 @@ impl<Th: Theory<IncrementalWrapper<Th>>> BatTheory for IncrementalWrapper<Th> {
         }
     }
 
-    fn explain_propagation(&mut self, p: Lit) -> &[Lit] {
-        if let Some(_x) = self.prop_explain.get(&p) {
-            // todo delete if the borrow checker improves
-            let x = self.prop_explain.get(&p).unwrap();
-            core::slice::from_ref(x)
+    fn explain_propagation_clause(&mut self, p: Lit, acts: &mut ExplainTheoryArg) -> &[Lit] {
+        if let Some(x) = self.prop_explain.get(&p) {
+            self.explain_buf.0 = [p, !*x];
+            &self.explain_buf.0
         } else {
-            Th::explain_propagation(self, p, false)
+            Th::explain_propagation(self, p, acts, false)
         }
     }
 
-    fn explain_propagation_final(&mut self, p: Lit) -> &[Lit] {
-        if let Some(_x) = self.prop_explain.get(&p) {
-            // todo delete if the borrow checker improves
-            let x = self.prop_explain.get(&p).unwrap();
-            core::slice::from_ref(x)
+    fn explain_propagation_clause_final(&mut self, p: Lit, acts: &mut ExplainTheoryArg) -> &[Lit] {
+        if let Some(x) = self.prop_explain.get(&p) {
+            self.explain_buf.0 = [p, !*x];
+            &self.explain_buf.0
         } else {
-            Th::explain_propagation(self, p, true)
+            Th::explain_propagation(self, p, acts, true)
         }
     }
 }

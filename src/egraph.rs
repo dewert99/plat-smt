@@ -312,7 +312,6 @@ impl EGraph<EClass> {
         id1: Id,
         id2: Id,
         res: &mut LSet,
-        negate: bool,
         base_unions: usize,
         last_unions: usize,
         eq_ids: &mut EqIds,
@@ -321,7 +320,6 @@ impl EGraph<EClass> {
             .promote(
                 &self.inner,
                 res,
-                negate,
                 base_unions as u32,
                 last_unions as u32,
                 eq_ids,

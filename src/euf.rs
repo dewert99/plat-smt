@@ -12,6 +12,7 @@ use perfect_derive::perfect_derive;
 use plat_egg::{raw::Language, Id};
 use platsat::{LMap, LSet};
 use platsat::{Lit, TheoryArg, Var};
+use platsat::core::ExplainTheoryArg;
 use std::fmt::{Debug, Formatter};
 use std::mem;
 use std::ops::Range;
@@ -263,17 +264,17 @@ impl Theory<EUF> for EUFInner {
         this.rebuild(acts)
     }
 
-    fn explain_propagation(this: &mut EUF, p: Lit, is_final: bool) -> &[Lit] {
+    fn explain_propagation<'a>(this: &'a mut EUF, p: Lit, _: &mut ExplainTheoryArg, is_final: bool) -> &'a [Lit] {
         if let Some(id) = this.lit_ids[p].expand() {
             let const_bool = this.id_for_bool(true);
             if this.egraph.find(id) == this.egraph.find(const_bool) {
-                let (res, _) = this.explain(id, const_bool, false, is_final);
-                if !res.has(p) {
-                    debug!("EUF explains {p:?} by {:?}", res.as_slice());
+                let (res, _) = this.explain(id, const_bool, Some(p), is_final);
+                if !res.has(!p) {
+                    debug!("EUF explains {p:?} with clause {:?}", res.as_slice());
                     return &this.explanation;
                 } else {
                     trace!(
-                        "Skipping incorrect explanation {p:?} by {:?}",
+                        "Skipping incorrect explanation {p:?} with clause {:?}",
                         res.as_slice()
                     );
                 }
@@ -281,8 +282,8 @@ impl Theory<EUF> for EUFInner {
         }
         if let Some(id) = this.lit_ids[!p].expand() {
             let const_bool = this.id_for_bool(false);
-            let (res, _) = this.explain(id, const_bool, false, is_final);
-            debug!("EUF explains {p:?} by {:?}", res.as_slice());
+            let (res, _) = this.explain(id, const_bool, Some(p), is_final);
+            debug!("EUF explains {p:?} with clause {:?}", res.as_slice());
             return res;
         }
         unreachable!()
@@ -385,7 +386,7 @@ impl<'a, S: 'a + SatSolver> MergeContext<'a, S> {
 }
 
 impl EUF {
-    fn explain(&mut self, id1: Id, id2: Id, negate: bool, is_final: bool) -> (&LSet, bool) {
+    fn explain(&mut self, id1: Id, id2: Id, prepend: Option<Lit>, is_final: bool) -> (&LSet, bool) {
         let base_unions = self
             .base_marker()
             .map(|x| x.egraph.number_of_unions())
@@ -399,26 +400,28 @@ impl EUF {
         };
         let this = &mut **self;
         this.explanation.clear();
-        if this.assertion_level_lit != Lit::UNDEF {
-            this.explanation.insert(this.assertion_level_lit ^ negate);
+        if let Some(prepend) = prepend {
+            this.explanation.insert(prepend);
         }
-        let used_congruence = this.egraph.explain_equivalence(
+        if this.assertion_level_lit != Lit::UNDEF {
+            this.explanation.insert(!this.assertion_level_lit);
+        }
+        let add_clause = this.egraph.explain_equivalence(
             id1,
             id2,
             &mut this.explanation,
-            negate,
             base_unions,
             last_unions,
             &mut this.eq_ids,
         );
-        (&this.explanation, used_congruence)
+        (&this.explanation, add_clause)
     }
 
     fn conflict(&mut self, acts: &mut impl SatSolver, id1: Id, id2: Id) {
         self.explanation.clear();
-        let (res, used_congruence) = self.explain(id1, id2, true, false);
+        let (res, add_clause) = self.explain(id1, id2, None,false);
         debug!("EUF Conflict by {:?}", res.as_slice());
-        acts.raise_conflict(res, used_congruence)
+        acts.raise_conflict(res, add_clause)
     }
 
     pub(crate) fn rebuild(&mut self, acts: &mut impl SatSolver) -> Result {
