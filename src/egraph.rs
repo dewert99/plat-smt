@@ -3,7 +3,7 @@ use no_std_compat::prelude::v1::*;
 pub use plat_egg::raw::semi_persistent1::PushInfo;
 use plat_egg::raw::{semi_persistent1::UndoLog, EGraphResidual, Language, RawEClass, RawEGraph};
 use plat_egg::Id;
-use platsat::LSet;
+use platsat::Lit;
 use smallvec::SmallVec;
 use std::cmp::Ordering;
 use std::fmt::{Debug, Formatter};
@@ -311,7 +311,7 @@ impl EGraph<EClass> {
         &mut self,
         id1: Id,
         id2: Id,
-        res: &mut LSet,
+        res: &mut Vec<Lit>,
         base_unions: usize,
         last_unions: usize,
         eq_ids: &mut EqIds,

@@ -399,7 +399,7 @@ dependencies = [
 [[package]]
 name = "plat-egg"
 version = "0.9.5"
-source = "git+https://github.com/dewert99/plat-egg?branch=main#b97e663477616e3203899ee7a4358ac88505eac8"
+source = "git+https://github.com/dewert99/plat-egg?branch=main#3457c7c5168b30268bc35d1cb25182dc0fddd507"
 dependencies = [
  "hashbrown",
  "log",

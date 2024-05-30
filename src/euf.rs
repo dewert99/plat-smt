@@ -10,7 +10,7 @@ use log::{debug, trace};
 use no_std_compat::prelude::v1::*;
 use perfect_derive::perfect_derive;
 use plat_egg::{raw::Language, Id};
-use platsat::{LMap, LSet};
+use platsat::{LMap};
 use platsat::{Lit, TheoryArg, Var};
 use platsat::core::ExplainTheoryArg;
 use std::fmt::{Debug, Formatter};
@@ -131,7 +131,7 @@ pub struct EUFInner {
     bool_class_history: Vec<MergeInfo>,
     lit_id_log: Vec<Lit>,
     assertion_level_lit: Lit,
-    explanation: LSet,
+    explanation: Vec<Lit>,
     lit_ids: LMap<OpId>,
     distinct_gensym: u32,
     eq_ids: EqIds,
@@ -269,13 +269,13 @@ impl Theory<EUF> for EUFInner {
             let const_bool = this.id_for_bool(true);
             if this.egraph.find(id) == this.egraph.find(const_bool) {
                 let (res, _) = this.explain(id, const_bool, Some(p), is_final);
-                if !res.has(!p) {
-                    debug!("EUF explains {p:?} with clause {:?}", res.as_slice());
+                if res.last() != Some(&!p) {
+                    debug_assert!(!res.contains(&!p), "{res:?}, {p:?}");
+                    debug!("EUF explains {p:?} with clause {res:?}");
                     return &this.explanation;
                 } else {
                     trace!(
-                        "Skipping incorrect explanation {p:?} with clause {:?}",
-                        res.as_slice()
+                        "Skipping incorrect explanation {p:?} with clause {res:?}"
                     );
                 }
             }
@@ -283,7 +283,7 @@ impl Theory<EUF> for EUFInner {
         if let Some(id) = this.lit_ids[!p].expand() {
             let const_bool = this.id_for_bool(false);
             let (res, _) = this.explain(id, const_bool, Some(p), is_final);
-            debug!("EUF explains {p:?} with clause {:?}", res.as_slice());
+            debug!("EUF explains {p:?} with clause {:?}", res);
             return res;
         }
         unreachable!()
@@ -386,7 +386,7 @@ impl<'a, S: 'a + SatSolver> MergeContext<'a, S> {
 }
 
 impl EUF {
-    fn explain(&mut self, id1: Id, id2: Id, prepend: Option<Lit>, is_final: bool) -> (&LSet, bool) {
+    fn explain(&mut self, id1: Id, id2: Id, prepend: Option<Lit>, is_final: bool) -> (&[Lit], bool) {
         let base_unions = self
             .base_marker()
             .map(|x| x.egraph.number_of_unions())
@@ -401,10 +401,10 @@ impl EUF {
         let this = &mut **self;
         this.explanation.clear();
         if let Some(prepend) = prepend {
-            this.explanation.insert(prepend);
+            this.explanation.push(prepend);
         }
         if this.assertion_level_lit != Lit::UNDEF {
-            this.explanation.insert(!this.assertion_level_lit);
+            this.explanation.push(!this.assertion_level_lit);
         }
         let add_clause = this.egraph.explain_equivalence(
             id1,
@@ -420,7 +420,7 @@ impl EUF {
     fn conflict(&mut self, acts: &mut impl SatSolver, id1: Id, id2: Id) {
         self.explanation.clear();
         let (res, add_clause) = self.explain(id1, id2, None,false);
-        debug!("EUF Conflict by {:?}", res.as_slice());
+        debug!("EUF Conflict by {res:?}");
         acts.raise_conflict(res, add_clause)
     }
 
