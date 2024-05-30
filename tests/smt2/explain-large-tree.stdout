@@ -1,0 +1,2 @@
+unsat
+((not (= dl dr)) (= al ar))

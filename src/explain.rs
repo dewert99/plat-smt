@@ -16,7 +16,6 @@ use log::{debug, trace};
 use perfect_derive::perfect_derive;
 use plat_egg::raw::RawEGraph;
 use plat_egg::{raw::Language, Id};
-use platsat::LSet;
 
 // either a `Lit` that represents the equality
 // or a hash an explanation of the equality
@@ -193,17 +192,18 @@ struct StackElem {
 #[derive(Debug, Clone, Default)]
 pub struct Explain {
     union_info: Vec<UnionInfo>,
-    // index into union_info
+    /// index into union_info
     assoc_unions: Vec<u32>,
-    // we defer congruence explanations to avoid recursive calls
+    /// stack explain equivalence
     stack: Vec<StackElem>,
-    // stack explain equivalence
+    /// equalities that need to be explained as part of the current explanation
     deferred_explanations: Vec<(Id, Id)>,
+    deferred_explanations_set: HashSet<(Id, Id), DefaultHashBuilder>
 }
 
 pub(crate) struct ExplainState<'a, X> {
     explain: &'a mut Explain,
-    out: &'a mut LSet,
+    out: &'a mut Vec<Lit>,
     raw: X,
     // unions in union_info before base_unions are proved at the base decision level
     base_unions: u32,
@@ -247,7 +247,7 @@ impl Explain {
     pub(crate) fn promote<'a, X>(
         &'a mut self,
         raw: X,
-        out: &'a mut LSet,
+        out: &'a mut Vec<Lit>,
         base_unions: u32,
         last_unions: u32,
         eq_ids: &'a mut EqIds,
@@ -540,7 +540,7 @@ impl<'x>
     }
 
     fn add_just(&mut self, just: Lit) {
-        self.out.insert(!just)
+        self.out.push(!just)
     }
 
     pub fn explain_equivalence(&mut self, left: Id, right: Id) {
@@ -548,10 +548,13 @@ impl<'x>
         debug_assert_eq!(self.raw.find(left), self.raw.find(right));
         self.deferred_explanations.push((left, right));
         while let Some((left, right)) = self.deferred_explanations.pop() {
-            trace!("start explain id{left} = id{right}");
-            self.explain_equivalence_h(left, right);
-            trace!("end explain id{left} = id{right}");
+            if self.deferred_explanations_set.insert((left, right)) {
+                trace!("start explain id{left} = id{right}");
+                self.explain_equivalence_h(left, right);
+                trace!("end explain id{left} = id{right}");
+            }
         }
+        self.deferred_explanations_set.clear();
         self.deferred_explanations.clear();
     }
 }
