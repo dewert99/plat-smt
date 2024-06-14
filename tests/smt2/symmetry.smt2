@@ -20,4 +20,3 @@ Target solver: CVC4, Z3
 (assert (not (= (bool (and p1 p2))
                     (bool (and (= (bool (and (= (bool p1) TRUE) (= (bool p1) TRUE))) TRUE) (= (bool p2) TRUE))))))
 (check-sat)
-(exit)

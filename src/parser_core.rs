@@ -160,6 +160,11 @@ impl<R: FullBufRead> SexpLexer<R> {
         }
     }
 
+    fn close(&mut self) {
+        self.reader.close();
+        self.idx = self.reader.data().len();
+    }
+
     fn consume_byte(&mut self) {
         if let Some(c) = self.peek_byte() {
             if c == b'\n' {
@@ -583,6 +588,10 @@ impl<'a, R: FullBufRead> SexpParser<'a, R> {
         mut f: F,
     ) -> impl Iterator<Item = U> + Bind<(F, &mut Self)> {
         core::iter::from_fn(move || Some(f(self.next()?)))
+    }
+
+    pub fn close(&mut self) {
+        self.0.close();
     }
 }
 
