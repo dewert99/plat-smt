@@ -13,6 +13,9 @@ pub trait FullBufRead {
         self.fill_to(new_size);
         self.data()
     }
+
+    /// Close the reader causing `fill_to` to stop working
+    fn close(&mut self);
 }
 
 impl<'a> FullBufRead for &'a [u8] {
@@ -23,4 +26,6 @@ impl<'a> FullBufRead for &'a [u8] {
     fn data(&self) -> &[u8] {
         self
     }
+
+    fn close(&mut self) {}
 }

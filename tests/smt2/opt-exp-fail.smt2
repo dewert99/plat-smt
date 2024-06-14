@@ -39,4 +39,3 @@ Target solver: CVC4, Z3
 (check-sat)
 (pop 1)
 (pop 1)
-(exit)

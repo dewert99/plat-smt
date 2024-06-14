@@ -20,13 +20,13 @@ impl<L: Read, R: Read> Read for Either<L, R> {
 pub struct FullBufReader<R: Read> {
     buf: Vec<u8>,
     read_to: usize,
-    reader: R,
+    reader: Option<R>,
 }
 
 impl<R: Read> FullBufReader<R> {
     pub fn new(reader: R, init: Vec<u8>) -> Self {
         FullBufReader {
-            reader,
+            reader: Some(reader),
             read_to: init.len(),
             buf: init,
         }
@@ -34,11 +34,16 @@ impl<R: Read> FullBufReader<R> {
 
     #[inline(never)]
     fn fill_to_inner(&mut self, new_size: usize) {
-        self.buf.reserve(new_size.saturating_sub(self.read_to));
-        self.buf.resize(self.buf.capacity(), 0);
+        let Some(reader) = &mut self.reader else {
+            return;
+        };
+        if self.read_to >= self.buf.len() / 2 {
+            self.buf.reserve(new_size.saturating_sub(self.read_to));
+            self.buf.resize(self.buf.capacity(), 0);
+        }
         debug_assert!(self.buf.len() >= new_size);
         while self.read_to < new_size {
-            let read = self.reader.read(&mut self.buf[self.read_to..]).unwrap();
+            let read = reader.read(&mut self.buf[self.read_to..]).unwrap();
             if read == 0 {
                 return;
             }
@@ -58,6 +63,10 @@ impl<R: Read> FullBufRead for FullBufReader<R> {
     #[inline(always)]
     fn data(&self) -> &[u8] {
         &self.buf[..self.read_to]
+    }
+
+    fn close(&mut self) {
+        self.reader = None;
     }
 }
 

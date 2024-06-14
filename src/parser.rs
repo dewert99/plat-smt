@@ -1406,7 +1406,9 @@ impl<W: Write> Parser<W> {
                 self.options = Default::default();
                 self.writer.print_success = self.options.print_success;
             }
-            Smt2Command::Exit => {}
+            Smt2Command::Exit => {
+                rest.p.close();
+            }
             _ => return Err(InvalidCommand),
         }
         Ok(())
