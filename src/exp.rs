@@ -4,6 +4,10 @@ use crate::intern::{Sort, BOOL_SORT};
 use platsat::clause::{Lit, Var};
 use platsat::intmap::AsIndex;
 
+pub trait HasSort {
+    fn sort(self) -> Sort;
+}
+
 #[derive(Copy, Clone, Debug)]
 pub struct UExp {
     id: Id,
@@ -15,10 +19,6 @@ impl UExp {
         self.id
     }
 
-    pub fn sort(self) -> Sort {
-        self.sort
-    }
-
     pub fn new(id: Id, sort: Sort) -> Self {
         assert_ne!(sort, BOOL_SORT);
         UExp{id, sort}
@@ -26,6 +26,12 @@ impl UExp {
 
     pub fn with_id(self, new_id: Id) -> Self {
         UExp{id: new_id, sort: self.sort}
+    }
+}
+
+impl HasSort for UExp {
+    fn sort(self) -> Sort {
+        self.sort
     }
 }
 
@@ -51,6 +57,12 @@ impl From<UExp> for Exp {
     fn from(value: UExp) -> Self {
         let data: usize = value.id.into();
         Exp{sort: value.sort, data: data as u32}
+    }
+}
+
+impl HasSort for Exp {
+    fn sort(self) -> Sort {
+        self.sort
     }
 }
 
@@ -111,6 +123,12 @@ impl BoolExp {
 
     fn from_u32(n: u32) -> Self {
         BoolExp(Lit::from_index(n as usize))
+    }
+}
+
+impl HasSort for BoolExp {
+    fn sort(self) -> Sort {
+        BOOL_SORT
     }
 }
 

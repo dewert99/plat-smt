@@ -51,8 +51,9 @@ impl<const IS_AND: bool> Debug for Junction<IS_AND> {
 impl<const IS_AND: bool> Extend<BoolExp> for Junction<IS_AND> {
     fn extend<T: IntoIterator<Item = BoolExp>>(&mut self, iter: T) {
         if !self.absorbing {
+            let mut iter = iter.into_iter();
             self.lits.extend(
-                iter.into_iter()
+                iter.by_ref().into_iter()
                     .take_while(|x| match x.to_lit() {
                         Err(x) if x != IS_AND => {
                             self.absorbing = true;
@@ -65,6 +66,7 @@ impl<const IS_AND: bool> Extend<BoolExp> for Junction<IS_AND> {
                         Ok(lit) => Some(lit),
                     }),
             );
+            iter.for_each(|_| ());
         }
     }
 }
