@@ -11,7 +11,23 @@ pub struct Symbol(pub(crate) u32);
 #[derive(Copy, Clone, Eq, PartialEq, Debug, Hash)]
 pub struct Sort(u32);
 
-const BASE_SYMBOLS: &'static [&'static str] = &["Bool", "=", "true", "false"];
+const BASE_SYMBOLS: &'static [&'static str] = &[
+    "|Default|",
+    "Bool",
+    "true",
+    "false",
+    "and",
+    "or",
+    "not",
+    "=>",
+    "xor",
+    "ite",
+    "if",
+    "=",
+    "distinct",
+    "let",
+    "!",
+];
 
 const fn u8_slice_eq(s0: &[u8], s1: &[u8]) -> bool {
     match (s0, s1) {
@@ -33,9 +49,20 @@ const fn base_symbol(s: &str) -> Symbol {
 }
 
 pub const BOOL_SYM: Symbol = base_symbol("Bool");
-pub const EQ_SYM: Symbol = base_symbol("=");
 pub const TRUE_SYM: Symbol = base_symbol("true");
 pub const FALSE_SYM: Symbol = base_symbol("false");
+pub const AND_SYM: Symbol = base_symbol("and");
+pub const OR_SYM: Symbol = base_symbol("or");
+pub const NOT_SYM: Symbol = base_symbol("not");
+pub const IMP_SYM: Symbol = base_symbol("=>");
+pub const XOR_SYM: Symbol = base_symbol("xor");
+pub const IF_SYM: Symbol = base_symbol("if");
+pub const ITE_SYM: Symbol = base_symbol("ite");
+pub const EQ_SYM: Symbol = base_symbol("=");
+pub const DISTINCT_SYM: Symbol = base_symbol("distinct");
+pub const LET_SYM: Symbol = base_symbol("let");
+
+pub const ANNOT_SYM: Symbol = base_symbol("!");
 
 const BASE_SORTS: &'static [(Symbol, &'static [Sort])] = &[(BOOL_SYM, &[])];
 

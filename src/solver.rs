@@ -1,8 +1,9 @@
 use crate::buffered_solver::BufferedSolver;
 use crate::egraph::Children;
 use crate::euf::{FullFunctionInfo, FunctionInfo, SatSolver, EUF};
+use crate::exp::*;
 use crate::explain::Justification;
-use crate::intern::{DisplayInterned, InternInfo, Sort, BOOL_SORT};
+use crate::intern::*;
 use crate::junction::*;
 use crate::sp_insert_map::SPInsertMap;
 use crate::util::{display_debug, format_args2, DefaultHashBuilder, Either};
@@ -13,11 +14,9 @@ use no_std_compat::prelude::v1::*;
 use perfect_derive::perfect_derive;
 use plat_egg::Id;
 use platsat::{lbool, Callbacks, Lit, SolverInterface, SolverOpts, Var};
-use std::borrow::BorrowMut;
 use std::fmt::{Debug, Formatter};
 use std::mem;
 use std::ops::Deref;
-use crate::exp::*;
 
 #[derive(Default)]
 struct NoCb;
@@ -35,6 +34,7 @@ pub struct Solver {
     function_info_buf: FunctionInfo,
     ifs: SPInsertMap<(Lit, Id, Id), Id>,
     pub intern: InternInfo,
+    junction_buf: Vec<Lit>,
 }
 
 impl DisplayInterned for UExp {
@@ -78,7 +78,7 @@ impl DisplayInterned for Exp {
     }
 }
 
-pub trait ExpLike: Into<Exp> + Copy + Debug + DisplayInterned {
+pub trait ExpLike: Into<Exp> + Copy + Debug + DisplayInterned + HasSort {
     fn canonize(self, solver: &Solver) -> Self;
 }
 
@@ -158,6 +158,7 @@ impl SolveResult {
         }
     }
 }
+
 impl Solver {
     fn fresh(&mut self) -> Var {
         let fresh = self.sat.new_var_default();
@@ -192,19 +193,26 @@ impl Solver {
     /// To reuse memory you can pass mutable reference instead of an owned value
     /// Doing this will leave `j` in an unspecified state, so it should be
     /// [`clear`](Junction::clear)ed before it is used again
-    pub fn collapse_bool<const IS_AND: bool>(
-        &mut self,
-        mut j: impl BorrowMut<Junction<IS_AND>> + Debug,
-    ) -> BoolExp {
-        let j = j.borrow_mut();
+    pub fn collapse_bool<const IS_AND: bool>(&mut self, mut j: Junction<IS_AND>) -> BoolExp {
         debug!("{j:?} was collapsed to ...");
         let res = match j.absorbing {
             true => BoolExp::from_bool(!IS_AND),
             false if j.lits.is_empty() => BoolExp::from_bool(IS_AND),
             false => BoolExp::unknown(self.andor_reuse(&mut j.lits, IS_AND)),
         };
+        self.junction_buf = j.lits;
         debug!("... {res}");
         res
+    }
+
+    /// Returns an empty [`Conjunction`] or [`Disjunction`]  which reuses memory from the last call
+    /// to [`collapse_bool`](Self::collapse_bool)
+    pub fn new_junction<const IS_AND: bool>(&mut self) -> Junction<IS_AND> {
+        self.junction_buf.clear();
+        Junction {
+            absorbing: false,
+            lits: mem::take(&mut self.junction_buf),
+        }
     }
 
     pub fn xor(&mut self, b1: BoolExp, b2: BoolExp) -> BoolExp {
@@ -245,10 +253,10 @@ impl Solver {
     ///
     /// If the two expressions have different sorts returns an error containing both sorts
     pub fn eq(&mut self, exp1: Exp, exp2: Exp) -> Result<BoolExp, (Sort, Sort)> {
-        let (id1, sort1) = self.id_sort(exp1);
-        let (id2, sort2) = self.id_sort(exp2);
-        if sort1 != sort2 {
-            Err((sort1, sort2))
+        let id1 = self.id(exp1);
+        let id2 = self.id(exp2);
+        if exp1.sort() != exp2.sort() {
+            Err((exp1.sort(), exp2.sort()))
         } else {
             Ok(self.raw_eq(id1, id2))
         }
@@ -257,10 +265,10 @@ impl Solver {
     /// Equivalent to `self.`[`assert`](Self::assert)`(self.`[`eq`](Self::eq)`(exp1, exp2)?)` but
     /// more efficient
     pub fn assert_eq(&mut self, exp1: Exp, exp2: Exp) -> Result<(), (Sort, Sort)> {
-        let (id1, sort1) = self.id_sort(exp1);
-        let (id2, sort2) = self.id_sort(exp2);
-        if sort1 != sort2 {
-            Err((sort1, sort2))
+        let id1 = self.id(exp1);
+        let id2 = self.id(exp2);
+        if exp1.sort() != exp2.sort() {
+            Err((exp1.sort(), exp2.sort()))
         } else {
             Ok(self.assert_raw_eq(id1, id2))
         }
@@ -295,7 +303,7 @@ impl Solver {
                 .symbols
                 .gen_sym(&format_args2!("if|{i:?}|id{t}|id{e}"));
             let fresh = self.sorted_fn(sym, Children::new(), s);
-            let fresh_id = self.id_sort(fresh).0;
+            let fresh_id = self.id(fresh);
             let eqt = self.raw_eq(fresh_id, t);
             let Ok(eqt) = eqt.to_lit() else {
                 unreachable!()
@@ -316,8 +324,8 @@ impl Solver {
     ///
     /// If `t` and `e` have different sorts returns an error containing both sorts
     pub fn ite(&mut self, i: BoolExp, t: Exp, e: Exp) -> Result<Exp, (Sort, Sort)> {
-        let tsort = self.sort(t);
-        let esort = self.sort(e);
+        let tsort = t.sort();
+        let esort = e.sort();
         if tsort != esort {
             return Err((tsort, esort));
         }
@@ -325,8 +333,8 @@ impl Solver {
             Err(true) => t,
             Err(false) => e,
             Ok(u) => {
-                let tid = self.id_sort(t).0;
-                let eid = self.id_sort(e).0;
+                let tid = self.id(t);
+                let eid = self.id(e);
                 self.raw_ite(u, tid, eid, tsort)
             }
         };
@@ -336,7 +344,7 @@ impl Solver {
 
     /// Creates a function call expression with a given name and children and return sort
     ///
-    /// [`Id`]s for the children can be created with [`id_sort`](Solver::id_sort)
+    /// [`Id`]s for the children can be created with [`id`](Solver::id)
     ///
     /// This method does not check sorts of the children so callers need to ensure that functions
     /// call expressions with the same name but different return sorts do not become congruently
@@ -478,27 +486,16 @@ impl Solver {
         }
     }
 
-    /// Returns the id and sort of `exp`
+    /// Returns the id of an `exp`
     ///
     /// See [`sorted_fn`](Solver::sorted_fn) and  [`bool_fn`](Solver::bool_fn)
-    pub fn id_sort(&mut self, exp: Exp) -> (Id, Sort) {
+    pub fn id(&mut self, exp: Exp) -> Id {
         match exp.expand() {
             EExp::Bool(b) => match b.to_lit() {
-                Err(b) => (self.euf.id_for_bool(b), BOOL_SORT),
-                Ok(lit) => (
-                    self.euf.id_for_lit(lit, &mut self.intern.symbols),
-                    BOOL_SORT,
-                ),
+                Err(b) => self.euf.id_for_bool(b),
+                Ok(lit) => self.euf.id_for_lit(lit, &mut self.intern.symbols),
             },
-            EExp::Uninterpreted(u) => (u.id(), u.sort()),
-        }
-    }
-
-    /// Returns the sort of `exp`
-    pub fn sort(&self, exp: Exp) -> Sort {
-        match exp.expand() {
-            EExp::Bool(_) => BOOL_SORT,
-            EExp::Uninterpreted(u) => u.sort(),
+            EExp::Uninterpreted(u) => u.id(),
         }
     }
 

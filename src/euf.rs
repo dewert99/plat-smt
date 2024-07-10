@@ -714,9 +714,16 @@ impl<'a, L: Language> FullFunctionInfo<'a, L> {
     pub fn get(
         &self,
         s: Symbol,
-    ) -> impl ExactSizeIterator<Item = (impl Iterator<Item = Exp> + 'a, Exp)> {
+    ) -> FunctionAssignment!['a] {
         let iter = self.base.get(s).iter();
         let id_to_exp = |id: &Id| self.euf.id_to_exp(*id);
         iter.map(move |(node, id)| (node.children().iter().map(id_to_exp), id_to_exp(id)))
     }
 }
+
+#[macro_export]
+macro_rules! FunctionAssignment {
+    ($a:lifetime) => {impl ExactSizeIterator<Item = (impl Iterator<Item = Exp> + $a, Exp)>};
+}
+
+pub use FunctionAssignment;
