@@ -1,5 +1,6 @@
 use core::fmt::{Debug, Display, Formatter};
 use no_std_compat::prelude::v1::*;
+use second_stack_vec::{Stack, StackVec};
 
 pub(crate) struct DebugIter<'a, I>(pub &'a I);
 
@@ -119,4 +120,12 @@ pub fn powi(mut f: f64, mut exp: u32) -> f64 {
 #[test]
 fn test_powi() {
     debug_assert_eq!(powi(0.1, 5), 0.1f64.powi(5))
+}
+
+pub(crate) fn extend_stack_vec<T, E, F: FnOnce(&mut Stack) -> Result<T, E>>(v: &mut StackVec<T>, mut i: impl Iterator<Item=F>) -> Result<(), E> {
+    i.try_for_each(|f| {
+        let res = f(&mut v.stack())?;
+        v.push(res);
+        Ok(())
+    })
 }
