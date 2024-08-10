@@ -385,6 +385,12 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "0ab1bc2a289d34bd04a330323ac98a1b4bc82c9d9fcb1e66b63caa84da26b575"
 
 [[package]]
+name = "paste"
+version = "1.0.15"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "57c0d7b74b563b49d38dae00a0c37d4d6de9b432382b2892f0574ddcae73fd0a"
+
+[[package]]
 name = "perfect-derive"
 version = "0.1.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -423,6 +429,7 @@ dependencies = [
  "platsat",
  "rstest",
  "rustc-hash",
+ "second-stack2",
  "smallvec",
  "thiserror-no-std",
  "walkdir",
@@ -604,6 +611,14 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "ece8e78b2f38ec51c51f5d475df0a7187ba5111b2a28bdc761ee05b075d40a71"
 
 [[package]]
+name = "second-stack2"
+version = "0.1.0"
+source = "git+https://github.com/dewert99/second-stack2#51bacf841bd0e177d77bc89927ad467080418b8b"
+dependencies = [
+ "stackbox",
+]
+
+[[package]]
 name = "semver"
 version = "1.0.22"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -645,6 +660,15 @@ name = "smallvec"
 version = "1.13.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e6ecd384b10a64542d77071bd64bd7b231f4ed5940fba55e98c3de13824cf3d7"
+
+[[package]]
+name = "stackbox"
+version = "0.1.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "64b86ea9e381b8d3af99bc7ffe8dad8f5fbdfd7ca06522e28e650528610d0bba"
+dependencies = [
+ "paste",
+]
 
 [[package]]
 name = "syn"

@@ -14,6 +14,7 @@ use hashbrown::HashMap;
 use log::debug;
 use no_std_compat::prelude::v1::*;
 use plat_egg::Id;
+use second_stack2::with_stack_vec;
 use smallvec::SmallVec;
 use std::fmt::Formatter;
 use std::fmt::Write;
@@ -602,15 +603,15 @@ impl ExpParser for BaseExpParser {
             ExpKind::Distinct => {
                 let exp1 = p.parse_exp(rest.next()?)?;
                 let (id1, sort1) = p.core.id_sort(exp1);
-                let iter = rest.map_full(|x| p.parse_id(x?, sort1));
-                let ids = [Ok(id1)]
-                    .into_iter()
-                    .chain(iter)
-                    .collect::<Result<Vec<Id>>>()?;
-                let conj: Conjunction = pairwise_sym(&ids)
-                    .map(|(&id1, &id2)| !p.core.raw_eq(id1, id2))
-                    .collect();
-                p.core.collapse_bool(conj).into()
+                with_stack_vec(|mut s| {
+                    let iter = rest.map_full(|x| p.parse_id(x?, sort1));
+                    let ids = [Ok(id1)].into_iter().chain(iter);
+                    s.try_extend_alt(ids)?;
+                    let conj: Conjunction = pairwise_sym(&s.into_slice())
+                        .map(|(&id1, &id2)| !p.core.raw_eq(id1, id2))
+                        .collect();
+                    Result::Ok(p.core.collapse_bool(conj).into())
+                })?
             }
             ExpKind::Ite | ExpKind::If => {
                 let i = p.parse_bool(rest.next_full()?)?;
@@ -690,12 +691,12 @@ impl ExpParser for AssertExpParser {
             (ExpKind::Distinct, false) => {
                 let exp1 = p.parse_exp(rest.next()?)?;
                 let (id1, sort1) = p.core.id_sort(exp1);
-                let iter = rest.map_full(|x| p.parse_id(x?, sort1));
-                let ids = [Ok(id1)]
-                    .into_iter()
-                    .chain(iter)
-                    .collect::<Result<Vec<Id>>>()?;
-                p.core.assert_distinct(ids)
+                with_stack_vec(|mut s| {
+                    let iter = rest.map_full(|x| p.parse_id(x?, sort1));
+                    let ids = [Ok(id1)].into_iter().chain(iter);
+                    s.try_extend_alt(ids)?;
+                    Result::Ok(p.core.assert_distinct(s))
+                })?
             }
             (ExpKind::Unknown(f), neg) => {
                 let sig = p.bound.get(&f).ok_or(Unbound(f))?.clone();
@@ -1005,10 +1006,13 @@ impl<W: Write> Parser<W> {
                     SexpToken::Symbol(s) => self.core.intern.symbols.intern(s),
                     _ => return Err(InvalidSort),
                 };
-                let params = l.map(|x| self.parse_sort(x?)).collect::<Result<Vec<_>>>()?;
-                self.create_sort(name, &params)
+                with_stack_vec(|mut s| {
+                    let params = l.map(|x| self.parse_sort(x?));
+                    s.try_extend(params)?;
+                    self.create_sort(name, &s.into_slice())
+                })
             }
-            _ => return Err(InvalidSort),
+            _ => Err(InvalidSort),
         }
     }
 
@@ -1095,28 +1099,29 @@ impl<W: Write> Parser<W> {
                 if !self.options.produce_models {
                     return Err(ProduceModelFalse);
                 }
-                let SexpToken::List(mut l) = rest.next()? else {
-                    return Err(InvalidCommand);
-                };
-                let values = l
-                    .zip_map_full(iter::repeat(()), |x, ()| self.parse_exp(x?))
-                    .collect::<Result<Vec<_>>>()?;
-                drop(l);
-                write!(self.writer, "(");
-                let mut iter = values.into_iter().map(|(exp, span)| {
-                    (
-                        exp.with_intern(&self.core.intern),
-                        rest.p.lookup_range(span),
-                    )
-                });
-                if let Some((x, lit)) = iter.next() {
-                    write!(self.writer, "({lit} {x})");
-                }
-                for (x, lit) in iter {
-                    write!(self.writer, "\n ({lit} {x})");
-                }
-                writeln!(self.writer, ")");
-                rest.finish()?;
+                with_stack_vec(|mut s| {
+                    let SexpToken::List(mut l) = rest.next()? else {
+                        return Err(InvalidCommand);
+                    };
+                    let values = l.zip_map_full(iter::repeat(()), |x, ()| self.parse_exp(x?));
+                    s.try_extend_alt(values)?;
+                    drop(l);
+                    write!(self.writer, "(");
+                    let mut iter = s.into_iter().map(|(exp, span)| {
+                        (
+                            exp.with_intern(&self.core.intern),
+                            rest.p.lookup_range(span),
+                        )
+                    });
+                    if let Some((x, lit)) = iter.next() {
+                        write!(self.writer, "({lit} {x})");
+                    }
+                    for (x, lit) in iter {
+                        write!(self.writer, "\n ({lit} {x})");
+                    }
+                    writeln!(self.writer, ")");
+                    rest.finish()
+                })?
             }
             Smt2Command::GetModel => {
                 rest.finish()?;
@@ -1128,35 +1133,37 @@ impl<W: Write> Parser<W> {
                 }
                 let (funs, core) = self.core.function_info();
                 writeln!(self.writer, "(");
-                let mut bound: Vec<_> = self
+                let bound = self
                     .bound
                     .keys()
                     .copied()
-                    .filter(|k| !matches!(*k, TRUE_SYM | FALSE_SYM))
-                    .collect();
-                let intern = &core.intern;
-                bound.sort_unstable_by_key(|x| intern.symbols.resolve(*x));
-                for k in bound {
-                    let k_i = k.with_intern(intern);
-                    match &self.bound[&k] {
-                        Bound::Const(x) => {
-                            let x = core.canonize(*x);
-                            let sort = core.sort(x).with_intern(intern);
-                            let x = x.with_intern(intern);
-                            writeln!(self.writer, " (define-fun {k_i} () {sort} {x})");
-                        }
-                        Bound::Fn(f) => {
-                            let args =
-                                f.args.iter().enumerate().map(|(i, s)| {
+                    .filter(|k| !matches!(*k, TRUE_SYM | FALSE_SYM));
+                with_stack_vec(|mut s| {
+                    s.extend_alt(bound);
+                    let bound = &mut *s.into_slice();
+                    let intern = &core.intern;
+                    bound.sort_unstable_by_key(|x| intern.symbols.resolve(*x));
+                    for &mut k in bound {
+                        let k_i = k.with_intern(intern);
+                        match &self.bound[&k] {
+                            Bound::Const(x) => {
+                                let x = core.canonize(*x);
+                                let sort = core.sort(x).with_intern(intern);
+                                let x = x.with_intern(intern);
+                                writeln!(self.writer, " (define-fun {k_i} () {sort} {x})");
+                            }
+                            Bound::Fn(f) => {
+                                let args = f.args.iter().enumerate().map(|(i, s)| {
                                     format_args2!("(x!{i} {})", s.with_intern(intern))
                                 });
-                            let args = parenthesized(args, " ");
-                            let ret = f.ret.with_intern(intern);
-                            writeln!(self.writer, " (define-fun {k_i} {args} {ret}");
-                            write_body(&mut self.writer, &funs, k, ret, intern);
+                                let args = parenthesized(args, " ");
+                                let ret = f.ret.with_intern(intern);
+                                writeln!(self.writer, " (define-fun {k_i} {args} {ret}");
+                                write_body(&mut self.writer, &funs, k, ret, intern);
+                            }
                         }
                     }
-                }
+                });
                 writeln!(self.writer, ")");
             }
             Smt2Command::SetLogic => {
@@ -1346,23 +1353,25 @@ impl<W: Write> Parser<W> {
                 writeln!(self.writer, "{}", res.as_lower_str())
             }
             Smt2Command::CheckSatAssuming => {
-                let SexpToken::List(mut l) = rest.next()? else {
-                    return Err(InvalidCommand);
-                };
-                let conj = l
-                    .zip_map_full(0.., |token, i| {
+                with_stack_vec(|mut s| {
+                    let SexpToken::List(mut l) = rest.next()? else {
+                        return Err(InvalidCommand);
+                    };
+                    let conj = l.zip_map_full(0.., |token, i| {
                         self.parse_bool((token?, i, name.to_str_sym()))
-                    })
-                    .collect::<Result<Vec<_>>>()?;
-                drop(l);
-                rest.finish()?;
-                self.named_assertions
-                    .extend(conj.into_iter().map(|(b, s)| (b, UnsatCoreElt::Span(s))));
-                let res = self
-                    .core
-                    .check_sat_assuming_preserving_trail(self.named_assertions.parts().0);
-                self.set_state(res)?;
-                writeln!(self.writer, "{}", res.as_lower_str())
+                    });
+                    s.try_extend_alt(conj)?;
+                    drop(l);
+                    rest.finish()?;
+                    let iter = s.into_iter().map(|(b, s)| (b, UnsatCoreElt::Span(s)));
+                    self.named_assertions.extend(iter);
+                    let res = self
+                        .core
+                        .check_sat_assuming_preserving_trail(self.named_assertions.parts().0);
+                    self.set_state(res)?;
+                    writeln!(self.writer, "{}", res.as_lower_str());
+                    Ok(())
+                })?;
             }
             Smt2Command::Push => {
                 let n = rest.try_next_parse()?.unwrap_or(1);
