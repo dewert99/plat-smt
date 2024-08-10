@@ -1,27 +1,31 @@
 use crate::solver::BoolExp;
+use core::ops::DerefMut;
 use no_std_compat::prelude::v1::*;
 use platsat::Lit;
+use second_stack2::{with_stack_vec, StackVec};
+use stackbox::StackBox;
 use std::fmt::{Debug, Formatter};
+use std::iter;
 use std::ops::{BitAnd, BitOr};
 
 /// Either a [`Conjunction`] or a [`Disjunction`]
 #[derive(Eq, PartialEq)]
-pub struct Junction<const IS_AND: bool> {
+pub struct Junction<const IS_AND: bool, V = Vec<Lit>> {
     pub(crate) absorbing: bool,
-    pub(crate) lits: Vec<Lit>,
+    pub(crate) lits: V,
 }
 
 /// A conjunction of [`BoolExp`]s (a collection of [`BoolExp`] combined with `and`)
 ///
 /// See [`Solver::collapse_bool`](crate::solver::Solver::collapse_bool)
 /// to reduces a [`Conjunction`] to a [`BoolExp`]
-pub type Conjunction = Junction<true>;
+pub type Conjunction<V = Vec<Lit>> = Junction<true, V>;
 
 /// A disjunction of [`BoolExp`]s (a collection of [`BoolExp`] combined with `or`)
 ///
 /// See [`Solver::collapse_bool`](crate::solver::Solver::collapse_bool)
 /// to reduces a [`Conjunction`] to a [`BoolExp`]
-pub type Disjunction = Junction<false>;
+pub type Disjunction<V = Vec<Lit>> = Junction<false, V>;
 
 impl<const IS_AND: bool> Default for Junction<IS_AND> {
     fn default() -> Self {
@@ -48,7 +52,7 @@ impl<const IS_AND: bool> Debug for Junction<IS_AND> {
     }
 }
 
-impl<const IS_AND: bool> Extend<BoolExp> for Junction<IS_AND> {
+impl<const IS_AND: bool, V: Extend<Lit>> Extend<BoolExp> for Junction<IS_AND, V> {
     fn extend<T: IntoIterator<Item = BoolExp>>(&mut self, iter: T) {
         if !self.absorbing {
             self.lits.extend(
@@ -69,6 +73,28 @@ impl<const IS_AND: bool> Extend<BoolExp> for Junction<IS_AND> {
     }
 }
 
+impl<const IS_AND: bool, V: Extend<Lit>> Junction<IS_AND, V> {
+    pub fn try_extend<T: IntoIterator<Item = Result<BoolExp, E>>, E>(
+        &mut self,
+        iter: T,
+    ) -> Result<(), E> {
+        let mut r = Ok(());
+        self.extend(iter.into_iter().map_while(|x| match x {
+            Ok(x) => Some(x),
+            Err(e) => {
+                r = Err(e);
+                None
+            }
+        }));
+        r?;
+        Ok(())
+    }
+
+    pub fn push(&mut self, b: BoolExp) {
+        self.extend(iter::once(b))
+    }
+}
+
 impl<const IS_AND: bool> FromIterator<BoolExp> for Junction<IS_AND> {
     fn from_iter<T: IntoIterator<Item = BoolExp>>(iter: T) -> Self {
         let mut res = Self::default();
@@ -78,10 +104,6 @@ impl<const IS_AND: bool> FromIterator<BoolExp> for Junction<IS_AND> {
 }
 
 impl<const IS_AND: bool> Junction<IS_AND> {
-    pub fn push(&mut self, b: BoolExp) {
-        self.extend([b])
-    }
-
     pub fn clear(&mut self) {
         self.lits.clear();
         self.absorbing = false;
@@ -119,6 +141,46 @@ impl BitOr<BoolExp> for Disjunction {
     fn bitor(mut self, rhs: BoolExp) -> Self::Output {
         self.push(rhs);
         self
+    }
+}
+
+pub fn with_stack_conjunction<R>(f: impl FnOnce(Conjunction<StackVec<Lit>>) -> R) -> R {
+    with_stack_vec(|lits| {
+        f(Junction {
+            lits,
+            absorbing: false,
+        })
+    })
+}
+
+pub fn with_stack_disjunction<R>(f: impl FnOnce(Disjunction<StackVec<Lit>>) -> R) -> R {
+    with_stack_vec(|lits| {
+        f(Junction {
+            lits,
+            absorbing: false,
+        })
+    })
+}
+
+pub trait IntoSlice<T> {
+    type Res: DerefMut<Target = [T]>;
+
+    fn into_slice(self) -> Self::Res;
+}
+
+impl<T> IntoSlice<T> for Vec<T> {
+    type Res = Self;
+
+    fn into_slice(self) -> Self::Res {
+        self
+    }
+}
+
+impl<'a, T: 'a> IntoSlice<T> for StackVec<'a, T> {
+    type Res = StackBox<'a, [T]>;
+
+    fn into_slice(self) -> Self::Res {
+        self.into_slice()
     }
 }
 

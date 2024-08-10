@@ -23,6 +23,6 @@ use intern::Symbol;
 pub use full_buf_read::FullBufRead;
 pub use intern::Sort;
 #[doc(inline)]
-pub use junction::{Conjunction, Disjunction};
+pub use junction::{Conjunction, Disjunction, with_stack_conjunction, with_stack_disjunction};
 pub use parser::interp_smt2;
 pub use solver::{BLit, BoolExp, Exp, SolveResult, Solver};

@@ -30,9 +30,4 @@ impl<S: SolverInterface> BufferedSolver<S> {
             .extend(self.solver.assumptions().last().map(|x| !*x));
         self.solver.add_clause_reuse(&mut self.buffer);
     }
-
-    pub fn add_clause_reuse_lv(&mut self, clause: &mut Vec<Lit>) {
-        clause.extend(self.solver.assumptions().last().map(|x| !*x));
-        self.solver.add_clause_reuse(clause);
-    }
 }

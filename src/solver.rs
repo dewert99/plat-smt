@@ -13,9 +13,8 @@ use no_std_compat::prelude::v1::*;
 use perfect_derive::perfect_derive;
 use plat_egg::Id;
 use platsat::{lbool, Callbacks, Lit, SolverInterface, SolverOpts, Var};
-use std::borrow::BorrowMut;
 use std::fmt::{Debug, Formatter};
-use std::mem;
+use std::{iter, mem};
 use std::ops::{BitXor, Deref, Not};
 
 #[derive(Default)]
@@ -253,8 +252,8 @@ impl Solver {
     }
 
     #[inline]
-    fn andor_reuse(&mut self, exps: &mut Vec<BLit>, is_and: bool) -> BLit {
-        if let [exp] = &**exps {
+    fn andor_reuse(&mut self, exps: &mut [BLit], is_and: bool) -> BLit {
+        if let [exp] = &*exps {
             return *exp;
         }
         let fresh = self.fresh();
@@ -264,8 +263,8 @@ impl Solver {
                 .add_clause([*lit ^ !is_and, Lit::new(fresh, !is_and)]);
             *lit = *lit ^ is_and;
         }
-        exps.push(Lit::new(fresh, is_and));
-        self.sat.add_clause_reuse_lv(exps);
+        let ext = iter::once(Lit::new(fresh, is_and));
+        self.sat.add_clause(exps.iter().copied().chain(ext));
         res
     }
 
@@ -274,18 +273,16 @@ impl Solver {
     /// To reuse memory you can pass mutable reference instead of an owned value
     /// Doing this will leave `j` in an unspecified state, so it should be
     /// [`clear`](Junction::clear)ed before it is used again
-    pub fn collapse_bool<const IS_AND: bool>(
+    pub fn collapse_bool<const IS_AND: bool, V: IntoSlice<Lit>>(
         &mut self,
-        mut j: impl BorrowMut<Junction<IS_AND>> + Debug,
+        j: Junction<IS_AND, V>,
     ) -> BoolExp {
-        let j = j.borrow_mut();
-        debug!("{j:?} was collapsed to ...");
+        let lits = &mut * j.lits.into_slice();
         let res = match j.absorbing {
             true => BoolExp::Const(!IS_AND),
-            false if j.lits.is_empty() => BoolExp::Const(IS_AND),
-            false => BoolExp::Unknown(self.andor_reuse(&mut j.lits, IS_AND)),
+            false if lits.is_empty() => BoolExp::Const(IS_AND),
+            false => BoolExp::Unknown(self.andor_reuse(lits, IS_AND)),
         };
-        debug!("... {res}");
         res
     }
 

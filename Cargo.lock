@@ -431,6 +431,7 @@ dependencies = [
  "rustc-hash",
  "second-stack2",
  "smallvec",
+ "stackbox",
  "thiserror-no-std",
  "walkdir",
 ]

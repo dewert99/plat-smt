@@ -4,7 +4,7 @@ use crate::full_buf_read::FullBufRead;
 use crate::intern::{
     DisplayInterned, InternInfo, Sort, Symbol, WithIntern, BOOL_SORT, BOOL_SYM, FALSE_SYM, TRUE_SYM,
 };
-use crate::junction::{Conjunction, Disjunction};
+use crate::junction::{with_stack_conjunction, with_stack_disjunction};
 use crate::parser::Error::*;
 use crate::parser_core::{ParseError, SexpParser, SexpToken, SpanRange};
 use crate::solver::{BoolExp, Exp, SolveResult, Solver, UnsatCoreConjunction};
@@ -549,36 +549,37 @@ impl ExpParser for BaseExpParser {
         f: ExpKind,
         mut rest: CountingParser<R>,
     ) -> Result<Exp> {
-        let res = match f {
+        match f {
             ExpKind::Let => unreachable!(),
             ExpKind::Not => {
                 let x = p.parse_bool(rest.next_full()?)?;
                 rest.finish()?;
-                (!x).into()
+                Ok((!x).into())
             }
-            ExpKind::And => {
+            ExpKind::And => with_stack_conjunction(|mut conj| {
                 let mut iter = rest.map_full(|token| p.parse_bool(token?));
-                let conj = iter.by_ref().collect::<Result<Conjunction>>()?;
+                conj.try_extend(iter.by_ref())?;
                 iter.try_for_each(|x| x.map(drop))?;
                 drop(iter);
-                p.core.collapse_bool(conj).into()
-            }
-            ExpKind::Or => {
+                Ok(p.core.collapse_bool(conj).into())
+            }),
+            ExpKind::Or => with_stack_disjunction(|mut disj| {
                 let mut iter = rest.map_full(|token| p.parse_bool(token?));
-                let disj = iter.by_ref().collect::<Result<Disjunction>>()?;
+                disj.try_extend(iter.by_ref())?;
                 iter.try_for_each(|x| x.map(drop))?;
                 drop(iter);
-                p.core.collapse_bool(disj).into()
-            }
-            ExpKind::Imp => {
+                Ok(p.core.collapse_bool(disj).into())
+            }),
+            ExpKind::Imp => with_stack_disjunction(|mut res| {
                 let mut last = p.parse_bool(rest.next_full()?)?;
                 let not_last = rest.map_full(|token| {
                     let item = p.parse_bool(token?)?;
-                    Ok(!std::mem::replace(&mut last, item))
+                    Result::Ok(!std::mem::replace(&mut last, item))
                 });
-                let res = not_last.collect::<Result<Disjunction>>()? | last;
-                p.core.collapse_bool(res).into()
-            }
+                res.try_extend(not_last)?;
+                res.push(last);
+                Ok(p.core.collapse_bool(res).into())
+            }),
             ExpKind::Xor => {
                 let mut res = BoolExp::FALSE;
                 rest.map_full(|token| {
@@ -587,44 +588,42 @@ impl ExpParser for BaseExpParser {
                     Ok(())
                 })
                 .collect::<Result<()>>()?;
-                res.into()
+                Ok(res.into())
             }
-            ExpKind::Eq => {
+            ExpKind::Eq => with_stack_conjunction(|mut conj| {
                 let exp1 = p.parse_exp(rest.next()?)?;
                 let (id1, sort1) = p.core.id_sort(exp1);
-                let conj = rest
-                    .map_full(|x| {
-                        let id2 = p.parse_id(x?, sort1)?;
-                        Ok(p.core.raw_eq(id1, id2))
-                    })
-                    .collect::<Result<Conjunction>>()?;
-                p.core.collapse_bool(conj).into()
-            }
-            ExpKind::Distinct => {
+                conj.try_extend(rest.map_full(|x| {
+                    let id2 = p.parse_id(x?, sort1)?;
+                    Result::Ok(p.core.raw_eq(id1, id2))
+                }))?;
+                Ok(p.core.collapse_bool(conj).into())
+            }),
+            ExpKind::Distinct => with_stack_vec(|mut s| {
                 let exp1 = p.parse_exp(rest.next()?)?;
                 let (id1, sort1) = p.core.id_sort(exp1);
-                with_stack_vec(|mut s| {
-                    let iter = rest.map_full(|x| p.parse_id(x?, sort1));
-                    let ids = [Ok(id1)].into_iter().chain(iter);
-                    s.try_extend_alt(ids)?;
-                    let conj: Conjunction = pairwise_sym(&s.into_slice())
-                        .map(|(&id1, &id2)| !p.core.raw_eq(id1, id2))
-                        .collect();
-                    Result::Ok(p.core.collapse_bool(conj).into())
-                })?
-            }
+                let iter = rest.map_full(|x| p.parse_id(x?, sort1));
+                let ids = [Ok(id1)].into_iter().chain(iter);
+                s.try_extend_alt(ids)?;
+                with_stack_conjunction(|mut conj| {
+                    conj.extend(
+                        pairwise_sym(&s.into_slice()).map(|(&id1, &id2)| !p.core.raw_eq(id1, id2)),
+                    );
+                    Ok(p.core.collapse_bool(conj).into())
+                })
+            }),
             ExpKind::Ite | ExpKind::If => {
                 let i = p.parse_bool(rest.next_full()?)?;
                 let t = p.parse_exp(rest.next()?)?;
                 let e = p.parse_exp(rest.next()?)?;
                 rest.finish()?;
                 let err_m = |(left, right)| IteSortMismatch { left, right };
-                p.core.ite(i, t, e).map_err(err_m)?
+                p.core.ite(i, t, e).map_err(err_m)
             }
             ExpKind::Annot => {
                 let exp = p.parse_exp(rest.next()?)?;
                 p.parse_annot_after_exp(exp, rest)?;
-                exp
+                Ok(exp)
             }
             ExpKind::Unknown(f) => {
                 // Uninterpreted function
@@ -637,16 +636,15 @@ impl ExpParser for BaseExpParser {
                             children.push(p.parse_id(rest.next_full()?, sort)?)
                         }
                         rest.finish()?;
-                        p.core.sorted_fn(f, children, sig.ret)
+                        Ok(p.core.sorted_fn(f, children, sig.ret))
                     }
                     Bound::Const(c) => {
                         rest.finish()?;
-                        p.core.canonize(c)
+                        Ok(p.core.canonize(c))
                     }
                 }
             }
-        };
-        Ok(res)
+        }
     }
 }
 
