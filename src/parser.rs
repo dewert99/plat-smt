@@ -737,7 +737,7 @@ impl ExpParser for AssertExpParser {
                     p.parse_assert(rest.next_full()?, neg, false)?;
                     // since we asserted exp ^ neg, exp will always equal !neg as long as the
                     // problem is satisfiable
-                    p.parse_annot_after_exp(BoolExp::Const(!neg).into(), rest)?;
+                    p.parse_annot_after_exp(BoolExp::from_bool(!neg).into(), rest)?;
                 }
             }
             (_, neg) => {

@@ -53,16 +53,16 @@ impl<const IS_AND: bool> Extend<BoolExp> for Junction<IS_AND> {
         if !self.absorbing {
             self.lits.extend(
                 iter.into_iter()
-                    .take_while(|x| match x {
-                        BoolExp::Const(x) if *x != IS_AND => {
+                    .take_while(|x| match x.to_lit() {
+                        Err(x) if x != IS_AND => {
                             self.absorbing = true;
                             false
                         }
                         _ => true,
                     })
-                    .filter_map(|x| match x {
-                        BoolExp::Const(_) => None,
-                        BoolExp::Unknown(lit) => Some(lit),
+                    .filter_map(|x| match x.to_lit() {
+                        Err(_) => None,
+                        Ok(lit) => Some(lit),
                     }),
             );
         }
