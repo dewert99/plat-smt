@@ -1,3 +1,4 @@
+use core::convert::Infallible;
 use core::fmt::{Debug, Display, Formatter};
 use no_std_compat::prelude::v1::*;
 
@@ -29,26 +30,32 @@ macro_rules! format_args2 {
 
 pub(crate) use format_args2;
 
-pub(crate) struct Parenthesized<'a, I>(I, &'a str);
-impl<'a, I: Iterator + Clone> Display for Parenthesized<'a, I>
+pub(crate) struct Parenthesized<'a, H, I>(Option<H>, I, &'a str);
+impl<'a, H: Display, I: Iterator + Clone> Display for Parenthesized<'a, H, I>
 where
     I::Item: Display,
 {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
-        let mut iter = self.0.clone();
+        let mut iter = self.1.clone();
         write!(f, "(")?;
-        if let Some(x) = iter.next() {
+        if let Some(x) = &self.0 {
+            write!(f, "{x}")?;
+        } else if let Some(x) = iter.next() {
             write!(f, "{x}")?;
         }
         for x in iter {
-            write!(f, "{}{x}", self.1)?;
+            write!(f, "{}{x}", self.2)?;
         }
         write!(f, ")")
     }
 }
 
-pub(crate) fn parenthesized<I: IntoIterator>(iter: I, sep: &str) -> Parenthesized<'_, I::IntoIter> {
-    Parenthesized(iter.into_iter(), sep)
+pub(crate) fn parenthesized<I: IntoIterator>(iter: I, sep: &str) -> Parenthesized<'_, Infallible, I::IntoIter> {
+    Parenthesized(None, iter.into_iter(), sep)
+}
+
+pub(crate) fn display_sexp<H, I: IntoIterator>(head: H, iter: I) -> Parenthesized<'static, H, I::IntoIter> {
+    Parenthesized(Some(head), iter.into_iter(), " ")
 }
 
 macro_rules! display_debug {

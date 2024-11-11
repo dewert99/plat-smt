@@ -1,0 +1,12 @@
+; Minimized from incremental/QF_UF/2018-Goel-hwbench/QF_UF_brp2.2.prop2_ab_min_max.smt2
+(set-logic QF_UF)
+(declare-fun a () Bool)
+(declare-fun b () Bool)
+(declare-fun c () Bool)
+(declare-fun d () Bool)
+(declare-fun e () Bool)
+(declare-fun f () Bool)
+(assert (= e (and d a)))
+(assert (= e (not b)))
+(assert (= f (and b c)))
+(check-sat)
