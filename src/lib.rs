@@ -17,6 +17,7 @@ mod solver;
 mod sp_insert_map;
 mod theory;
 mod util;
+mod exp;
 
 use intern::Symbol;
 
@@ -25,4 +26,5 @@ pub use intern::Sort;
 #[doc(inline)]
 pub use junction::{Conjunction, Disjunction};
 pub use parser::interp_smt2;
-pub use solver::{BLit, BoolExp, Exp, SolveResult, Solver};
+pub use solver::{BLit, SolveResult, Solver};
+pub use exp::{Exp, BoolExp};

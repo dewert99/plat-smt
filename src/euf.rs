@@ -1,7 +1,7 @@
 use crate::egraph::{children, Children, EGraph, Op, PushInfo as EGPushInfo, SymbolLang, EQ_OP};
 use crate::explain::{EqIds, Justification};
 use crate::intern::{Sort, SymbolInfo, FALSE_SYM, TRUE_SYM};
-use crate::solver::{BoolExp, Exp, UExp};
+use crate::exp::{BoolExp, Exp, UExp};
 use crate::theory::{IncrementalWrapper, Theory};
 use crate::util::{format_args2, minmax, Bind, DebugIter, DefaultHashBuilder};
 use crate::Symbol;
@@ -80,7 +80,7 @@ impl EClass {
     fn to_exp(&self, id: Id) -> Exp {
         match self {
             EClass::Bool(b) => b.to_exp().into(),
-            EClass::Uninterpreted(s) => UExp { id, sort: *s }.into(),
+            EClass::Uninterpreted(s) => UExp::new(id, *s).into(),
             EClass::Singleton => unreachable!(),
         }
     }
