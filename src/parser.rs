@@ -1,4 +1,3 @@
-use crate::egraph::Children;
 use crate::euf::{FunctionAssignment};
 use crate::full_buf_read::FullBufRead;
 use crate::intern::*;
@@ -11,7 +10,6 @@ use crate::util::{format_args2, parenthesized, powi, DefaultHashBuilder};
 use crate::{Exp, BoolExp, HasSort};
 use core::fmt::Arguments;
 use hashbrown::HashMap;
-use log::debug;
 use no_std_compat::prelude::v1::*;
 use smallvec::SmallVec;
 use std::fmt::Formatter;
@@ -668,7 +666,7 @@ impl<W: Write> Parser<W> {
                 let params = l.map(|x| self.parse_sort(x?)).collect::<Result<Vec<_>>>()?;
                 self.create_sort(name, &params)
             }
-            _ => return Err(InvalidSort),
+            _ => Err(InvalidSort),
         }
     }
 
@@ -949,12 +947,8 @@ impl<W: Write> Parser<W> {
                 drop(l);
                 let ret = self.parse_sort(rest.next()?)?;
                 rest.finish()?;
-                if args.is_empty() {
-                    self.declare_const(name, ret)?;
-                } else {
-                    let fn_sort = FnSort::new(args, ret);
-                    self.insert_bound(name, Bound::Fn(fn_sort))?;
-                }
+                let fn_sort = FnSort::new(args, ret);
+                self.insert_bound(name, Bound::Fn(fn_sort))?;
             }
             Smt2Command::DeclareConst => {
                 let name = self.parse_fresh_binder(rest.next()?)?;
@@ -1085,16 +1079,7 @@ impl<W: Write> Parser<W> {
     }
 
     fn declare_const(&mut self, name: Symbol, ret: Sort) -> Result<()> {
-        let exp = if ret == self.core.bool_sort() {
-            self.core.fresh_bool().into()
-        } else {
-            self.core.sorted_fn(name, Children::new(), ret)
-        };
-        debug!(
-            "{} is bound to {exp:?}",
-            name.with_intern(&self.core.intern)
-        );
-        self.insert_bound(name, Bound::Const(exp))
+        self.insert_bound(name, Bound::Fn(FnSort::new([].into_iter().collect(), ret)))
     }
 
     fn parse_command_token<R: FullBufRead>(&mut self, t: SexpToken<R>) -> Result<()> {
