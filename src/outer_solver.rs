@@ -3,7 +3,6 @@ use crate::intern::*;
 use crate::util::{extend_result, pairwise_sym, DefaultHashBuilder};
 use crate::{util, BoolExp, Conjunction, Disjunction, Exp, HasSort, Solver, Sort};
 use alloc::vec::Vec;
-use core::ops::{Deref, DerefMut};
 use hashbrown::hash_map::{Entry, HashMap};
 use log::{debug, info};
 use plat_egg::Id;
@@ -99,7 +98,7 @@ struct Frame {
 /// # use plat_smt::intern::{BOOL_SORT, EQ_SYM, FALSE_SYM, NOT_SYM, TRUE_SYM};
 /// # use plat_smt::outer_solver::{StartExpCtx::*, OuterSolver, Bound, FnSort};
 /// # let mut solver = OuterSolver::default();
-/// let f_sym = solver.intern.symbols.intern("f");
+/// let f_sym = solver.intern_mut().symbols.intern("f");
 /// solver.define(f_sym, Bound::Fn(FnSort::new([BOOL_SORT, BOOL_SORT].into_iter().collect(), BOOL_SORT))).ok().unwrap();
 /// ```
 ///
@@ -108,9 +107,9 @@ struct Frame {
 /// # use plat_smt::intern::{BOOL_SORT, EQ_SYM, FALSE_SYM, NOT_SYM, TRUE_SYM};
 /// # use plat_smt::outer_solver::{StartExpCtx::*, OuterSolver, Bound, FnSort};
 /// # let mut solver = OuterSolver::default();
-/// # let f_sym = solver.intern.symbols.intern("f");
+/// # let f_sym = solver.intern_mut().symbols.intern("f");
 /// # solver.define(f_sym, Bound::Fn(FnSort::new([BOOL_SORT, BOOL_SORT].into_iter().collect(), BOOL_SORT))).ok().unwrap();
-/// let x_sym = solver.intern.symbols.intern("x");
+/// let x_sym = solver.intern_mut().symbols.intern("x");
 /// solver.start_exp(NOT_SYM, None, Assert);
 /// // this is an independent expression not a child of `not` so we need it to be exact
 /// solver.start_exp(f_sym, None, Exact);
@@ -137,9 +136,9 @@ struct Frame {
 /// # use plat_smt::intern::{BOOL_SORT, EQ_SYM, FALSE_SYM, NOT_SYM, TRUE_SYM};
 /// # use plat_smt::outer_solver::{StartExpCtx::*, OuterSolver, Bound, FnSort};
 /// # let mut solver = OuterSolver::default();
-/// # let f_sym = solver.intern.symbols.intern("f");
+/// # let f_sym = solver.intern_mut().symbols.intern("f");
 /// # solver.define(f_sym, Bound::Fn(FnSort::new([BOOL_SORT, BOOL_SORT].into_iter().collect(), BOOL_SORT))).ok().unwrap();
-/// let x_sym = solver.intern.symbols.intern("x");
+/// let x_sym = solver.intern_mut().symbols.intern("x");
 /// solver.start_exp(NOT_SYM, None, Assert);
 /// solver.start_exp(f_sym, None, Opt);
 /// // even though this is a child of f, it may be used in other places so we use Exact
@@ -450,12 +449,12 @@ impl OuterSolver {
                 info!(
                     "{} => {} in ctx {ctx:?}",
                     util::display_sexp(
-                        f.with_intern(&self.intern),
+                        f.with_intern(&self.intern()),
                         self.exp_stack[stack_len as usize..]
                             .iter()
-                            .map(|x| x.with_intern(&self.intern)),
+                            .map(|x| x.with_intern(&self.intern())),
                     ),
-                    x.with_intern(&self.intern)
+                    x.with_intern(&self.intern())
                 );
                 self.exp_stack.truncate(stack_len as usize);
                 if self.stack.is_empty() {
@@ -482,7 +481,7 @@ impl OuterSolver {
         impl Iterator<Item = (Symbol, BoundDefinition<FunctionAssignment!['_]>)>,
     ) {
         let mut syms: Vec<_> = self.defined_symbols().collect();
-        syms.sort_unstable_by_key(|sym| self.intern.symbols.resolve(*sym));
+        syms.sort_unstable_by_key(|sym| self.intern().symbols.resolve(*sym));
         let (function_info, inner) = self.inner.function_info();
         let bound = &self.bound;
         let iter = syms.into_iter().map(move |sym| {
@@ -505,25 +504,27 @@ impl OuterSolver {
         self.bound
             .insert(FALSE_SYM, Bound::Const(BoolExp::FALSE.into()));
     }
+
+    pub fn solver(&self) -> &Solver {
+        &self.inner
+    }
+
+    pub fn solver_mut(&mut self) -> &mut Solver {
+        &mut self.inner
+    }
+
+    pub fn intern(&self) -> &InternInfo {
+        &self.inner.intern
+    }
+
+    pub fn intern_mut(&mut self) -> &mut InternInfo {
+        &mut self.inner.intern
+    }
 }
 
 pub enum BoundDefinition<'a, F> {
     Const(Exp),
     Fn(&'a FnSort, F),
-}
-
-impl Deref for OuterSolver {
-    type Target = Solver;
-
-    fn deref(&self) -> &Self::Target {
-        &self.inner
-    }
-}
-
-impl DerefMut for OuterSolver {
-    fn deref_mut(&mut self) -> &mut Self::Target {
-        &mut self.inner
-    }
 }
 
 #[derive(Debug)]

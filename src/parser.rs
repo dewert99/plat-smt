@@ -474,7 +474,7 @@ impl<W: Write> Parser<W> {
         let SexpToken::Symbol(s) = rest.next()? else {
             return Err(InvalidExp);
         };
-        let s = self.core.intern.symbols.intern(s);
+        let s = self.core.intern_mut().symbols.intern(s);
         let sort = self.parse_sort(rest.next()?)?;
         rest.finish()?;
         Ok((s, sort))
@@ -488,7 +488,7 @@ impl<W: Write> Parser<W> {
     ) -> Result<Exp> {
         match token {
             SexpToken::Symbol(s) => {
-                let s = self.core.intern.symbols.intern(s);
+                let s = self.core.intern_mut().symbols.intern(s);
                 self.core
                     .start_exp(s, None, context);
                 self.core.end_exp(independent).map_err(|(s, e)| AddSexp(s.into(), e))
@@ -500,7 +500,7 @@ impl<W: Write> Parser<W> {
             SexpToken::List(mut l) => {
                 let status = match l.next().ok_or(InvalidExp)?? {
                     SexpToken::Symbol("as") => None,
-                    SexpToken::Symbol(s) => Some((self.core.intern.symbols.intern(s), None)),
+                    SexpToken::Symbol(s) => Some((self.core.intern_mut().symbols.intern(s), None)),
                     SexpToken::List(mut l2) => {
                         if matches!(l2.next().ok_or(InvalidExp)??, SexpToken::Symbol("as")) {
                             let (s, sort) = self.handle_as(l2)?;
@@ -526,7 +526,7 @@ impl<W: Write> Parser<W> {
         match token {
             SexpToken::List(mut l) => {
                 let sym = match l.next().ok_or(InvalidBinding)?? {
-                    SexpToken::Symbol(s) => self.core.intern.symbols.intern(s),
+                    SexpToken::Symbol(s) => self.core.intern_mut().symbols.intern(s),
                     _ => return Err(InvalidBinding),
                 };
                 let exp = self.parse_exp(l.next().ok_or(InvalidBinding)??, StartExpCtx::Exact, true)?;
@@ -545,12 +545,12 @@ impl<W: Write> Parser<W> {
             return Err(InvalidAnnot);
         };
         if k != "named" {
-            return Err(InvalidAnnotAttr(self.core.intern.symbols.intern(k)));
+            return Err(InvalidAnnotAttr(self.core.intern_mut().symbols.intern(k)));
         }
         let SexpToken::Symbol(s) = rest.next()? else {
             return Err(InvalidAnnot);
         };
-        let s = self.core.intern.symbols.intern(s);
+        let s = self.core.intern_mut().symbols.intern(s);
         rest.finish()?;
         if self.currently_defining == Some(s) {
             return Err(NamedShadow(s));
@@ -648,19 +648,19 @@ impl<W: Write> Parser<W> {
             Some(x) if *x as usize > len => Err(AddSexp(name.into(), ExtraArgument {
                 expected: *x as usize,
             })),
-            _ => Ok(self.core.intern.sorts.intern(name, params)),
+            _ => Ok(self.core.intern_mut().sorts.intern(name, params)),
         }
     }
 
     fn parse_sort<R: FullBufRead>(&mut self, token: SexpToken<R>) -> Result<Sort> {
         match token {
             SexpToken::Symbol(s) => {
-                let s = self.core.intern.symbols.intern(s);
+                let s = self.core.intern_mut().symbols.intern(s);
                 self.create_sort(s, &[])
             }
             SexpToken::List(mut l) => {
                 let name = match l.next().ok_or(InvalidSort)?? {
-                    SexpToken::Symbol(s) => self.core.intern.symbols.intern(s),
+                    SexpToken::Symbol(s) => self.core.intern_mut().symbols.intern(s),
                     _ => return Err(InvalidSort),
                 };
                 let params = l.map(|x| self.parse_sort(x?)).collect::<Result<Vec<_>>>()?;
@@ -672,7 +672,7 @@ impl<W: Write> Parser<W> {
 
     fn reset_state(&mut self) {
         if !matches!(self.state, State::Base) {
-            self.core.pop_model();
+            self.core.solver_mut().pop_model();
             self.named_assertions.pop_to(self.old_named_assertions);
             self.state = State::Base;
         }
@@ -712,7 +712,7 @@ impl<W: Write> Parser<W> {
                 let SexpToken::Symbol(name) = rest.next()? else {
                     return Err(InvalidCommand);
                 };
-                let name = self.core.intern.symbols.intern(name);
+                let name = self.core.intern_mut().symbols.intern(name);
                 if self.declared_sorts.contains_key(&name) {
                     return Err(Shadow(name));
                 }
@@ -733,10 +733,10 @@ impl<W: Write> Parser<W> {
                     .named_assertions
                     .parts()
                     .1
-                    .core(self.core.last_unsat_core())
+                    .core(self.core.solver().last_unsat_core())
                     .map(|x| match *x {
                         UnsatCoreElt::Span(s) => rest.p.lookup_range(s),
-                        UnsatCoreElt::Sym(s) => self.core.intern.symbols.resolve(s),
+                        UnsatCoreElt::Sym(s) => self.core.intern().symbols.resolve(s),
                     });
                 if let Some(x) = iter.next() {
                     write!(self.writer, "{x}");
@@ -764,7 +764,7 @@ impl<W: Write> Parser<W> {
                 write!(self.writer, "(");
                 let mut iter = values.into_iter().map(|(exp, span)| {
                     (
-                        exp.with_intern(&self.core.intern),
+                        exp.with_intern(&self.core.intern()),
                         rest.p.lookup_range(span),
                     )
                 });
@@ -833,7 +833,7 @@ impl<W: Write> Parser<W> {
                 }
             }
             Smt2Command::SetOption => {
-                let mut prev_option = self.core.sat_options();
+                let mut prev_option = self.core.solver_mut().sat_options();
                 match SetOption::from_parser(rest)? {
                     SetOption::VarDecay(x) => prev_option.var_decay = x,
                     SetOption::ClauseDecay(x) => prev_option.clause_decay = x,
@@ -873,7 +873,7 @@ impl<W: Write> Parser<W> {
                         return Ok(());
                     }
                 }
-                self.core
+                self.core.solver_mut()
                     .set_sat_options(prev_option)
                     .map_err(|()| InvalidOption)?;
             }
@@ -913,7 +913,7 @@ impl<W: Write> Parser<W> {
         let SexpToken::Symbol(name) = token else {
             return Err(InvalidCommand);
         };
-        let name = self.core.intern.symbols.intern(name);
+        let name = self.core.intern_mut().symbols.intern(name);
         Ok(name)
     }
 
@@ -973,13 +973,13 @@ impl<W: Write> Parser<W> {
             }
             Smt2Command::Assert => {
                 let exp = self.parse_exp(rest.next()?, StartExpCtx::Assert, true)?;
-                self.core.assert(exp.as_bool().ok_or(AssertBool(exp.sort()))?);
+                self.core.solver_mut().assert(exp.as_bool().ok_or(AssertBool(exp.sort()))?);
                 rest.finish()?;
             }
             Smt2Command::CheckSat => {
                 self.old_named_assertions = self.named_assertions.push();
                 let res = self
-                    .core
+                    .core.solver_mut()
                     .check_sat_assuming_preserving_trail(self.named_assertions.parts().0);
                 self.set_state(res)?;
                 writeln!(self.writer, "{}", res.as_lower_str())
@@ -1000,6 +1000,7 @@ impl<W: Write> Parser<W> {
                     .extend(conj.into_iter().map(|(b, s)| (b, UnsatCoreElt::Span(s))));
                 let res = self
                     .core
+                    .solver_mut()
                     .check_sat_assuming_preserving_trail(self.named_assertions.parts().0);
                 self.set_state(res)?;
                 writeln!(self.writer, "{}", res.as_lower_str())
@@ -1007,7 +1008,7 @@ impl<W: Write> Parser<W> {
             Smt2Command::Push => {
                 let n = rest.try_next_parse()?.unwrap_or(1);
                 for _ in 0..n {
-                    self.core.push();
+                    self.core.solver_mut().push();
                     let info = PushInfo {
                         bound: self.global_stack.len() as u32,
                         sort: self.sort_stack.len() as u32,
@@ -1021,7 +1022,7 @@ impl<W: Write> Parser<W> {
                 if n > self.push_info.len() {
                     self.clear()
                 } else if n > 0 {
-                    self.core.pop(n);
+                    self.core.solver_mut().pop(n);
                     let mut info = None;
                     for _ in 0..n {
                         info = self.push_info.pop();
@@ -1043,7 +1044,7 @@ impl<W: Write> Parser<W> {
             Smt2Command::Reset => {
                 rest.finish()?;
                 self.clear();
-                self.core.set_sat_options(Default::default()).unwrap();
+                self.core.solver_mut().set_sat_options(Default::default()).unwrap();
                 self.options = Default::default();
                 self.writer.print_success = self.options.print_success;
             }
@@ -1086,7 +1087,7 @@ impl<W: Write> Parser<W> {
         match t {
             SexpToken::List(mut l) => {
                 let s = match l.next().ok_or(InvalidCommand)?? {
-                    SexpToken::Symbol(s) => Smt2Command::from_str(s, &mut self.core.intern),
+                    SexpToken::Symbol(s) => Smt2Command::from_str(s, self.core.intern_mut()),
                     _ => return Err(InvalidCommand),
                 };
                 self.parse_command(s, l)
@@ -1100,7 +1101,7 @@ impl<W: Write> Parser<W> {
             data,
             self,
             |this, t| this.parse_command_token(t?),
-            |this, e| writeln!(err, "{}", e.map(|x| x.with_intern(&this.core.intern))).unwrap(),
+            |this, e| writeln!(err, "{}", e.map(|x| x.with_intern(&this.core.intern()))).unwrap(),
         );
     }
 }
