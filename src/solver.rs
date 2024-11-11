@@ -58,10 +58,7 @@ impl DisplayInterned for UExp {
 /// implementations produces [`Conjunction`]s and [`Disjunction`]s respectively.
 /// [`Solver::collapse_bool`] can be used to collapse these types back into [`BoolExp`]s
 #[derive(Copy, Clone, Eq, PartialEq)]
-pub enum BoolExp {
-    Const(bool),
-    Unknown(BLit),
-}
+pub struct BoolExp(Lit);
 
 impl From<BoolExp> for Exp {
     fn from(value: BoolExp) -> Self {
@@ -86,18 +83,37 @@ impl Exp {
 }
 
 impl BoolExp {
-    pub const TRUE: BoolExp = BoolExp::Const(true);
-    pub const FALSE: BoolExp = BoolExp::Const(false);
+    pub const TRUE: BoolExp = BoolExp(Lit::UNDEF);
+    pub const FALSE: BoolExp = BoolExp(Lit::ERROR);
+
+    pub fn unknown(lit: Lit) -> Self {
+        debug_assert!(lit.var() != Var::UNDEF);
+        BoolExp(lit)
+    }
+
+    pub fn from_bool(b: bool) -> Self {
+        BoolExp(Lit::new(Var::UNDEF, b))
+    }
+
+    /// ```
+    /// use plat_smt::BoolExp;
+    /// assert_eq!(BoolExp::TRUE.to_lit(), Err(true));
+    /// assert_eq!(BoolExp::FALSE.to_lit(), Err(false));
+    /// ```
+    pub fn to_lit(self) -> Result<Lit, bool> {
+        if self.0.var() == Var::UNDEF {
+            Err(self.0.sign())
+        } else {
+            Ok(self.0)
+        }
+    }
 }
 
 impl Not for BoolExp {
     type Output = BoolExp;
 
     fn not(self) -> Self::Output {
-        match self {
-            BoolExp::Const(b) => BoolExp::Const(!b),
-            BoolExp::Unknown(lit) => BoolExp::Unknown(!lit),
-        }
+        BoolExp(!self.0)
     }
 }
 
@@ -105,18 +121,15 @@ impl BitXor<bool> for BoolExp {
     type Output = BoolExp;
 
     fn bitxor(self, rhs: bool) -> Self::Output {
-        match self {
-            BoolExp::Const(b) => BoolExp::Const(b ^ rhs),
-            BoolExp::Unknown(lit) => BoolExp::Unknown(lit ^ rhs),
-        }
+        BoolExp(self.0 ^ rhs)
     }
 }
 
 impl Debug for BoolExp {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
-        match self {
-            BoolExp::Const(c) => Debug::fmt(c, f),
-            BoolExp::Unknown(l) => {
+        match self.to_lit() {
+            Err(c) => Debug::fmt(&c, f),
+            Ok(l) => {
                 if l.sign() {
                     write!(f, "@Bool_{:?}", l.var())
                 } else {
@@ -163,8 +176,8 @@ pub trait ExpLike: Into<Exp> + Copy + Debug + DisplayInterned {
 
 impl ExpLike for BoolExp {
     fn canonize(self, solver: &Solver) -> Self {
-        match self {
-            BoolExp::Unknown(x) => {
+        match self.to_lit() {
+            Ok(x) => {
                 let val = solver.sat.raw_value_lit(x);
                 if val == lbool::TRUE {
                     BoolExp::TRUE
@@ -249,7 +262,7 @@ impl Solver {
 
     /// Generate a fresh boolean variable
     pub fn fresh_bool(&mut self) -> BoolExp {
-        BoolExp::Unknown(Lit::new(self.fresh(), true))
+        BoolExp::unknown(Lit::new(self.fresh(), true))
     }
 
     #[inline]
@@ -281,28 +294,26 @@ impl Solver {
         let j = j.borrow_mut();
         debug!("{j:?} was collapsed to ...");
         let res = match j.absorbing {
-            true => BoolExp::Const(!IS_AND),
-            false if j.lits.is_empty() => BoolExp::Const(IS_AND),
-            false => BoolExp::Unknown(self.andor_reuse(&mut j.lits, IS_AND)),
+            true => BoolExp::from_bool(!IS_AND),
+            false if j.lits.is_empty() => BoolExp::from_bool(IS_AND),
+            false => BoolExp::unknown(self.andor_reuse(&mut j.lits, IS_AND)),
         };
         debug!("... {res}");
         res
     }
 
     pub fn xor(&mut self, b1: BoolExp, b2: BoolExp) -> BoolExp {
-        let res = match (b1, b2) {
-            (BoolExp::Const(b1), BoolExp::Const(b2)) => BoolExp::Const(b1 ^ b2),
-            (BoolExp::Const(b), BoolExp::Unknown(l)) | (BoolExp::Unknown(l), BoolExp::Const(b)) => {
-                BoolExp::Unknown(l ^ b)
-            }
-            (BoolExp::Unknown(l1), BoolExp::Unknown(l2)) => {
+        let res = match (b1.to_lit(), b2.to_lit()) {
+            (_, Err(b2)) => b1 ^ b2,
+            (Err(b1), _) => b2 ^ b1,
+            (Ok(l1), Ok(l2)) => {
                 let fresh = self.fresh();
                 let fresh = Lit::new(fresh, true);
                 self.sat.add_clause([l1, l2, !fresh]);
                 self.sat.add_clause([!l1, l2, fresh]);
                 self.sat.add_clause([l1, !l2, fresh]);
                 self.sat.add_clause([!l1, !l2, !fresh]);
-                BoolExp::Unknown(fresh)
+                BoolExp::unknown(fresh)
             }
         };
         debug!("{res} = (xor {b1} {b2})");
@@ -381,11 +392,11 @@ impl Solver {
             let fresh = self.sorted_fn(sym, Children::new(), s);
             let fresh_id = self.id_sort(fresh).0;
             let eqt = self.raw_eq(fresh_id, t);
-            let BoolExp::Unknown(eqt) = eqt else {
+            let Ok(eqt) = eqt.to_lit() else {
                 unreachable!()
             };
             let eqe = self.raw_eq(fresh_id, e);
-            let BoolExp::Unknown(eqe) = eqe else {
+            let Ok(eqe) = eqe.to_lit() else {
                 unreachable!()
             };
             self.sat.add_clause([!i, eqt]);
@@ -405,10 +416,10 @@ impl Solver {
         if tsort != esort {
             return Err((tsort, esort));
         }
-        let res = match i {
-            BoolExp::TRUE => t,
-            BoolExp::FALSE => e,
-            BoolExp::Unknown(u) => {
+        let res = match i.to_lit() {
+            Err(true) => t,
+            Err(false) => e,
+            Ok(u) => {
                 let tid = self.id_sort(t).0;
                 let eid = self.id_sort(e).0;
                 self.raw_ite(u, tid, eid, tsort)
@@ -449,12 +460,12 @@ impl Solver {
     /// Assert that `b` is true
     pub fn assert(&mut self, b: BoolExp) {
         debug!("assert {b}");
-        match b {
-            BoolExp::TRUE => {}
-            BoolExp::Unknown(l) => {
+        match b.to_lit() {
+            Err(true) => {}
+            Ok(l) => {
                 self.sat.add_clause([l]);
             }
-            BoolExp::FALSE => {
+            Err(false) => {
                 self.sat.add_clause([]);
             }
         }
@@ -518,7 +529,7 @@ impl Solver {
         self.sat.assumptions_mut().push(Lit::new(var, true));
         // Run propagations at this level and then return Unsat because of the assumptions
         let res =
-            self.check_sat_assuming_preserving_trail(&Junction::from_iter([BoolExp::Unknown(
+            self.check_sat_assuming_preserving_trail(&Junction::from_iter([BoolExp::unknown(
                 Lit::new(var, false),
             )]));
         debug_assert!(matches!(res, SolveResult::Unsat));
@@ -567,11 +578,13 @@ impl Solver {
     /// See [`sorted_fn`](Solver::sorted_fn) and  [`bool_fn`](Solver::bool_fn)
     pub fn id_sort(&mut self, exp: Exp) -> (Id, Sort) {
         match exp.0 {
-            EExp::Bool(BoolExp::Const(b)) => (self.euf.id_for_bool(b), BOOL_SORT),
-            EExp::Bool(BoolExp::Unknown(lit)) => (
-                self.euf.id_for_lit(lit, &mut self.intern.symbols),
-                BOOL_SORT,
-            ),
+            EExp::Bool(b) => match b.to_lit() {
+                Err(b) => (self.euf.id_for_bool(b), BOOL_SORT),
+                Ok(lit) => (
+                    self.euf.id_for_lit(lit, &mut self.intern.symbols),
+                    BOOL_SORT,
+                ),
+            },
             EExp::Uninterpreted(u) => (u.id, u.sort),
         }
     }
@@ -621,14 +634,14 @@ pub(crate) struct UnsatCoreInfo<T> {
 
 impl<T> UnsatCoreInfo<T> {
     fn add(&mut self, bool_exp: BoolExp, t: T) {
-        match bool_exp {
-            BoolExp::FALSE => {
+        match bool_exp.to_lit() {
+            Err(false) => {
                 if self.false_by.is_none() {
                     self.false_by = Some(t)
                 }
             }
-            BoolExp::TRUE => {}
-            BoolExp::Unknown(l) => {
+            Err(true) => {}
+            Ok(l) => {
                 if self.false_by.is_none() {
                     self.data.insert(!l, t);
                 }

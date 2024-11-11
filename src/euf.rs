@@ -61,8 +61,8 @@ pub(crate) enum BoolClass {
 impl BoolClass {
     fn to_exp(&self) -> BoolExp {
         match self {
-            BoolClass::Const(b) => BoolExp::Const(*b),
-            BoolClass::Unknown(v) => BoolExp::Unknown(v[0]),
+            BoolClass::Const(b) => BoolExp::from_bool(*b),
+            BoolClass::Unknown(v) => BoolExp::unknown(v[0]),
         }
     }
 }
@@ -543,7 +543,7 @@ impl EUFInner {
         });
         if let Some(l) = added {
             self.add_id_to_lit(id, l);
-            (BoolExp::Unknown(l), true, id)
+            (BoolExp::unknown(l), true, id)
         } else {
             let b = match &*self.egraph[id] {
                 EClass::Uninterpreted(x) => {
@@ -579,7 +579,7 @@ impl EUFInner {
         let (res, added, id) =
             self.add_bool_node(EQ_OP, Children::from_slice(&[id1, id2]), fresh_lit);
         if added {
-            if let BoolExp::Unknown(l) = res {
+            if let Ok(l) = res.to_lit() {
                 let ids = minmax(id1, id2);
                 self.eq_id_log.push(ids);
                 self.eq_ids.insert(ids, l);
