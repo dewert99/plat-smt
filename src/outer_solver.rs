@@ -5,7 +5,7 @@ use crate::{util, BoolExp, Conjunction, Disjunction, Exp, HasSort, Solver, Sort}
 use alloc::vec::Vec;
 use core::ops::{Deref, DerefMut};
 use hashbrown::hash_map::{Entry, HashMap};
-use log::info;
+use log::{debug, info};
 use plat_egg::Id;
 use smallvec::SmallVec;
 use std::{iter, mem};
@@ -180,6 +180,24 @@ impl Default for OuterSolver {
 }
 
 impl OuterSolver {
+    fn optimize_binding(&mut self, name: Symbol, b: Bound) -> Bound {
+        match b {
+            Bound::Fn(FnSort { args, ret }) if args.is_empty() => {
+                let exp = if ret == BOOL_SORT {
+                    self.inner.fresh_bool().into()
+                } else {
+                    self.inner.sorted_fn(name, Children::new(), ret)
+                };
+                debug!(
+                    "{} is bound to {exp:?}",
+                    name.with_intern(&self.inner.intern)
+                );
+                Bound::Const(exp)
+            }
+            _ => b
+        }
+    }
+
     /// Defines `symbol` to be `bound`,
     /// if it is already defined the old definition replaced is returned
     ///
@@ -197,6 +215,7 @@ impl OuterSolver {
     /// Defines `symbol` to be `bound`,
     /// if it is already defined the old definition kept and Err(`bound`)
     pub fn define(&mut self, symbol: Symbol, bound: Bound) -> Result<(), Bound> {
+        let bound = self.optimize_binding(symbol, bound);
         let entry = self.bound.entry(symbol);
         match entry {
             Entry::Occupied(_) => Err(bound),
@@ -251,7 +270,6 @@ impl OuterSolver {
     ///
     /// see [`OuterSolver`] documentation for more details
     pub fn start_exp(&mut self, f: Symbol, expected: Option<Sort>, ctx: StartExpCtx) {
-
         let ctx = match (ctx, self.stack.last()) {
             (StartExpCtx::Assert, None) => ExprContext::Assert { negate: false },
             (StartExpCtx::Exact, _) => ExprContext::Exact,
