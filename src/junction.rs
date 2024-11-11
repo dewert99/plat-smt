@@ -1,4 +1,4 @@
-use crate::solver::BoolExp;
+use crate::BoolExp;
 use no_std_compat::prelude::v1::*;
 use platsat::Lit;
 use std::fmt::{Debug, Formatter};
@@ -126,7 +126,7 @@ impl BitOr<BoolExp> for Disjunction {
 mod test {
     use super::*;
     use crate::junction::{Conjunction, Disjunction, Junction};
-    use crate::solver::BoolExp;
+    use crate::BoolExp;
 
     fn build<const IS_AND: bool>(i: impl Copy + IntoIterator<Item = BoolExp>) -> Junction<IS_AND> {
         let v1: Junction<IS_AND> = Junction::from_iter(i);

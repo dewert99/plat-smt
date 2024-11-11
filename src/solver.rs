@@ -16,7 +16,8 @@ use platsat::{lbool, Callbacks, Lit, SolverInterface, SolverOpts, Var};
 use std::borrow::BorrowMut;
 use std::fmt::{Debug, Formatter};
 use std::mem;
-use std::ops::{BitXor, Deref, Not};
+use std::ops::Deref;
+use crate::exp::*;
 
 #[derive(Default)]
 struct NoCb;
@@ -36,92 +37,9 @@ pub struct Solver {
     pub intern: InternInfo,
 }
 
-#[derive(Copy, Clone, Debug)]
-pub(crate) struct UExp {
-    pub(crate) id: Id,
-    pub(crate) sort: Sort,
-}
-
 impl DisplayInterned for UExp {
     fn fmt(&self, i: &InternInfo, f: &mut Formatter<'_>) -> std::fmt::Result {
-        write!(f, "(as @v{:?} {})", self.id, self.sort.with_intern(i))
-    }
-}
-
-/// A boolean sorted expression within a [`Solver`]
-///
-/// It can be upcast to a dynamically sorted [`Exp`] using [`into`](Into::into), and downcast using
-/// [`Exp::as_bool`].
-///
-/// It also implements [`BitAnd`](core::ops::BitAnd), [`BitOr`](core::ops::BitOr), and
-/// [`Not`], but its [`BitAnd`](core::ops::BitAnd) and [`BitOr`](core::ops::BitOr)
-/// implementations produces [`Conjunction`]s and [`Disjunction`]s respectively.
-/// [`Solver::collapse_bool`] can be used to collapse these types back into [`BoolExp`]s
-#[derive(Copy, Clone, Eq, PartialEq)]
-pub struct BoolExp(Lit);
-
-impl From<BoolExp> for Exp {
-    fn from(value: BoolExp) -> Self {
-        Exp(EExp::Bool(value))
-    }
-}
-
-impl From<UExp> for Exp {
-    fn from(value: UExp) -> Self {
-        Exp(EExp::Uninterpreted(value))
-    }
-}
-
-impl Exp {
-    /// Try to downcast into a [`BoolExp`]
-    pub fn as_bool(self) -> Option<BoolExp> {
-        match self.0 {
-            EExp::Bool(b) => Some(b),
-            _ => None,
-        }
-    }
-}
-
-impl BoolExp {
-    pub const TRUE: BoolExp = BoolExp(Lit::UNDEF);
-    pub const FALSE: BoolExp = BoolExp(Lit::ERROR);
-
-    pub fn unknown(lit: Lit) -> Self {
-        debug_assert!(lit.var() != Var::UNDEF);
-        BoolExp(lit)
-    }
-
-    pub fn from_bool(b: bool) -> Self {
-        BoolExp(Lit::new(Var::UNDEF, b))
-    }
-
-    /// ```
-    /// use plat_smt::BoolExp;
-    /// assert_eq!(BoolExp::TRUE.to_lit(), Err(true));
-    /// assert_eq!(BoolExp::FALSE.to_lit(), Err(false));
-    /// ```
-    pub fn to_lit(self) -> Result<Lit, bool> {
-        if self.0.var() == Var::UNDEF {
-            Err(self.0.sign())
-        } else {
-            Ok(self.0)
-        }
-    }
-}
-
-impl Not for BoolExp {
-    type Output = BoolExp;
-
-    fn not(self) -> Self::Output {
-        BoolExp(!self.0)
-    }
-}
-
-impl BitXor<bool> for BoolExp {
-    type Output = BoolExp;
-
-    fn bitxor(self, rhs: bool) -> Self::Output {
-        BoolExp(self.0 ^ rhs)
+        write!(f, "(as @v{:?} {})", self.id(), self.sort().with_intern(i))
     }
 }
 
@@ -142,28 +60,18 @@ impl Debug for BoolExp {
 
 display_debug!(BoolExp);
 
-#[derive(Copy, Clone)]
-enum EExp {
-    Bool(BoolExp),
-    Uninterpreted(UExp),
-}
-
-/// A dynamically sorted expression within a [`Solver`]
-#[derive(Copy, Clone)]
-pub struct Exp(EExp);
-
 impl Debug for Exp {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
-        match &self.0 {
-            EExp::Bool(b) => Debug::fmt(b, f),
-            EExp::Uninterpreted(u) => Debug::fmt(u, f),
+        match self.expand() {
+            EExp::Bool(b) => Debug::fmt(&b, f),
+            EExp::Uninterpreted(u) => Debug::fmt(&u, f),
         }
     }
 }
 
 impl DisplayInterned for Exp {
     fn fmt(&self, i: &InternInfo, f: &mut Formatter<'_>) -> std::fmt::Result {
-        match &self.0 {
+        match &self.expand() {
             EExp::Bool(b) => DisplayInterned::fmt(b, i, f),
             EExp::Uninterpreted(u) => DisplayInterned::fmt(u, i, f),
         }
@@ -194,16 +102,13 @@ impl ExpLike for BoolExp {
 
 impl ExpLike for UExp {
     fn canonize(self, solver: &Solver) -> Self {
-        UExp {
-            id: solver.euf.find(self.id),
-            sort: self.sort,
-        }
+        self.with_id(solver.euf.find(self.id()))
     }
 }
 
 impl ExpLike for Exp {
     fn canonize(self, solver: &Solver) -> Self {
-        match self.0 {
+        match self.expand() {
             EExp::Bool(b) => b.canonize(solver).into(),
             EExp::Uninterpreted(u) => u.canonize(solver).into(),
         }
@@ -443,7 +348,7 @@ impl Solver {
             let id = self
                 .euf
                 .add_uninterpreted_node(fn_name.into(), children, sort);
-            UExp { id, sort }.into()
+            UExp::new(id, sort).into()
         }
     }
 
@@ -577,7 +482,7 @@ impl Solver {
     ///
     /// See [`sorted_fn`](Solver::sorted_fn) and  [`bool_fn`](Solver::bool_fn)
     pub fn id_sort(&mut self, exp: Exp) -> (Id, Sort) {
-        match exp.0 {
+        match exp.expand() {
             EExp::Bool(b) => match b.to_lit() {
                 Err(b) => (self.euf.id_for_bool(b), BOOL_SORT),
                 Ok(lit) => (
@@ -585,15 +490,15 @@ impl Solver {
                     BOOL_SORT,
                 ),
             },
-            EExp::Uninterpreted(u) => (u.id, u.sort),
+            EExp::Uninterpreted(u) => (u.id(), u.sort()),
         }
     }
 
     /// Returns the sort of `exp`
     pub fn sort(&self, exp: Exp) -> Sort {
-        match exp.0 {
+        match exp.expand() {
             EExp::Bool(_) => BOOL_SORT,
-            EExp::Uninterpreted(u) => u.sort,
+            EExp::Uninterpreted(u) => u.sort(),
         }
     }
 

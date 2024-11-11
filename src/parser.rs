@@ -7,8 +7,9 @@ use crate::intern::{
 use crate::junction::{Conjunction, Disjunction};
 use crate::parser::Error::*;
 use crate::parser_core::{ParseError, SexpParser, SexpToken, SpanRange};
-use crate::solver::{BoolExp, Exp, SolveResult, Solver, UnsatCoreConjunction};
+use crate::solver::{SolveResult, Solver, UnsatCoreConjunction};
 use crate::util::{format_args2, parenthesized, powi, Bind, DefaultHashBuilder};
+use crate::{Exp, BoolExp};
 use core::fmt::Arguments;
 use hashbrown::HashMap;
 use log::debug;
