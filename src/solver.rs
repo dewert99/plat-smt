@@ -172,19 +172,23 @@ impl Solver {
     }
 
     #[inline]
-    fn andor_reuse(&mut self, exps: &mut Vec<BLit>, is_and: bool) -> BLit {
+    fn andor_reuse(&mut self, exps: &mut Vec<BLit>, is_and: bool, approx: Option<bool>) -> BLit {
         if let [exp] = &**exps {
             return *exp;
         }
         let fresh = self.fresh();
         let res = Lit::new(fresh, true);
         for lit in &mut *exps {
-            self.sat
-                .add_clause([*lit ^ !is_and, Lit::new(fresh, !is_and)]);
+            if approx != Some(is_and) {
+                self.sat
+                    .add_clause([*lit ^ !is_and, Lit::new(fresh, !is_and)]);
+            }
             *lit = *lit ^ is_and;
         }
-        exps.push(Lit::new(fresh, is_and));
-        self.sat.add_clause_reuse_lv(exps);
+        if approx != Some(!is_and) {
+            exps.push(Lit::new(fresh, is_and));
+            self.sat.add_clause_reuse_lv(exps);
+        }
         res
     }
 
@@ -193,12 +197,39 @@ impl Solver {
     /// To reuse memory you can pass mutable reference instead of an owned value
     /// Doing this will leave `j` in an unspecified state, so it should be
     /// [`clear`](Junction::clear)ed before it is used again
-    pub fn collapse_bool<const IS_AND: bool>(&mut self, mut j: Junction<IS_AND>) -> BoolExp {
-        debug!("{j:?} was collapsed to ...");
+    pub fn collapse_bool<const IS_AND: bool>(&mut self, j: Junction<IS_AND>) -> BoolExp {
+        self.collapse_bool_approx(j, None)
+    }
+
+    /// Similar to [`collapse_bool`](Self::collapse_bool), but returns a boolean that approximates `j`
+    ///
+    /// If `approx` is `None` the returned boolean exactly matches `j` (same behaviour as  [`collapse_bool`](Self::collapse_bool))
+    ///
+    /// If `approx` is `Some(false)` the returned boolean is assigned false whenever `j` is assigned to false,
+    /// and when `j` is assigned to true the returned boolean is either also true or unconstrained
+    ///
+    /// If `approx` is `Some(true)` the returned boolean is assigned true whenever `j` is assigned to true,
+    /// and when `j` is assigned to false the returned boolean is either also false or unconstrained
+    ///
+    /// ## Example
+    /// ```
+    /// use plat_smt::Solver;
+    /// use plat_smt::SolveResult;
+    /// let mut s = Solver::default();
+    /// let a = s.fresh_bool();
+    /// let b = s.fresh_bool();
+    /// let ab = s.collapse_bool_approx(a | b, Some(false));
+    /// s.assert(!a);
+    /// s.assert(!b);
+    /// s.assert(ab);
+    /// assert!(matches!(s.check_sat(), SolveResult::Unsat))
+    /// ```
+    pub fn collapse_bool_approx<const IS_AND: bool>(&mut self, mut j: Junction<IS_AND>, approx: Option<bool>) -> BoolExp {
+        debug!("{j:?} (approx: {approx:?}) was collapsed to ...");
         let res = match j.absorbing {
             true => BoolExp::from_bool(!IS_AND),
             false if j.lits.is_empty() => BoolExp::from_bool(IS_AND),
-            false => BoolExp::unknown(self.andor_reuse(&mut j.lits, IS_AND)),
+            false => BoolExp::unknown(self.andor_reuse(&mut j.lits, IS_AND, approx)),
         };
         self.junction_buf = j.lits;
         debug!("... {res}");
