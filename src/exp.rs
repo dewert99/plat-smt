@@ -1,8 +1,8 @@
-use std::ops::{BitXor, Not};
-use plat_egg::Id;
 use crate::intern::{Sort, BOOL_SORT};
+use plat_egg::Id;
 use platsat::clause::{Lit, Var};
 use platsat::intmap::AsIndex;
+use std::ops::{BitXor, Not};
 
 pub trait HasSort {
     fn sort(self) -> Sort;
@@ -21,11 +21,14 @@ impl UExp {
 
     pub fn new(id: Id, sort: Sort) -> Self {
         assert_ne!(sort, BOOL_SORT);
-        UExp{id, sort}
+        UExp { id, sort }
     }
 
     pub fn with_id(self, new_id: Id) -> Self {
-        UExp{id: new_id, sort: self.sort}
+        UExp {
+            id: new_id,
+            sort: self.sort,
+        }
     }
 }
 
@@ -49,14 +52,20 @@ pub struct BoolExp(Lit);
 
 impl From<BoolExp> for Exp {
     fn from(value: BoolExp) -> Self {
-        Exp{sort: BOOL_SORT, data: value.to_u32()}
+        Exp {
+            sort: BOOL_SORT,
+            data: value.to_u32(),
+        }
     }
 }
 
 impl From<UExp> for Exp {
     fn from(value: UExp) -> Self {
         let data: usize = value.id.into();
-        Exp{sort: value.sort, data: data as u32}
+        Exp {
+            sort: value.sort,
+            data: data as u32,
+        }
     }
 }
 
@@ -73,12 +82,14 @@ pub(crate) enum EExp {
 }
 
 impl Exp {
-
     pub(crate) fn expand(self) -> EExp {
         if self.sort == BOOL_SORT {
             EExp::Bool(BoolExp::from_u32(self.data))
         } else {
-            EExp::Uninterpreted(UExp{sort: self.sort, id: Id::from(self.data as usize)})
+            EExp::Uninterpreted(UExp {
+                sort: self.sort,
+                id: Id::from(self.data as usize),
+            })
         }
     }
 

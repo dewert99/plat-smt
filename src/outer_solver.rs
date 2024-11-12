@@ -51,7 +51,19 @@ enum ExprContext {
     #[default]
     Exact,
     /// assert the s-expression xor negate (the returned `Exp` will be !negate) `
-    Assert { negate: bool },
+    Assert {
+        negate: bool,
+    },
+    Approx(bool),
+}
+
+impl ExprContext {
+    fn to_approx(self) -> Option<bool> {
+        match self {
+            ExprContext::Assert { negate: a } | ExprContext::Approx(a) => Some(a),
+            _ => None,
+        }
+    }
 }
 
 /// Requirements on the `Exp` created
@@ -193,7 +205,7 @@ impl OuterSolver {
                 );
                 Bound::Const(exp)
             }
-            _ => b
+            _ => b,
         }
     }
 
@@ -254,8 +266,10 @@ impl OuterSolver {
         use ExprContext::*;
         match (parent, f) {
             (Assert { negate }, NOT_SYM) => Assert { negate: !negate },
+            (Approx(a), NOT_SYM) => Approx(!a),
             (Assert { negate: false }, AND_SYM) => Assert { negate: false },
             (Assert { negate: true }, OR_SYM) => Assert { negate: true },
+            (Assert { negate: a } | Approx(a), AND_SYM | OR_SYM) => Approx(a),
             _ => Exact,
         }
     }
@@ -312,7 +326,7 @@ impl OuterSolver {
                 } else {
                     let mut c: Conjunction = self.inner.new_junction();
                     extend_result(&mut c, children.map(|x| x.as_bool()))?;
-                    self.inner.collapse_bool(c).into()
+                    self.inner.collapse_bool_approx(c, ctx.to_approx()).into()
                 }
             }
             OR_SYM => {
@@ -327,7 +341,7 @@ impl OuterSolver {
                 } else {
                     let mut d: Disjunction = self.inner.new_junction();
                     extend_result(&mut d, children.map(|x| x.as_bool()))?;
-                    self.inner.collapse_bool(d).into()
+                    self.inner.collapse_bool_approx(d, ctx.to_approx()).into()
                 }
             }
             NOT_SYM => {

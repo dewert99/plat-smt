@@ -1,7 +1,7 @@
 use crate::egraph::{children, Children, EGraph, Op, PushInfo as EGPushInfo, SymbolLang, EQ_OP};
+use crate::exp::{BoolExp, Exp, UExp};
 use crate::explain::{EqIds, Justification};
 use crate::intern::{Sort, SymbolInfo, FALSE_SYM, TRUE_SYM};
-use crate::exp::{BoolExp, Exp, UExp};
 use crate::theory::{IncrementalWrapper, Theory};
 use crate::util::{format_args2, minmax, Bind, DebugIter, DefaultHashBuilder};
 use crate::Symbol;
@@ -10,9 +10,9 @@ use log::{debug, trace};
 use no_std_compat::prelude::v1::*;
 use perfect_derive::perfect_derive;
 use plat_egg::{raw::Language, Id};
-use platsat::{LMap};
-use platsat::{Lit, TheoryArg, Var};
 use platsat::core::ExplainTheoryArg;
+use platsat::LMap;
+use platsat::{Lit, TheoryArg, Var};
 use std::fmt::{Debug, Formatter};
 use std::mem;
 use std::ops::Range;
@@ -264,7 +264,12 @@ impl Theory<EUF> for EUFInner {
         this.rebuild(acts)
     }
 
-    fn explain_propagation<'a>(this: &'a mut EUF, p: Lit, _: &mut ExplainTheoryArg, is_final: bool) -> &'a [Lit] {
+    fn explain_propagation<'a>(
+        this: &'a mut EUF,
+        p: Lit,
+        _: &mut ExplainTheoryArg,
+        is_final: bool,
+    ) -> &'a [Lit] {
         if let Some(id) = this.lit_ids[p].expand() {
             let const_bool = this.id_for_bool(true);
             if this.egraph.find(id) == this.egraph.find(const_bool) {
@@ -274,9 +279,7 @@ impl Theory<EUF> for EUFInner {
                     debug!("EUF explains {p:?} with clause {res:?}");
                     return &this.explanation;
                 } else {
-                    trace!(
-                        "Skipping incorrect explanation {p:?} with clause {res:?}"
-                    );
+                    trace!("Skipping incorrect explanation {p:?} with clause {res:?}");
                 }
             }
         }
@@ -386,7 +389,13 @@ impl<'a, S: 'a + SatSolver> MergeContext<'a, S> {
 }
 
 impl EUF {
-    fn explain(&mut self, id1: Id, id2: Id, prepend: Option<Lit>, is_final: bool) -> (&[Lit], bool) {
+    fn explain(
+        &mut self,
+        id1: Id,
+        id2: Id,
+        prepend: Option<Lit>,
+        is_final: bool,
+    ) -> (&[Lit], bool) {
         let base_unions = self
             .base_marker()
             .map(|x| x.egraph.number_of_unions())
@@ -419,7 +428,7 @@ impl EUF {
 
     fn conflict(&mut self, acts: &mut impl SatSolver, id1: Id, id2: Id) {
         self.explanation.clear();
-        let (res, add_clause) = self.explain(id1, id2, None,false);
+        let (res, add_clause) = self.explain(id1, id2, None, false);
         debug!("EUF Conflict by {res:?}");
         acts.raise_conflict(res, add_clause)
     }
@@ -711,10 +720,7 @@ impl<L> FunctionInfo<L> {
 }
 
 impl<'a, L: Language> FullFunctionInfo<'a, L> {
-    pub fn get(
-        &self,
-        s: Symbol,
-    ) -> FunctionAssignment!['a] {
+    pub fn get(&self, s: Symbol) -> FunctionAssignment!['a] {
         let iter = self.base.get(s).iter();
         let id_to_exp = |id: &Id| self.euf.id_to_exp(*id);
         iter.map(move |(node, id)| (node.children().iter().map(id_to_exp), id_to_exp(id)))

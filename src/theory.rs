@@ -3,9 +3,9 @@ use hashbrown::HashMap;
 use log::{debug, trace};
 use no_std_compat::prelude::v1::*;
 use perfect_derive::perfect_derive;
+use platsat::core::ExplainTheoryArg;
 use platsat::theory::Theory as BatTheory;
 use platsat::{Lit, TheoryArg};
-use platsat::core::ExplainTheoryArg;
 use std::cmp::max;
 use std::ops::{Deref, DerefMut};
 
@@ -52,7 +52,12 @@ pub trait Theory<Wrap: DerefMut<Target = Self>> {
     /// this function to explain the propagations.
     ///
     /// Set [`BatTheory::explain_propagation_clause`] for explanation details
-    fn explain_propagation<'a>(this: &'a mut Wrap, p: Lit, acts: &mut ExplainTheoryArg, is_final: bool) -> &'a [Lit];
+    fn explain_propagation<'a>(
+        this: &'a mut Wrap,
+        p: Lit,
+        acts: &mut ExplainTheoryArg,
+        is_final: bool,
+    ) -> &'a [Lit];
 
     /// Sets the "assertion_level_lit"
     ///

@@ -1,13 +1,13 @@
-use crate::euf::{FunctionAssignment};
+use crate::euf::FunctionAssignment;
 use crate::full_buf_read::FullBufRead;
 use crate::intern::*;
 use crate::outer_solver::AddSexpError::*;
-use crate::outer_solver::{AddSexpError, Bound, BoundDefinition, StartExpCtx, FnSort, OuterSolver};
+use crate::outer_solver::{AddSexpError, Bound, BoundDefinition, FnSort, OuterSolver, StartExpCtx};
 use crate::parser::Error::*;
 use crate::parser_core::{ParseError, SexpParser, SexpToken, SpanRange};
 use crate::solver::{SolveResult, UnsatCoreConjunction};
 use crate::util::{format_args2, parenthesized, powi, DefaultHashBuilder};
-use crate::{Exp, BoolExp, HasSort};
+use crate::{BoolExp, Exp, HasSort};
 use core::fmt::Arguments;
 use hashbrown::HashMap;
 use no_std_compat::prelude::v1::*;
@@ -489,9 +489,10 @@ impl<W: Write> Parser<W> {
         match token {
             SexpToken::Symbol(s) => {
                 let s = self.core.intern_mut().symbols.intern(s);
+                self.core.start_exp(s, None, context);
                 self.core
-                    .start_exp(s, None, context);
-                self.core.end_exp(independent).map_err(|(s, e)| AddSexp(s.into(), e))
+                    .end_exp(independent)
+                    .map_err(|(s, e)| AddSexp(s.into(), e))
             }
             SexpToken::String(_) => Err(Unsupported("strings")),
             SexpToken::Number(_) => Err(Unsupported("arithmetic")),
@@ -515,7 +516,9 @@ impl<W: Write> Parser<W> {
                     self.parse_fn_exp(s, l, sort, context, independent)
                 } else {
                     let (s, sort) = self.handle_as(l)?;
-                    SexpParser::with_empty(|l| self.parse_fn_exp(s, l, Some(sort), context, independent))
+                    SexpParser::with_empty(|l| {
+                        self.parse_fn_exp(s, l, Some(sort), context, independent)
+                    })
                 }
             }
             SexpToken::Keyword(_) => Err(InvalidExp),
@@ -529,7 +532,8 @@ impl<W: Write> Parser<W> {
                     SexpToken::Symbol(s) => self.core.intern_mut().symbols.intern(s),
                     _ => return Err(InvalidBinding),
                 };
-                let exp = self.parse_exp(l.next().ok_or(InvalidBinding)??, StartExpCtx::Exact, true)?;
+                let exp =
+                    self.parse_exp(l.next().ok_or(InvalidBinding)??, StartExpCtx::Exact, true)?;
                 Ok((sym, exp))
             }
             _ => Err(InvalidBinding),
@@ -616,9 +620,8 @@ impl<W: Write> Parser<W> {
                             self.old_named_assertions = self.named_assertions.push();
                             // don't return exp since we don't want it to be asserted
                             Ok(BoolExp::TRUE.into())
-
                         }
-                    }
+                    };
                 }
                 exp
             }
@@ -641,13 +644,19 @@ impl<W: Write> Parser<W> {
         let len = params.len();
         match self.declared_sorts.get(&name) {
             None => Err(UnboundSort(name)),
-            Some(x) if (*x as usize) < len => Err(AddSexp(name.into(), MissingArgument {
-                expected: *x as usize,
-                actual: len,
-            })),
-            Some(x) if *x as usize > len => Err(AddSexp(name.into(), ExtraArgument {
-                expected: *x as usize,
-            })),
+            Some(x) if (*x as usize) < len => Err(AddSexp(
+                name.into(),
+                MissingArgument {
+                    expected: *x as usize,
+                    actual: len,
+                },
+            )),
+            Some(x) if *x as usize > len => Err(AddSexp(
+                name.into(),
+                ExtraArgument {
+                    expected: *x as usize,
+                },
+            )),
             _ => Ok(self.core.intern_mut().sorts.intern(name, params)),
         }
     }
@@ -758,7 +767,9 @@ impl<W: Write> Parser<W> {
                     return Err(InvalidCommand);
                 };
                 let values = l
-                    .zip_map_full(iter::repeat(()), |x, ()| self.parse_exp(x?, StartExpCtx::Exact, true))
+                    .zip_map_full(iter::repeat(()), |x, ()| {
+                        self.parse_exp(x?, StartExpCtx::Exact, true)
+                    })
                     .collect::<Result<Vec<_>>>()?;
                 drop(l);
                 write!(self.writer, "(");
@@ -873,7 +884,8 @@ impl<W: Write> Parser<W> {
                         return Ok(());
                     }
                 }
-                self.core.solver_mut()
+                self.core
+                    .solver_mut()
                     .set_sat_options(prev_option)
                     .map_err(|()| InvalidOption)?;
             }
@@ -973,13 +985,16 @@ impl<W: Write> Parser<W> {
             }
             Smt2Command::Assert => {
                 let exp = self.parse_exp(rest.next()?, StartExpCtx::Assert, true)?;
-                self.core.solver_mut().assert(exp.as_bool().ok_or(AssertBool(exp.sort()))?);
+                self.core
+                    .solver_mut()
+                    .assert(exp.as_bool().ok_or(AssertBool(exp.sort()))?);
                 rest.finish()?;
             }
             Smt2Command::CheckSat => {
                 self.old_named_assertions = self.named_assertions.push();
                 let res = self
-                    .core.solver_mut()
+                    .core
+                    .solver_mut()
                     .check_sat_assuming_preserving_trail(self.named_assertions.parts().0);
                 self.set_state(res)?;
                 writeln!(self.writer, "{}", res.as_lower_str())
@@ -1044,7 +1059,10 @@ impl<W: Write> Parser<W> {
             Smt2Command::Reset => {
                 rest.finish()?;
                 self.clear();
-                self.core.solver_mut().set_sat_options(Default::default()).unwrap();
+                self.core
+                    .solver_mut()
+                    .set_sat_options(Default::default())
+                    .unwrap();
                 self.options = Default::default();
                 self.writer.print_success = self.options.print_success;
             }
