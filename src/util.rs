@@ -50,11 +50,17 @@ where
     }
 }
 
-pub(crate) fn parenthesized<I: IntoIterator>(iter: I, sep: &str) -> Parenthesized<'_, Infallible, I::IntoIter> {
+pub(crate) fn parenthesized<I: IntoIterator>(
+    iter: I,
+    sep: &str,
+) -> Parenthesized<'_, Infallible, I::IntoIter> {
     Parenthesized(None, iter.into_iter(), sep)
 }
 
-pub(crate) fn display_sexp<H, I: IntoIterator>(head: H, iter: I) -> Parenthesized<'static, H, I::IntoIter> {
+pub(crate) fn display_sexp<H, I: IntoIterator>(
+    head: H,
+    iter: I,
+) -> Parenthesized<'static, H, I::IntoIter> {
     Parenthesized(Some(head), iter.into_iter(), " ")
 }
 
@@ -128,16 +134,16 @@ fn test_powi() {
     debug_assert_eq!(powi(0.1, 5), 0.1f64.powi(5))
 }
 
-
-pub(crate) fn extend_result<T, E>(r: &mut impl Extend<T>, iter: impl Iterator<Item=Result<T, E>>) -> Result<(), E> {
+pub(crate) fn extend_result<T, E>(
+    r: &mut impl Extend<T>,
+    iter: impl Iterator<Item = Result<T, E>>,
+) -> Result<(), E> {
     let mut res = Ok(());
-    r.extend(iter.map_while(|x| {
-        match x {
-            Ok(x) => Some(x),
-            Err(e) => {
-                res = Err(e);
-                None
-            }
+    r.extend(iter.map_while(|x| match x {
+        Ok(x) => Some(x),
+        Err(e) => {
+            res = Err(e);
+            None
         }
     }));
     res

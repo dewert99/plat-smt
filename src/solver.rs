@@ -224,7 +224,11 @@ impl Solver {
     /// s.assert(ab);
     /// assert!(matches!(s.check_sat(), SolveResult::Unsat))
     /// ```
-    pub fn collapse_bool_approx<const IS_AND: bool>(&mut self, mut j: Junction<IS_AND>, approx: Option<bool>) -> BoolExp {
+    pub fn collapse_bool_approx<const IS_AND: bool>(
+        &mut self,
+        mut j: Junction<IS_AND>,
+        approx: Option<bool>,
+    ) -> BoolExp {
         debug!("{j:?} (approx: {approx:?}) was collapsed to ...");
         let res = match j.absorbing {
             true => BoolExp::from_bool(!IS_AND),

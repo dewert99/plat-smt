@@ -53,7 +53,8 @@ impl<const IS_AND: bool> Extend<BoolExp> for Junction<IS_AND> {
         if !self.absorbing {
             let mut iter = iter.into_iter();
             self.lits.extend(
-                iter.by_ref().into_iter()
+                iter.by_ref()
+                    .into_iter()
                     .take_while(|x| match x.to_lit() {
                         Err(x) if x != IS_AND => {
                             self.absorbing = true;
