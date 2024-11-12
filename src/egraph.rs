@@ -316,14 +316,13 @@ impl EGraph<EClass> {
         last_unions: usize,
         eq_ids: &mut EqIds,
     ) -> bool {
-        let mut explain = self.explain
-            .promote(
-                &self.inner,
-                res,
-                base_unions as u32,
-                last_unions as u32,
-                eq_ids,
-            );
+        let mut explain = self.explain.promote(
+            &self.inner,
+            res,
+            base_unions as u32,
+            last_unions as u32,
+            eq_ids,
+        );
         explain.explain_equivalence(id1, id2);
         explain.used_congruence()
     }

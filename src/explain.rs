@@ -198,7 +198,7 @@ pub struct Explain {
     stack: Vec<StackElem>,
     /// equalities that need to be explained as part of the current explanation
     deferred_explanations: Vec<(Id, Id)>,
-    deferred_explanations_set: HashSet<(Id, Id), DefaultHashBuilder>
+    deferred_explanations_set: HashSet<(Id, Id), DefaultHashBuilder>,
 }
 
 pub(crate) struct ExplainState<'a, X> {

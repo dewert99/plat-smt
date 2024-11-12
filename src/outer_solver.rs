@@ -51,15 +51,17 @@ enum ExprContext {
     #[default]
     Exact,
     /// assert the s-expression xor negate (the returned `Exp` will be !negate) `
-    Assert { negate: bool },
-    Approx(bool)
+    Assert {
+        negate: bool,
+    },
+    Approx(bool),
 }
 
 impl ExprContext {
     fn to_approx(self) -> Option<bool> {
         match self {
             ExprContext::Assert { negate: a } | ExprContext::Approx(a) => Some(a),
-            _ => None
+            _ => None,
         }
     }
 }
@@ -203,7 +205,7 @@ impl OuterSolver {
                 );
                 Bound::Const(exp)
             }
-            _ => b
+            _ => b,
         }
     }
 
@@ -267,7 +269,7 @@ impl OuterSolver {
             (Approx(a), NOT_SYM) => Approx(!a),
             (Assert { negate: false }, AND_SYM) => Assert { negate: false },
             (Assert { negate: true }, OR_SYM) => Assert { negate: true },
-            (Assert { negate: a} | Approx(a), AND_SYM | OR_SYM) => Approx(a),
+            (Assert { negate: a } | Approx(a), AND_SYM | OR_SYM) => Approx(a),
             _ => Exact,
         }
     }
