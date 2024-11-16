@@ -4,7 +4,7 @@ use crate::intern::*;
 use crate::outer_solver::AddSexpError::*;
 use crate::outer_solver::{AddSexpError, Bound, BoundDefinition, FnSort, OuterSolver, StartExpCtx};
 use crate::parser::Error::*;
-use crate::parser_core::{ParseError, SexpParser, SexpToken, SpanRange};
+use crate::parser_core::{ParseError, SexpParser, SexpTerminal, SexpToken, SexpVisitor, SpanRange};
 use crate::solver::{SolveResult, UnsatCoreConjunction};
 use crate::util::{format_args2, parenthesized, powi, DefaultHashBuilder};
 use crate::{BoolExp, Exp, HasSort};
@@ -159,7 +159,9 @@ trait IntFromSexp: TryFrom<u128> {}
 impl<I: IntFromSexp> FromSexp for I {
     fn from_sexp<R: FullBufRead>(sexp_token: SexpToken<R>) -> Result<Self> {
         match sexp_token {
-            SexpToken::Number(n) => Ok(n.try_into().map_err(|_| ParseError::Overflow)?),
+            SexpToken::Terminal(SexpTerminal::Number(n)) => {
+                Ok(n.try_into().map_err(|_| ParseError::Overflow)?)
+            }
             _ => Err(InvalidInt),
         }
     }
@@ -172,8 +174,10 @@ impl IntFromSexp for i32 {}
 impl FromSexp for f64 {
     fn from_sexp<R: FullBufRead>(sexp_token: SexpToken<R>) -> Result<Self> {
         match sexp_token {
-            SexpToken::Number(n) => Ok(n as f64),
-            SexpToken::Decimal(n, shift) => Ok(n as f64 * powi(0.1, shift as u32)),
+            SexpToken::Terminal(SexpTerminal::Number(n)) => Ok(n as f64),
+            SexpToken::Terminal(SexpTerminal::Decimal(n, shift)) => {
+                Ok(n as f64 * powi(0.1, shift as u32))
+            }
             _ => Err(InvalidFloat),
         }
     }
@@ -188,8 +192,8 @@ impl FromSexp for f32 {
 impl FromSexp for bool {
     fn from_sexp<R: FullBufRead>(sexp_token: SexpToken<R>) -> Result<Self> {
         match sexp_token {
-            SexpToken::Symbol("true") => Ok(true),
-            SexpToken::Symbol("false") => Ok(false),
+            SexpToken::Terminal(SexpTerminal::Symbol("true")) => Ok(true),
+            SexpToken::Terminal(SexpTerminal::Symbol("false")) => Ok(false),
             _ => Err(InvalidBool),
         }
     }
@@ -225,7 +229,7 @@ macro_rules! enum_str {
                 }
             }
 
-            fn bind<'a, R: FullBufRead>(self, p: SexpParser<'a, R>) -> CountingParser<'a, R> {
+            fn bind<'a, 'b, R: FullBufRead>(self, p: &'a mut SexpParser<'b, R>) -> CountingParser<'a, 'b, R> {
                 CountingParser::new(p, self.to_str_sym(), self.minimum_arguments())
             }
         }
@@ -275,7 +279,7 @@ macro_rules! enum_option {
                 }
 
                 let tmp = match rest.next()? {
-                    SexpToken::Keyword(s) => match s {
+                    SexpToken::Terminal(SexpTerminal::Keyword(s)) => match s {
                         $($s => Tmp::$var,)*
                         _ => return Err(InvalidOption)
                     }
@@ -378,8 +382,8 @@ impl Default for Options {
     }
 }
 
-struct CountingParser<'a, R: FullBufRead> {
-    p: SexpParser<'a, R>,
+struct CountingParser<'a, 'b, R: FullBufRead> {
+    p: &'a mut SexpParser<'b, R>,
     name: StrSym,
     actual: usize,
     minimum_expected: usize,
@@ -387,8 +391,8 @@ struct CountingParser<'a, R: FullBufRead> {
 
 type InfoToken<'a, R> = (SexpToken<'a, R>, usize, StrSym);
 
-impl<'a, R: FullBufRead> CountingParser<'a, R> {
-    fn new(p: SexpParser<'a, R>, name: StrSym, minimum_expected: usize) -> Self {
+impl<'a, 'b, R: FullBufRead> CountingParser<'a, 'b, R> {
+    fn new(p: &'a mut SexpParser<'b, R>, name: StrSym, minimum_expected: usize) -> Self {
         CountingParser {
             p,
             name,
@@ -433,7 +437,7 @@ impl<'a, R: FullBufRead> CountingParser<'a, R> {
         }
     }
 
-    fn finish(mut self) -> Result<()> {
+    fn finish(self) -> Result<()> {
         debug_assert!(self.actual >= self.minimum_expected);
         if self.p.next().is_some() {
             Err(AddSexp(
@@ -445,6 +449,159 @@ impl<'a, R: FullBufRead> CountingParser<'a, R> {
         } else {
             Ok(())
         }
+    }
+}
+
+struct ExpVisitor<'a, W: Write>(&'a mut Parser<W>, StartExpCtx, Option<Exp>);
+
+impl<'a, W: Write> ExpVisitor<'a, W> {
+    fn parse_exp_terminal(&mut self, terminal: SexpTerminal, ctx: StartExpCtx) -> Result<Exp> {
+        match terminal {
+            SexpTerminal::Symbol(s) => {
+                let s = self.0.core.intern_mut().symbols.intern(s);
+                self.0.core.start_exp(s, None, ctx);
+                self.0
+                    .core
+                    .end_exp_take()
+                    .map_err(|(s, e)| AddSexp(s.into(), e))
+            }
+            SexpTerminal::String(_) => Err(Unsupported("strings")),
+            SexpTerminal::Number(_) => Err(Unsupported("arithmetic")),
+            SexpTerminal::Decimal(_, _) => Err(Unsupported("decimal")),
+            SexpTerminal::BitVec { .. } => Err(Unsupported("bitvec")),
+            SexpTerminal::Keyword(_) => Err(InvalidExp),
+        }
+    }
+
+    fn start_exp_list<R: FullBufRead>(
+        &mut self,
+        list: &mut SexpParser<R>,
+        ctx: StartExpCtx,
+    ) -> Result<()> {
+        let status = match list.next().ok_or(InvalidExp)?? {
+            SexpToken::Terminal(SexpTerminal::Symbol("as")) => None,
+            SexpToken::Terminal(SexpTerminal::Symbol(s)) => {
+                Some((self.0.core.intern_mut().symbols.intern(s), None))
+            }
+            SexpToken::List(mut l2) => {
+                if matches!(
+                    l2.next().ok_or(InvalidExp)??,
+                    SexpToken::Terminal(SexpTerminal::Symbol("as"))
+                ) {
+                    let (s, sort) = self.0.handle_as(&mut l2)?;
+                    Some((s, Some(sort)))
+                } else {
+                    return Err(InvalidExp);
+                }
+            }
+            _ => return Err(InvalidExp),
+        };
+        if let Some((s, sort)) = status {
+            self.parse_fn_exp(s, list, sort, ctx)
+        } else {
+            let (s, sort) = self.0.handle_as(list)?;
+            SexpParser::with_empty(|mut l| self.parse_fn_exp(s, &mut l, Some(sort), ctx))
+        }
+    }
+
+    fn parse_fn_exp<R: FullBufRead>(
+        &mut self,
+        f: Symbol,
+        rest: &mut SexpParser<R>,
+        expect_res: Option<Sort>,
+        ctx: StartExpCtx,
+    ) -> Result<()> {
+        match f {
+            LET_SYM => {
+                let mut rest = CountingParser::new(rest, StrSym::Sym(f), 2);
+                let old_len = self.0.let_bound_stack.len();
+                match rest.next()? {
+                    SexpToken::List(mut l) => l
+                        .map(|token| {
+                            let (name, exp) = self.0.parse_binding(token?)?;
+                            self.0.let_bound_stack.push((name, Some(Bound::Const(exp))));
+                            Ok(())
+                        })
+                        .collect::<Result<()>>()?,
+                    _ => return Err(InvalidLet),
+                }
+                let body = rest.next()?;
+                for (name, bound) in &mut self.0.let_bound_stack[old_len..] {
+                    *bound = self.0.core.raw_define(*name, bound.take())
+                }
+                let exp = self.0.parse_exp(body, ctx)?;
+                rest.finish()?;
+                self.0.undo_let_bindings(old_len);
+                self.2 = Some(exp)
+            }
+            ANNOT_SYM => {
+                let mut rest = CountingParser::new(rest, StrSym::Sym(f), 3);
+                let mut exp = self.0.parse_exp(rest.next()?, StartExpCtx::Exact)?;
+                let name = self.0.parse_annot_after_exp(exp, rest)?;
+                if matches!(ctx, StartExpCtx::Assert) {
+                    match exp.as_bool() {
+                        None => return Err(AssertBool(exp.sort())),
+                        Some(b) => {
+                            self.0
+                                .named_assertions
+                                .extend([(b, UnsatCoreElt::Sym(name))]);
+                            self.0.old_named_assertions = self.0.named_assertions.push();
+                            // don't return exp since we don't want it to be asserted
+                            exp = BoolExp::TRUE.into()
+                        }
+                    };
+                }
+                self.2 = Some(exp);
+            }
+            _ => {
+                self.0.core.start_exp(f, expect_res, ctx);
+            }
+        };
+        Ok(())
+    }
+
+    fn end_exp_list(&mut self) -> Result<Exp> {
+        if let Some(x) = self.2.take() {
+            Ok(x)
+        } else {
+            self.0
+                .core
+                .end_exp_take()
+                .map_err(|(s, err)| AddSexp(s.into(), err))
+        }
+    }
+}
+
+impl<'a, W: Write> SexpVisitor for ExpVisitor<'a, W> {
+    type T = Exp;
+    type E = Error;
+
+    fn handle_outer_terminal(&mut self, s: SexpTerminal) -> Result<Exp> {
+        self.parse_exp_terminal(s, self.1)
+    }
+
+    fn handle_inner_terminal(&mut self, s: SexpTerminal) -> Result<()> {
+        let x = self.parse_exp_terminal(s, StartExpCtx::Opt)?;
+        self.0.core.inject_exp(x);
+        Ok(())
+    }
+
+    fn start_outer_list<R: FullBufRead>(&mut self, p: &mut SexpParser<R>) -> Result<()> {
+        self.start_exp_list(p, self.1)
+    }
+
+    fn start_inner_list<R: FullBufRead>(&mut self, p: &mut SexpParser<R>) -> Result<()> {
+        self.start_exp_list(p, StartExpCtx::Opt)
+    }
+
+    fn end_outer_list(&mut self) -> Result<Exp> {
+        self.end_exp_list()
+    }
+
+    fn end_inner_list(&mut self) -> Result<()> {
+        let x = self.end_exp_list()?;
+        self.0.core.inject_exp(x);
+        Ok(())
     }
 }
 
@@ -469,9 +626,9 @@ impl<W: Write> Parser<W> {
         res
     }
 
-    fn handle_as<R: FullBufRead>(&mut self, rest: SexpParser<R>) -> Result<(Symbol, Sort)> {
+    fn handle_as<R: FullBufRead>(&mut self, rest: &mut SexpParser<R>) -> Result<(Symbol, Sort)> {
         let mut rest = CountingParser::new(rest, StrSym::Str("as"), 2);
-        let SexpToken::Symbol(s) = rest.next()? else {
+        let SexpToken::Terminal(SexpTerminal::Symbol(s)) = rest.next()? else {
             return Err(InvalidExp);
         };
         let s = self.core.intern_mut().symbols.intern(s);
@@ -484,56 +641,20 @@ impl<W: Write> Parser<W> {
         &mut self,
         token: SexpToken<R>,
         context: StartExpCtx,
-        independent: bool,
     ) -> Result<Exp> {
-        match token {
-            SexpToken::Symbol(s) => {
-                let s = self.core.intern_mut().symbols.intern(s);
-                self.core.start_exp(s, None, context);
-                self.core
-                    .end_exp(independent)
-                    .map_err(|(s, e)| AddSexp(s.into(), e))
-            }
-            SexpToken::String(_) => Err(Unsupported("strings")),
-            SexpToken::Number(_) => Err(Unsupported("arithmetic")),
-            SexpToken::Decimal(_, _) => Err(Unsupported("decimal")),
-            SexpToken::BitVec { .. } => Err(Unsupported("bitvec")),
-            SexpToken::List(mut l) => {
-                let status = match l.next().ok_or(InvalidExp)?? {
-                    SexpToken::Symbol("as") => None,
-                    SexpToken::Symbol(s) => Some((self.core.intern_mut().symbols.intern(s), None)),
-                    SexpToken::List(mut l2) => {
-                        if matches!(l2.next().ok_or(InvalidExp)??, SexpToken::Symbol("as")) {
-                            let (s, sort) = self.handle_as(l2)?;
-                            Some((s, Some(sort)))
-                        } else {
-                            return Err(InvalidExp);
-                        }
-                    }
-                    _ => return Err(InvalidExp),
-                };
-                if let Some((s, sort)) = status {
-                    self.parse_fn_exp(s, l, sort, context, independent)
-                } else {
-                    let (s, sort) = self.handle_as(l)?;
-                    SexpParser::with_empty(|l| {
-                        self.parse_fn_exp(s, l, Some(sort), context, independent)
-                    })
-                }
-            }
-            SexpToken::Keyword(_) => Err(InvalidExp),
-        }
+        ExpVisitor(self, context, None).visit(token)
     }
 
     fn parse_binding<R: FullBufRead>(&mut self, token: SexpToken<R>) -> Result<(Symbol, Exp)> {
         match token {
             SexpToken::List(mut l) => {
                 let sym = match l.next().ok_or(InvalidBinding)?? {
-                    SexpToken::Symbol(s) => self.core.intern_mut().symbols.intern(s),
+                    SexpToken::Terminal(SexpTerminal::Symbol(s)) => {
+                        self.core.intern_mut().symbols.intern(s)
+                    }
                     _ => return Err(InvalidBinding),
                 };
-                let exp =
-                    self.parse_exp(l.next().ok_or(InvalidBinding)??, StartExpCtx::Exact, true)?;
+                let exp = self.parse_exp(l.next().ok_or(InvalidBinding)??, StartExpCtx::Exact)?;
                 Ok((sym, exp))
             }
             _ => Err(InvalidBinding),
@@ -545,13 +666,13 @@ impl<W: Write> Parser<W> {
         exp: Exp,
         mut rest: CountingParser<R>,
     ) -> Result<Symbol> {
-        let SexpToken::Keyword(k) = rest.next()? else {
+        let SexpToken::Terminal(SexpTerminal::Keyword(k)) = rest.next()? else {
             return Err(InvalidAnnot);
         };
         if k != "named" {
             return Err(InvalidAnnotAttr(self.core.intern_mut().symbols.intern(k)));
         }
-        let SexpToken::Symbol(s) = rest.next()? else {
+        let SexpToken::Terminal(SexpTerminal::Symbol(s)) = rest.next()? else {
             return Err(InvalidAnnot);
         };
         let s = self.core.intern_mut().symbols.intern(s);
@@ -577,69 +698,6 @@ impl<W: Write> Parser<W> {
         }
     }
 
-    fn parse_fn_exp<R: FullBufRead>(
-        &mut self,
-        f: Symbol,
-        mut rest: SexpParser<R>,
-        expect_res: Option<Sort>,
-        ctx: StartExpCtx,
-        independent: bool,
-    ) -> Result<Exp> {
-        let res = match f {
-            LET_SYM => {
-                let mut rest = CountingParser::new(rest, StrSym::Sym(f), 2);
-                let old_len = self.let_bound_stack.len();
-                match rest.next()? {
-                    SexpToken::List(mut l) => l
-                        .map(|token| {
-                            let (name, exp) = self.parse_binding(token?)?;
-                            self.let_bound_stack.push((name, Some(Bound::Const(exp))));
-                            Ok(())
-                        })
-                        .collect::<Result<()>>()?,
-                    _ => return Err(InvalidLet),
-                }
-                let body = rest.next()?;
-                for (name, bound) in &mut self.let_bound_stack[old_len..] {
-                    *bound = self.core.raw_define(*name, bound.take())
-                }
-                let exp = self.parse_exp(body, ctx, independent)?;
-                rest.finish()?;
-                self.undo_let_bindings(old_len);
-                exp
-            }
-            ANNOT_SYM => {
-                let mut rest = CountingParser::new(rest, StrSym::Sym(f), 3);
-                let exp = self.parse_exp(rest.next()?, StartExpCtx::Exact, independent)?;
-                let name = self.parse_annot_after_exp(exp, rest)?;
-                if matches!(ctx, StartExpCtx::Assert) {
-                    return match exp.as_bool() {
-                        None => Err(AssertBool(exp.sort())),
-                        Some(b) => {
-                            self.named_assertions.extend([(b, UnsatCoreElt::Sym(name))]);
-                            self.old_named_assertions = self.named_assertions.push();
-                            // don't return exp since we don't want it to be asserted
-                            Ok(BoolExp::TRUE.into())
-                        }
-                    };
-                }
-                exp
-            }
-            _ => {
-                self.core.start_exp(f, expect_res, ctx);
-                rest.map(|t| {
-                    self.parse_exp(t?, StartExpCtx::Opt, false)?;
-                    Ok(())
-                })
-                .collect::<Result<()>>()?;
-                self.core
-                    .end_exp(independent)
-                    .map_err(|(f, e)| AddSexp(f.into(), e))?
-            }
-        };
-        Ok(res)
-    }
-
     fn create_sort(&mut self, name: Symbol, params: &[Sort]) -> Result<Sort> {
         let len = params.len();
         match self.declared_sorts.get(&name) {
@@ -663,13 +721,15 @@ impl<W: Write> Parser<W> {
 
     fn parse_sort<R: FullBufRead>(&mut self, token: SexpToken<R>) -> Result<Sort> {
         match token {
-            SexpToken::Symbol(s) => {
+            SexpToken::Terminal(SexpTerminal::Symbol(s)) => {
                 let s = self.core.intern_mut().symbols.intern(s);
                 self.create_sort(s, &[])
             }
             SexpToken::List(mut l) => {
                 let name = match l.next().ok_or(InvalidSort)?? {
-                    SexpToken::Symbol(s) => self.core.intern_mut().symbols.intern(s),
+                    SexpToken::Terminal(SexpTerminal::Symbol(s)) => {
+                        self.core.intern_mut().symbols.intern(s)
+                    }
                     _ => return Err(InvalidSort),
                 };
                 let params = l.map(|x| self.parse_sort(x?)).collect::<Result<Vec<_>>>()?;
@@ -713,12 +773,12 @@ impl<W: Write> Parser<W> {
     fn parse_command_h<R: FullBufRead>(
         &mut self,
         name: Smt2Command,
-        rest: SexpParser<R>,
+        mut rest: SexpParser<R>,
     ) -> Result<()> {
-        let mut rest = name.bind(rest);
+        let mut rest = name.bind(&mut rest);
         match name {
             Smt2Command::DeclareSort => {
-                let SexpToken::Symbol(name) = rest.next()? else {
+                let SexpToken::Terminal(SexpTerminal::Symbol(name)) = rest.next()? else {
                     return Err(InvalidCommand);
                 };
                 let name = self.core.intern_mut().symbols.intern(name);
@@ -768,7 +828,7 @@ impl<W: Write> Parser<W> {
                 };
                 let values = l
                     .zip_map_full(iter::repeat(()), |x, ()| {
-                        self.parse_exp(x?, StartExpCtx::Exact, true)
+                        self.parse_exp(x?, StartExpCtx::Exact)
                     })
                     .collect::<Result<Vec<_>>>()?;
                 drop(l);
@@ -822,23 +882,29 @@ impl<W: Write> Parser<W> {
             }
             Smt2Command::SetLogic => {
                 match rest.next()? {
-                    SexpToken::Symbol("QF_UF") => {}
-                    SexpToken::Symbol(_) => return Err(Unsupported("logic")),
+                    SexpToken::Terminal(SexpTerminal::Symbol("QF_UF")) => {}
+                    SexpToken::Terminal(SexpTerminal::Symbol(_)) => {
+                        return Err(Unsupported("logic"))
+                    }
                     _ => return Err(InvalidCommand),
                 }
                 rest.finish()?;
             }
             Smt2Command::SetInfo => {
-                let SexpToken::Keyword(key) = rest.next()? else {
+                let SexpToken::Terminal(SexpTerminal::Keyword(key)) = rest.next()? else {
                     return Err(InvalidCommand);
                 };
                 let info_was_status = key == "status";
                 let body = rest.next()?;
                 if info_was_status {
                     self.last_status_info = match body {
-                        SexpToken::Symbol("sat") => Some(SolveResult::Sat),
-                        SexpToken::Symbol("unsat") => Some(SolveResult::Unsat),
-                        SexpToken::Symbol("unknown") => Some(SolveResult::Unknown),
+                        SexpToken::Terminal(SexpTerminal::Symbol("sat")) => Some(SolveResult::Sat),
+                        SexpToken::Terminal(SexpTerminal::Symbol("unsat")) => {
+                            Some(SolveResult::Unsat)
+                        }
+                        SexpToken::Terminal(SexpTerminal::Symbol("unknown")) => {
+                            Some(SolveResult::Unknown)
+                        }
                         _ => return Err(InvalidCommand),
                     }
                 }
@@ -891,7 +957,7 @@ impl<W: Write> Parser<W> {
             }
             Smt2Command::Echo => {
                 let start = rest.p.start_idx();
-                let SexpToken::String(_) = rest.next()? else {
+                let SexpToken::Terminal(SexpTerminal::String(_)) = rest.next()? else {
                     return Err(InvalidCommand);
                 };
                 let range = rest.p.end_idx(start);
@@ -922,7 +988,7 @@ impl<W: Write> Parser<W> {
     }
 
     fn parse_fresh_binder<R: FullBufRead>(&mut self, token: SexpToken<R>) -> Result<Symbol> {
-        let SexpToken::Symbol(name) = token else {
+        let SexpToken::Terminal(SexpTerminal::Symbol(name)) = token else {
             return Err(InvalidCommand);
         };
         let name = self.core.intern_mut().symbols.intern(name);
@@ -984,7 +1050,7 @@ impl<W: Write> Parser<W> {
                 self.define_const(name, rest)?;
             }
             Smt2Command::Assert => {
-                let exp = self.parse_exp(rest.next()?, StartExpCtx::Assert, true)?;
+                let exp = self.parse_exp(rest.next()?, StartExpCtx::Assert)?;
                 self.core
                     .solver_mut()
                     .assert(exp.as_bool().ok_or(AssertBool(exp.sort()))?);
@@ -1005,7 +1071,7 @@ impl<W: Write> Parser<W> {
                 };
                 let conj = l
                     .zip_map_full(0.., |token, _| {
-                        let exp = self.parse_exp(token?, StartExpCtx::Exact, true)?;
+                        let exp = self.parse_exp(token?, StartExpCtx::Exact)?;
                         exp.as_bool().ok_or(AssertBool(exp.sort()))
                     })
                     .collect::<Result<Vec<_>>>()?;
@@ -1081,7 +1147,7 @@ impl<W: Write> Parser<W> {
     ) -> Result<()> {
         let sort = self.parse_sort(rest.next()?)?;
         self.currently_defining = Some(name);
-        let ret = self.parse_exp(rest.next()?, StartExpCtx::Exact, true)?;
+        let ret = self.parse_exp(rest.next()?, StartExpCtx::Exact)?;
         self.currently_defining = None;
         if sort != ret.sort() {
             return Err(BindSortMismatch(ret.sort()));
@@ -1105,7 +1171,9 @@ impl<W: Write> Parser<W> {
         match t {
             SexpToken::List(mut l) => {
                 let s = match l.next().ok_or(InvalidCommand)?? {
-                    SexpToken::Symbol(s) => Smt2Command::from_str(s, self.core.intern_mut()),
+                    SexpToken::Terminal(SexpTerminal::Symbol(s)) => {
+                        Smt2Command::from_str(s, self.core.intern_mut())
+                    }
                     _ => return Err(InvalidCommand),
                 };
                 self.parse_command(s, l)

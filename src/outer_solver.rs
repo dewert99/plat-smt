@@ -98,11 +98,11 @@ struct Frame {
 /// solver.start_exp(EQ_SYM, None, Opt);
 /// solver.start_exp(TRUE_SYM, None, Opt);
 ///  // Use false for independent since this is meant to be a child of the parent expression `=`
-/// solver.end_exp(false).unwrap();
+/// solver.end_exp().unwrap();
 /// solver.start_exp(FALSE_SYM, None, Opt);
-/// solver.end_exp(false).unwrap();
-/// solver.end_exp(false).unwrap();
-/// solver.end_exp(true).unwrap();
+/// solver.end_exp().unwrap();
+/// solver.end_exp().unwrap();
+/// solver.end_exp_take().unwrap();
 /// ```
 ///
 /// ### `(declare-fun f (Bool, Bool) Bool)`
@@ -127,20 +127,20 @@ struct Frame {
 /// solver.start_exp(f_sym, None, Exact);
 /// // this is a child of `f` so we can use `Opt` here
 /// solver.start_exp(TRUE_SYM, None, Opt);
-/// solver.end_exp(false).unwrap(); // true
+/// solver.end_exp().unwrap(); // true
 /// solver.start_exp(FALSE_SYM, None, Opt);
-/// solver.end_exp(false).unwrap(); // false
+/// solver.end_exp().unwrap(); // false
 /// // we don't want (f true false) to get added as a child of not
-/// let ftf = solver.end_exp(true).unwrap(); // (f true false)
+/// let ftf = solver.end_exp_take().unwrap(); // (f true false)
 /// solver.with_defined(x_sym, ftf, |solver| {
 ///    solver.start_exp(f_sym, None, Opt);
 ///    solver.start_exp(x_sym, None, Opt);
-///    solver.end_exp(false).unwrap(); // x
+///    solver.end_exp().unwrap(); // x
 ///    solver.start_exp(x_sym, None, Opt);
-///    solver.end_exp(false).unwrap(); // x
-///    solver.end_exp(false).unwrap(); // (f x x)
+///    solver.end_exp().unwrap(); // x
+///    solver.end_exp().unwrap(); // (f x x)
 /// });
-/// solver.end_exp(true).unwrap(); // (not (f x x))
+/// solver.end_exp_take().unwrap(); // (not (f x x))
 /// ```
 ///
 /// ### `(assert (not (f (! (f true false) :named x) x)))`
@@ -156,16 +156,17 @@ struct Frame {
 /// // even though this is a child of f, it may be used in other places so we use Exact
 /// solver.start_exp(f_sym, None, Exact);
 /// solver.start_exp(TRUE_SYM, None, Opt);
-/// solver.end_exp(false).unwrap(); // true
+/// solver.end_exp().unwrap(); // true
 /// solver.start_exp(FALSE_SYM, None, Opt);
-/// solver.end_exp(false).unwrap(); // false
-/// // we do want (f true false) to get added as a child of `f` so we use `false` even though we will also use it as x
-/// let ftf = solver.end_exp(false).unwrap(); // (f true false)
+/// solver.end_exp().unwrap(); // false
+/// let ftf = solver.end_exp_take().unwrap(); // (f true false)
+/// // // we do want (f true false) to get added as a child of `f` so we re-inject it
+/// solver.inject_exp(ftf);
 /// solver.define(x_sym, Bound::Const(ftf)).ok().unwrap();
 /// solver.start_exp(x_sym, None, Opt);
-/// solver.end_exp(false).unwrap(); // x
-/// solver.end_exp(false).unwrap(); // (f (f true false) x)
-/// solver.end_exp(true).unwrap(); // (not (f (f true false) x))
+/// solver.end_exp().unwrap(); // x
+/// solver.end_exp().unwrap(); // (f (f true false) x)
+/// solver.end_exp_take().unwrap(); // (not (f (f true false) x))
 /// ```
 pub struct OuterSolver {
     inner: Solver,
@@ -200,8 +201,9 @@ impl OuterSolver {
                     self.inner.sorted_fn(name, Children::new(), ret)
                 };
                 debug!(
-                    "{} is bound to {exp:?}",
-                    name.with_intern(&self.inner.intern)
+                    "{} is bound to {}",
+                    name.with_intern(self.intern()),
+                    exp.with_intern(self.intern())
                 );
                 Bound::Const(exp)
             }
@@ -448,10 +450,8 @@ impl OuterSolver {
 
     /// Ends an expression
     ///
-    /// If an error is return the entire expression set is reset
-    ///
     /// see [`OuterSolver`] documentation for more details
-    pub fn end_exp(&mut self, independent: bool) -> Result<Exp, (Symbol, AddSexpError)> {
+    pub fn end_exp_take(&mut self) -> Result<Exp, (Symbol, AddSexpError)> {
         let Frame {
             ctx,
             f,
@@ -471,18 +471,23 @@ impl OuterSolver {
                     x.with_intern(&self.intern())
                 );
                 self.exp_stack.truncate(stack_len as usize);
-                if self.stack.is_empty() {
-                    debug_assert!(self.exp_stack.is_empty());
-                    debug_assert!(independent);
-                } else if !independent {
-                    self.exp_stack.push(x);
-                } else {
-                    debug_assert!(matches!(ctx, ExprContext::Exact));
-                }
                 Ok(x)
             }
             Err(x) => Err((f, x)),
         }
+    }
+
+    /// Adds a child to the current expression
+    pub fn inject_exp(&mut self, exp: Exp) {
+        debug_assert!(!self.stack.is_empty());
+        self.exp_stack.push(exp)
+    }
+
+    /// Ends and expressions and adds it as a child of the parent expression
+    pub fn end_exp(&mut self) -> Result<(), (Symbol, AddSexpError)> {
+        let exp = self.end_exp_take()?;
+        self.inject_exp(exp);
+        Ok(())
     }
 
     /// Returns an iterator over the values associated with each definition along with the interner

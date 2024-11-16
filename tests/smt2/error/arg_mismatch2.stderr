@@ -1,4 +1,4 @@
-the function `f` expects at least 2 arguments but only got 1 at 2:12
+the function `f` expects at least 2 arguments but only got 1 at 2:16
 (assert (f true))
-           ^
+               ^
 

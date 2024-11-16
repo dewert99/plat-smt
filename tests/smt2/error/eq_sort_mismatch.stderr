@@ -1,4 +1,4 @@
-the 1th argument of the function = has sort Bool but should have sort S1 at 3:21
+the 1th argument of the function = has sort Bool but should have sort S1 at 3:26
 (assert (= (f true) false))
-                    ^
+                         ^
 
