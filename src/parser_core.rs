@@ -1,5 +1,6 @@
 use crate::full_buf_read::FullBufRead;
 use core::fmt::{Debug, Display, Formatter};
+use core::mem::ManuallyDrop;
 use core::str::Utf8Error;
 use no_std_compat::prelude::v1::*;
 use std::string::FromUtf8Error;
@@ -123,13 +124,7 @@ pub enum Radix {
 enum RawSexpToken<'a, R> {
     LeftParen(&'a mut SexpLexer<R>),
     RightParen,
-    Keyword(&'a str),
-    Symbol(&'a str),
-    String(&'a str),
-    Number(u128),
-    // x*10^-y
-    Decimal(u128, u8),
-    BitVec { value: u128, bits: u8 },
+    Terminal(SexpTerminal<'a>),
 }
 
 fn byte_to_digit(byte: u8, radix: Radix) -> Result<u128, ParseError> {
@@ -260,16 +255,18 @@ impl<R: FullBufRead> SexpLexer<R> {
     }
 
     fn lex(&mut self) -> Result<RawSexpToken<'_, R>, ParseError> {
+        use RawSexpToken::*;
+        use SexpTerminal::*;
         self.update_last_span();
         match self.peek_byte() {
             // Parentheses
             Some(b'(') => {
                 self.consume_byte();
-                Ok(RawSexpToken::LeftParen(self))
+                Ok(LeftParen(self))
             }
             Some(b')') => {
                 self.consume_byte();
-                Ok(RawSexpToken::RightParen)
+                Ok(RightParen)
             }
             // Quoted symbols
             Some(b'|') => {
@@ -277,7 +274,7 @@ impl<R: FullBufRead> SexpLexer<R> {
                 let before = self.idx;
                 while let Some(c) = self.read_byte() {
                     if c == b'|' {
-                        return Ok(RawSexpToken::Symbol(self.last_str(before, 1)?));
+                        return Ok(Terminal(Symbol(self.last_str(before, 1)?)));
                     }
                 }
                 // Do not accept EOI as a terminator.
@@ -296,7 +293,7 @@ impl<R: FullBufRead> SexpLexer<R> {
                                 continue;
                             }
                         }
-                        return Ok(RawSexpToken::String(std::str::from_utf8(&self.str_buf)?));
+                        return Ok(Terminal(String(std::str::from_utf8(&self.str_buf)?)));
                     }
                     self.str_buf.push(c);
                 }
@@ -310,15 +307,15 @@ impl<R: FullBufRead> SexpLexer<R> {
                     Some(b'b') => {
                         self.consume_byte();
                         let (value, bits) = self.read_number(Radix::Binary)?;
-                        Ok(RawSexpToken::BitVec { value, bits })
+                        Ok(Terminal(BitVec { value, bits }))
                     }
                     Some(b'x') => {
                         self.consume_byte();
                         let (value, hexits) = self.read_number(Radix::Hexidecimal)?;
-                        Ok(RawSexpToken::BitVec {
+                        Ok(Terminal(BitVec {
                             value,
-                            bits: hexits * 16,
-                        })
+                            bits: hexits * 4,
+                        }))
                     }
                     Some(_) => Err(LiteralError {
                         prefix: self.read_char(),
@@ -333,12 +330,9 @@ impl<R: FullBufRead> SexpLexer<R> {
                     self.consume_byte();
 
                     let (after, exp) = self.read_number(Radix::Decimal)?;
-                    Ok(RawSexpToken::Decimal(
-                        n * 10u128.pow(exp.into()) + after,
-                        exp,
-                    ))
+                    Ok(Terminal(Decimal(n * 10u128.pow(exp.into()) + after, exp)))
                 } else {
-                    Ok(RawSexpToken::Number(n))
+                    Ok(Terminal(Number(n)))
                 }
             }
             // Keywords
@@ -346,14 +340,14 @@ impl<R: FullBufRead> SexpLexer<R> {
                 self.consume_byte();
                 let before = self.idx;
                 self.consume_symbols();
-                Ok(RawSexpToken::Keyword(self.last_str(before, 0)?))
+                Ok(Terminal(Keyword(self.last_str(before, 0)?)))
             }
             // Symbols (including `_` and `!`)
             Some(c) if is_non_digit_symbol_byte(c) => {
                 let before = self.idx;
                 self.consume_byte();
                 self.consume_symbols();
-                Ok(RawSexpToken::Symbol(self.last_str(before, 0)?))
+                Ok(Terminal(Symbol(self.last_str(before, 0)?)))
             }
             Some(_) => Err(UnexpectedChar {
                 found: self.read_char(),
@@ -416,13 +410,7 @@ impl<R: FullBufRead> SexpLexer<R> {
 
 #[derive(Debug)]
 pub enum SexpToken<'a, R: FullBufRead> {
-    Keyword(&'a str),
-    Symbol(&'a str),
-    String(&'a str),
-    Number(u128),
-    // x * 10^-y
-    Decimal(u128, u8),
-    BitVec { value: u128, bits: u8 },
+    Terminal(SexpTerminal<'a>),
     List(SexpParser<'a, R>),
 }
 
@@ -430,12 +418,12 @@ pub enum SexpToken<'a, R: FullBufRead> {
 ///
 /// ```
 /// use std::io::Cursor;
-/// use plat_smt::parser_core::{SexpParser, SexpToken, Radix};
+/// use plat_smt::parser_core::{SexpParser, SexpToken::{self, Terminal}, Radix, SexpTerminal::*};
 /// let sexp = "(|hello world| (+ x 1 (+ a b) (+ c (+ d e))) 42)";
 /// SexpParser::parse_stream_keep_going(sexp.as_bytes(), (), |_, token| {
 ///     let Ok(SexpToken::List(mut list)) = token else {unreachable!()};
 ///     let t1 = list.next(); // *
-///     assert!(matches!(t1, Some(Ok(SexpToken::Symbol("hello world")))));
+///     assert!(matches!(t1, Some(Ok(Terminal(Symbol("hello world"))))));
 ///     drop(t1);
 ///     let t2 = list.next(); // (+ x 1 (+ a b) (+ c d))
 ///     let mut list2 = (|| match t2 {
@@ -443,13 +431,13 @@ pub enum SexpToken<'a, R: FullBufRead> {
 ///         _ => unreachable!(),
 ///     })();
 ///     let t21 = list2.next(); // +
-///     assert!(matches!(t21, Some(Ok(SexpToken::Symbol("+")))));
+///     assert!(matches!(t21, Some(Ok(Terminal(Symbol("+"))))));
 ///     drop(t21);
 ///     let _ = list2.next().unwrap(); // 1
 ///     let _ = list2.next().unwrap(); // (+ a b)
 ///     drop(list2);
 ///     let t3 = list.next();
-///     assert!(matches!(t3, Some(Ok(SexpToken::Number(42)))));
+///     assert!(matches!(t3, Some(Ok(Terminal(Number(42))))));
 ///     drop(t3);
 ///     assert!(list.next().is_none());
 ///     Ok::<(), ()>(())
@@ -519,12 +507,7 @@ impl<'a, R: FullBufRead> SexpParser<'a, R> {
         } else {
             let x = match self.0.lex() {
                 Ok(RawSexpToken::LeftParen(m)) => SexpToken::List(SexpParser(m)),
-                Ok(RawSexpToken::Keyword(k)) => SexpToken::Keyword(k),
-                Ok(RawSexpToken::Symbol(s)) => SexpToken::Symbol(s),
-                Ok(RawSexpToken::String(s)) => SexpToken::String(s),
-                Ok(RawSexpToken::Number(n)) => SexpToken::Number(n),
-                Ok(RawSexpToken::Decimal(x, y)) => SexpToken::Decimal(x, y),
-                Ok(RawSexpToken::BitVec { value, bits }) => SexpToken::BitVec { value, bits },
+                Ok(RawSexpToken::Terminal(t)) => SexpToken::Terminal(t),
                 Ok(RawSexpToken::RightParen) => unreachable!(),
                 Err(err) => return Some(Err(err)),
             };
@@ -593,11 +576,8 @@ impl<'a, R: FullBufRead> SexpParser<'a, R> {
     pub fn close(&mut self) {
         self.0.close();
     }
-}
 
-impl<'a, R: FullBufRead> Drop for SexpParser<'a, R> {
-    fn drop(&mut self) {
-        let mut depth = 0u32;
+    fn drop_at_depth(&mut self, mut depth: u32) {
         loop {
             self.0.skip_whitespace();
             match self.0.lex_drop() {
@@ -605,6 +585,164 @@ impl<'a, R: FullBufRead> Drop for SexpParser<'a, R> {
                 DropToken::LeftParen => depth += 1,
                 DropToken::RightParen if depth > 0 => depth -= 1,
                 DropToken::RightParen | DropToken::EOI | DropToken::ErrEOI => return,
+            }
+        }
+    }
+}
+
+impl<'a, R: FullBufRead> Drop for SexpParser<'a, R> {
+    fn drop(&mut self) {
+        self.drop_at_depth(0);
+    }
+}
+
+#[derive(Debug)]
+pub enum SexpTerminal<'a> {
+    Keyword(&'a str),
+    Symbol(&'a str),
+    String(&'a str),
+    Number(u128),
+    // x*10^-y
+    Decimal(u128, u8),
+    BitVec { value: u128, bits: u8 },
+}
+
+/// Trait for recursively visiting s-expressions without using the stack
+///
+/// ### Example
+/// ```rust
+/// use plat_smt::FullBufRead;
+/// use plat_smt::parser_core::{ParseError, SexpParser, SexpTerminal, SexpToken, SexpVisitor};
+///
+/// #[derive(Default)]
+/// struct AEVisitor {
+///     res_stack: Vec<u128>,
+///     op_stack: Vec<(usize, fn(&[u128]) -> u128)>
+/// }
+///
+/// #[derive(thiserror_no_std::Error, Debug, Clone)]
+/// enum AEError {
+///    #[error("missing operator")]
+///    MissingOp,
+///    #[error("invalid operator")]
+///    InvalidOp,
+///    #[error("invalid argument")]
+///    InvalidArg,
+///    #[error(transparent)]
+///    Parser(#[from] ParseError)
+/// }
+///
+/// impl SexpVisitor for AEVisitor {
+///     type T = u128;
+///     type E = AEError;
+///
+///     fn handle_outer_terminal(&mut self, s: SexpTerminal) -> Result<Self::T, Self::E> {
+///         match s {
+///              SexpTerminal::Number(n) => Ok(n),
+///              _ => Err(AEError::InvalidArg)
+///         }
+///     }
+///
+///     fn handle_inner_terminal(&mut self, s: SexpTerminal)  -> Result<(), Self::E> {
+///         let res = self.handle_outer_terminal(s)?;
+///         self.res_stack.push(res);
+///         Ok(())
+///     }
+///
+///     fn start_outer_list<R: FullBufRead>(&mut self, p: &mut SexpParser<R>) -> Result<(), Self::E> {
+///         let op = match p.next().ok_or(AEError::MissingOp)?? {
+///             SexpToken::Terminal(SexpTerminal::Symbol("+")) => |s: &[u128]| s.iter().copied().sum(),
+///             SexpToken::Terminal(SexpTerminal::Symbol("*")) => |s: &[u128]| s.iter().copied().product(),
+///             _ => return Err(AEError::InvalidOp),
+///         };
+///         self.op_stack.push((self.res_stack.len(), op));
+///         Ok(())
+///     }
+///
+///     fn end_outer_list(&mut self) -> Result<Self::T, Self::E> {
+///         let (old_len, op) = self.op_stack.pop().unwrap();
+///         let res = op(&self.res_stack[old_len..]);
+///         self.res_stack.truncate(old_len);
+///         Ok(res)
+///     }
+///
+///     fn end_inner_list(&mut self) -> Result<(), Self::E> {
+///         let res = self.end_outer_list()?;
+///         self.res_stack.push(res);
+///         Ok(())
+///     }
+/// }
+///
+/// let sexp = "((+ (* x 2) 3) (+ (* 2 3) (* 3 4)))";
+/// SexpParser::parse_stream_keep_going(sexp.as_bytes(), (), |_, token| {
+///     let Ok(SexpToken::List(mut list)) = token else {unreachable!()};
+///     let t1 = list.next().unwrap().unwrap(); // (+ (* x 2) 3)
+///     assert!(matches!(AEVisitor::default().visit(t1), Err(AEError::InvalidArg)));
+///     let t1 = list.next().unwrap().unwrap(); // (+ (* 2 3) (* 3 4))
+///     assert!(matches!(AEVisitor::default().visit(t1), Ok(18)));
+///     Ok::<(), ()>(())
+/// }, |_, _| unreachable!());
+/// ```
+pub trait SexpVisitor {
+    type T;
+    type E: From<ParseError>;
+
+    /// Handle a terminal if it is the outermost element
+    fn handle_outer_terminal(&mut self, s: SexpTerminal) -> Result<Self::T, Self::E>;
+
+    /// Handle a terminal within a larger s-expression
+    /// Defaults to calling [`handle_outer_terminal`](SexpVisitor::handle_outer_terminal)
+    fn handle_inner_terminal(&mut self, s: SexpTerminal) -> Result<(), Self::E> {
+        self.handle_outer_terminal(s).map(|_| ())
+    }
+
+    /// Start handling a list if it is the outermost element
+    fn start_outer_list<R: FullBufRead>(&mut self, p: &mut SexpParser<R>) -> Result<(), Self::E>;
+
+    /// Handle a terminal within a larger s-expression
+    /// Defaults to calling [`start_outer_list`](SexpVisitor::start_outer_list)
+    fn start_inner_list<R: FullBufRead>(&mut self, p: &mut SexpParser<R>) -> Result<(), Self::E> {
+        self.start_outer_list(p)
+    }
+
+    /// Start handling a list if it is the outermost element
+    fn end_outer_list(&mut self) -> Result<Self::T, Self::E>;
+
+    /// Handle a terminal within a larger s-expression
+    /// Defaults to calling [`start_outer_list`](SexpVisitor::start_outer_list)
+    fn end_inner_list(&mut self) -> Result<(), Self::E> {
+        self.end_outer_list().map(|_| ())
+    }
+
+    fn visit<R: FullBufRead>(&mut self, t: SexpToken<R>) -> Result<Self::T, Self::E> {
+        match t {
+            SexpToken::Terminal(t) => self.handle_outer_terminal(t),
+            SexpToken::List(p) => {
+                let mut depth = 0u32;
+                let mut p = ManuallyDrop::new(p);
+                let res = (|| {
+                    self.start_outer_list(&mut p)?;
+                    loop {
+                        p.0.skip();
+                        match p.0.lex()? {
+                            RawSexpToken::LeftParen(_) => {
+                                depth += 1;
+                                self.start_inner_list(&mut p)?;
+                            }
+                            RawSexpToken::RightParen if depth == 0 => return Ok(()),
+                            RawSexpToken::RightParen => {
+                                depth -= 1;
+                                self.end_inner_list()?;
+                            }
+                            RawSexpToken::Terminal(t) => self.handle_inner_terminal(t)?,
+                        }
+                    }
+                })();
+                if let Err(e) = res {
+                    p.drop_at_depth(depth);
+                    return Err(e);
+                }
+                self.end_outer_list()
             }
         }
     }

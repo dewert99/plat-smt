@@ -1,4 +1,4 @@
-unknown identifier `f` at 1:12
+unknown identifier `f` at 1:16
 (assert (f true))
-           ^
+               ^
 

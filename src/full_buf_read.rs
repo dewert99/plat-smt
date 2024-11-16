@@ -29,3 +29,15 @@ impl<'a> FullBufRead for &'a [u8] {
 
     fn close(&mut self) {}
 }
+
+impl<'a> FullBufRead for &'a str {
+    #[inline(always)]
+    fn fill_to(&mut self, _: usize) {}
+
+    #[inline(always)]
+    fn data(&self) -> &[u8] {
+        self.as_bytes()
+    }
+
+    fn close(&mut self) {}
+}

@@ -1,16 +1,20 @@
-unsupported arithmetic at 1:9
+unexpected token when parsing expression at 1:14
+(assert (and ()))
+             ^
+
+unsupported arithmetic at 2:9
 (assert 0)
         ^
 
-unsupported bitvec at 2:9
+unsupported bitvec at 3:9
 (assert #b010)
         ^
 
-unsupported bitvec at 3:9
+unsupported bitvec at 4:9
 (assert #xA1eBadF00D)
         ^
 
-unsupported decimal at 4:9
+unsupported decimal at 5:9
 (assert 0.3)
         ^
 

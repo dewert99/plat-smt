@@ -1,4 +1,4 @@
-assertions expect `Bool` got `S1` at 3:12
+assertions expect `Bool` got `S1` at 3:16
 (assert (f true))
-           ^
+               ^
 
