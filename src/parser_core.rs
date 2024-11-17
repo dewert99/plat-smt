@@ -254,9 +254,11 @@ impl<R: FullBufRead> SexpLexer<R> {
         while self.skip_whitespace() || self.skip_comment() {}
     }
 
+    // doesn't consume right paren
     fn lex(&mut self) -> Result<RawSexpToken<'_, R>, ParseError> {
         use RawSexpToken::*;
         use SexpTerminal::*;
+        self.skip();
         self.update_last_span();
         match self.peek_byte() {
             // Parentheses
@@ -264,10 +266,7 @@ impl<R: FullBufRead> SexpLexer<R> {
                 self.consume_byte();
                 Ok(LeftParen(self))
             }
-            Some(b')') => {
-                self.consume_byte();
-                Ok(RightParen)
-            }
+            Some(b')') => Ok(RightParen),
             // Quoted symbols
             Some(b'|') => {
                 self.consume_byte();
@@ -352,7 +351,10 @@ impl<R: FullBufRead> SexpLexer<R> {
             Some(_) => Err(UnexpectedChar {
                 found: self.read_char(),
             }),
-            None => Err(UnexpectedEOI { expected: ')' }),
+            None => {
+                self.update_last_span();
+                Err(UnexpectedEOI { expected: ')' })
+            }
         }
     }
 
@@ -471,9 +473,13 @@ impl<'a, R: FullBufRead> SexpParser<'a, R> {
         let mut lexer = SexpLexer::new(reader);
         let mut p = SexpParser(&mut lexer);
         loop {
-            let next = p.next_raw(false);
+            let next = p.next();
             if next.is_some() {
-                if let Err(e) = f(&mut ctx, next.unwrap()) {
+                let next = next.unwrap();
+                if let Err(UnexpectedEOI { expected: ')' }) = next {
+                    return;
+                }
+                if let Err(e) = f(&mut ctx, next) {
                     handle_err(
                         &mut ctx,
                         Spanned {
@@ -493,30 +499,14 @@ impl<'a, R: FullBufRead> SexpParser<'a, R> {
         core::str::from_utf8(&self.0.reader.data()[r.0..r.1]).unwrap()
     }
 
-    pub fn next_raw(&mut self, expect_paren: bool) -> Option<Result<SexpToken<'_, R>, ParseError>> {
-        self.0.skip();
-        if matches!(self.0.peek_byte(), Some(b')')) {
-            None
-        } else if self.0.peek_byte().is_none() {
-            if expect_paren {
-                self.0.update_last_span();
-                Some(Err(UnexpectedEOI { expected: ')' }))
-            } else {
-                None
-            }
-        } else {
-            let x = match self.0.lex() {
-                Ok(RawSexpToken::LeftParen(m)) => SexpToken::List(SexpParser(m)),
-                Ok(RawSexpToken::Terminal(t)) => SexpToken::Terminal(t),
-                Ok(RawSexpToken::RightParen) => unreachable!(),
-                Err(err) => return Some(Err(err)),
-            };
-            Some(Ok(x))
-        }
-    }
-
+    #[inline]
     pub fn next(&mut self) -> Option<Result<SexpToken<'_, R>, ParseError>> {
-        self.next_raw(true)
+        match self.0.lex() {
+            Ok(RawSexpToken::LeftParen(m)) => Some(Ok(SexpToken::List(SexpParser(m)))),
+            Ok(RawSexpToken::Terminal(t)) => Some(Ok(SexpToken::Terminal(t))),
+            Ok(RawSexpToken::RightParen) => None,
+            Err(err) => Some(Err(err)),
+        }
     }
 
     pub fn start_idx(&mut self) -> usize {
@@ -723,14 +713,16 @@ pub trait SexpVisitor {
                 let res = (|| {
                     self.start_outer_list(&mut p)?;
                     loop {
-                        p.0.skip();
                         match p.0.lex()? {
                             RawSexpToken::LeftParen(_) => {
                                 depth += 1;
                                 self.start_inner_list(&mut p)?;
                             }
-                            RawSexpToken::RightParen if depth == 0 => return Ok(()),
                             RawSexpToken::RightParen => {
+                                p.0.consume_byte();
+                                if depth == 0 {
+                                    return Ok(());
+                                }
                                 depth -= 1;
                                 self.end_inner_list()?;
                             }

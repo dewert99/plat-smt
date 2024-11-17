@@ -1,6 +1,6 @@
-The option cannot be set after assertions, declarations, or definitions at 4:34
+The option cannot be set after assertions, declarations, or definitions at 4:38
 (set-option :produce-unsat-cores true)
-                                 ^
+                                     ^
 
 The option `:produce-unsat-cores` must be set to true at 6:2
 (get-unsat-core)
