@@ -26,6 +26,7 @@ const BASE_SYMBOLS: &'static [&'static str] = &[
     "=",
     "distinct",
     "let",
+    "let*",
     "!",
 ];
 
@@ -61,6 +62,8 @@ pub const ITE_SYM: Symbol = base_symbol("ite");
 pub const EQ_SYM: Symbol = base_symbol("=");
 pub const DISTINCT_SYM: Symbol = base_symbol("distinct");
 pub const LET_SYM: Symbol = base_symbol("let");
+
+pub const LET_STAR_SYM: Symbol = base_symbol("let*");
 
 pub const ANNOT_SYM: Symbol = base_symbol("!");
 

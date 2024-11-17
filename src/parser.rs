@@ -534,6 +534,28 @@ impl<'a, W: Write> ExpVisitor<'a, W> {
                 self.0.undo_let_bindings(old_len);
                 self.2 = Some(exp)
             }
+            LET_STAR_SYM => {
+                let mut rest = CountingParser::new(rest, StrSym::Sym(f), 2);
+                let old_len = self.0.let_bound_stack.len();
+                match rest.next()? {
+                    SexpToken::List(mut l) => l
+                        .map(|token| {
+                            let (name, exp) = self.0.parse_binding(token?)?;
+                            self.0.let_bound_stack.push((
+                                name,
+                                self.0.core.raw_define(name, Some(Bound::Const(exp))),
+                            ));
+                            Ok(())
+                        })
+                        .collect::<Result<()>>()?,
+                    _ => return Err(InvalidLet),
+                }
+                let body = rest.next()?;
+                let exp = self.0.parse_exp(body, ctx)?;
+                rest.finish()?;
+                self.0.undo_let_bindings(old_len);
+                self.2 = Some(exp)
+            }
             ANNOT_SYM => {
                 let mut rest = CountingParser::new(rest, StrSym::Sym(f), 3);
                 let mut exp = self.0.parse_exp(rest.next()?, StartExpCtx::Exact)?;
