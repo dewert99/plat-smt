@@ -1,6 +1,6 @@
-unexpected token when parsing expression at 1:14
+unexpected token when parsing expression at 1:15
 (assert (and ()))
-             ^
+              ^
 
 unsupported arithmetic at 2:9
 (assert 0)

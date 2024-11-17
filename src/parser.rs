@@ -676,13 +676,13 @@ impl<W: Write> Parser<W> {
             return Err(InvalidAnnot);
         };
         let s = self.core.intern_mut().symbols.intern(s);
-        rest.finish()?;
         if self.currently_defining == Some(s) {
             return Err(NamedShadow(s));
         }
         if let Err(_) = self.core.define(s, Bound::Const(exp)) {
             return Err(NamedShadow(s));
         }
+        rest.finish()?;
         self.global_stack.push(s);
         Ok(s)
     }
@@ -849,13 +849,13 @@ impl<W: Write> Parser<W> {
                 rest.finish()?;
             }
             Smt2Command::GetModel => {
-                rest.finish()?;
                 if !matches!(self.state, State::Model) {
                     return Err(NoModel);
                 }
                 if !self.options.produce_models {
                     return Err(ProduceModelFalse);
                 }
+                rest.finish()?;
                 writeln!(self.writer, "(");
                 let (intern, definitions) = self.core.get_definition_values();
                 for (k, v) in definitions {
