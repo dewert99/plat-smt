@@ -13,6 +13,7 @@ that accepts a subset of SMT2LIB syntax for the logic `QF_UF`
 - [x] `check-sat`
 - [x] `check-sat-assuming`
 - [x] `let`
+- [x] `let*` (sequential let binding)
 - [x] `if`
 - [x] `get-value`
 - [x] `get-model`
