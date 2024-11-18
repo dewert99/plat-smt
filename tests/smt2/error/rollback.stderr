@@ -1,0 +1,8 @@
+unknown identifier `bad` at 6:30
+(assert (and p (q a) (= a b) bad))
+                             ^
+
+unknown identifier `bad` at 7:30
+(assert (and (= a b) (q a) p bad))
+                             ^
+

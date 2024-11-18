@@ -171,7 +171,7 @@ pub type EUF = IncrementalWrapper<EUFInner>;
 impl Theory<EUF> for EUFInner {
     type LevelMarker = PushInfo;
 
-    fn create_level(&mut self) -> PushInfo {
+    fn create_level(&self) -> PushInfo {
         debug!("Push");
         PushInfo {
             egraph: self.egraph.push(),
