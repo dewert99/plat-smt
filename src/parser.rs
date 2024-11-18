@@ -5,7 +5,7 @@ use crate::outer_solver::AddSexpError::*;
 use crate::outer_solver::{AddSexpError, Bound, BoundDefinition, FnSort, OuterSolver, StartExpCtx};
 use crate::parser::Error::*;
 use crate::parser_core::{ParseError, SexpParser, SexpTerminal, SexpToken, SexpVisitor, SpanRange};
-use crate::solver::{SolveResult, UnsatCoreConjunction};
+use crate::solver::{CheckPoint, SolveResult, UnsatCoreConjunction};
 use crate::util::{format_args2, parenthesized, powi, DefaultHashBuilder};
 use crate::{BoolExp, Exp, HasSort};
 use core::fmt::Arguments;
@@ -362,6 +362,7 @@ struct Parser<W: Write> {
     core: OuterSolver,
     writer: PrintSuccessWriter<W>,
     state: State,
+    check_point: Option<CheckPoint>,
     options: Options,
     last_status_info: Option<SolveResult>,
 }
@@ -637,6 +638,7 @@ impl<W: Write> Parser<W> {
             core: Default::default(),
             writer: PrintSuccessWriter::new(writer),
             state: State::Init,
+            check_point: None,
             sort_stack: vec![],
             last_status_info: None,
             currently_defining: None,
@@ -767,6 +769,9 @@ impl<W: Write> Parser<W> {
             self.named_assertions.pop_to(self.old_named_assertions);
             self.state = State::Base;
         }
+        if self.core.solver().is_ok() {
+            self.check_point = Some(self.core.solver().checkpoint());
+        }
     }
 
     fn parse_command<R: FullBufRead>(
@@ -787,6 +792,11 @@ impl<W: Write> Parser<W> {
                 self.undo_base_bindings(old_len);
                 self.named_assertions.pop_to(self.old_named_assertions);
                 self.core.reset_working_exp();
+                if let Some(c) = self.check_point.clone() {
+                    self.core.solver_mut().restore_checkpoint(c)
+                } else {
+                    self.core.solver_mut().clear()
+                }
                 Err(err)
             }
         }

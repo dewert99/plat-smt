@@ -5,8 +5,10 @@ use crate::explain::Justification;
 use crate::intern::*;
 use crate::junction::*;
 use crate::sp_insert_map::SPInsertMap;
+use crate::theory::Theory as _;
 use crate::util::{display_debug, format_args2, DefaultHashBuilder, Either};
-use crate::Symbol;
+use crate::{euf, Symbol};
+use core::ops::Deref;
 use hashbrown::HashMap;
 use log::debug;
 use no_std_compat::prelude::v1::*;
@@ -593,6 +595,26 @@ impl Solver {
 
     pub fn set_sat_options(&mut self, options: SolverOpts) -> Result<(), ()> {
         self.sat.set_options(options)
+    }
+}
+
+#[derive(Clone)]
+pub struct CheckPoint {
+    sat: platsat::core::CheckPoint,
+    euf: euf::PushInfo,
+}
+
+impl Solver {
+    pub fn checkpoint(&self) -> CheckPoint {
+        CheckPoint {
+            sat: self.sat.checkpoint(),
+            euf: self.euf.deref().create_level(),
+        }
+    }
+
+    pub fn restore_checkpoint(&mut self, checkpoint: CheckPoint) {
+        self.sat.restore_checkpoint(checkpoint.sat);
+        self.euf.pop_to_level(checkpoint.euf, true)
     }
 }
 

@@ -26,7 +26,7 @@ pub trait Theory<Wrap: DerefMut<Target = Self>> {
     type LevelMarker: Clone;
 
     /// Create a new backtracking level, and return a marker that can be used to backtrack to it
-    fn create_level(&mut self) -> Self::LevelMarker;
+    fn create_level(&self) -> Self::LevelMarker;
 
     /// Pop to the level indicated by marker
     ///
