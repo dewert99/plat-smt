@@ -1,0 +1,8 @@
+(declare-fun f (Bool) Bool)
+(assert (f true))
+(push)
+(assert (= (f false) (f true)))
+(pop)
+(assert (not (f false)))
+(check-sat)
+(get-model)

@@ -1,0 +1,7 @@
+sat
+(
+ (define-fun f ((x!0 Bool)) Bool
+  (ite (= x!0 false) false
+  (ite (= x!0 true) true
+   false)))
+)

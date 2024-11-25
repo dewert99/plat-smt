@@ -1,4 +1,3 @@
-use crate::buffered_solver::BufferedSolver;
 use crate::egraph::Children;
 use crate::euf::{FullFunctionInfo, FunctionInfo, SatSolver, EUF};
 use crate::exp::*;
@@ -16,7 +15,6 @@ use plat_egg::Id;
 use platsat::{lbool, Callbacks, Lit, SolverInterface, SolverOpts, Var};
 use std::fmt::{Debug, Formatter};
 use std::mem;
-use std::ops::Deref;
 
 #[derive(Default)]
 struct NoCb;
@@ -30,7 +28,7 @@ type BatSolver = platsat::Solver<NoCb>;
 pub struct Solver {
     euf: EUF,
     pending_equalities: Vec<(Id, Id)>,
-    sat: BufferedSolver<BatSolver>,
+    sat: BatSolver,
     function_info_buf: FunctionInfo,
     ifs: SPInsertMap<(Lit, Id, Id), Id>,
     pub intern: InternInfo,
@@ -125,18 +123,19 @@ pub enum SolveResult {
     Unknown,
 }
 
-impl SatSolver for BufferedSolver<BatSolver> {
+impl SatSolver for BatSolver {
     fn is_ok(&self) -> bool {
-        self.deref().is_ok()
+        SolverInterface::is_ok(self)
     }
 
     fn propagate(&mut self, l: Lit) -> bool {
         self.add_clause([l]);
-        self.is_ok()
+        SolverInterface::is_ok(self)
     }
 
-    fn raise_conflict(&mut self, _: &[Lit], _: bool) {
-        self.add_clause([])
+    fn raise_conflict(&mut self, _: bool) -> Option<&mut Vec<Lit>> {
+        self.add_clause([]);
+        None
     }
 }
 
@@ -187,7 +186,7 @@ impl Solver {
         }
         if approx != Some(!is_and) {
             exps.push(Lit::new(fresh, is_and));
-            self.sat.add_clause_reuse_lv(exps);
+            self.sat.add_clause_reuse(exps);
         }
         res
     }
@@ -472,31 +471,18 @@ impl Solver {
     }
 
     pub fn push(&mut self) {
-        let var = self.sat.new_var(lbool::UNDEF, false);
-        self.euf.reserve(var);
-        self.sat.assumptions_mut().push(Lit::new(var, true));
-        // Run propagations at this level and then return Unsat because of the assumptions
-        let res =
-            self.check_sat_assuming_preserving_trail(&Junction::from_iter([BoolExp::unknown(
-                Lit::new(var, false),
-            )]));
-        debug_assert!(matches!(res, SolveResult::Unsat));
-        self.euf.smt_push(Lit::new(var, true));
-        self.pop_model()
+        self.flush_pending();
+        self.euf.reserve(Var::unsafe_from_idx(self.sat.num_vars()));
+        self.sat.push_th(&mut self.euf);
+        self.euf.smt_push()
     }
 
     pub fn pop(&mut self, n: usize) {
         if n > self.euf.assertion_level() {
             self.clear();
         } else if n > 0 {
-            let new_level = self.sat.assumptions().len() - n;
-            let old_num_vars = self.sat.assumptions()[new_level].var().idx();
-            for v in (old_num_vars..self.sat.num_vars()).map(Var::unsafe_from_idx) {
-                self.sat.set_decision_var(v, false);
-            }
-            self.sat.assumptions_mut().truncate(new_level);
-            self.euf
-                .smt_pop_to(new_level, self.sat.assumptions().last().copied());
+            self.sat.pop_n_th(&mut self.euf, n as u32);
+            self.euf.smt_pop_to(self.euf.assertion_level() - n);
             self.ifs.remove_after(self.euf.len_id());
         }
     }
