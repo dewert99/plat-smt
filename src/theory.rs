@@ -51,22 +51,18 @@ pub trait Theory<Wrap: DerefMut<Target = Self>> {
     /// If the theory uses `TheoryArgument::propagate`, it must implement
     /// this function to explain the propagations.
     ///
-    /// Set [`BatTheory::explain_propagation_clause`] for explanation details
+    /// It should add the negation of all literals that were used to imply `p` to
+    /// `acts.clause_builder()` while leaving its current elements untouched
+    ///
+    ///
+    /// `acts.clause_builder()` comes pre-initialized with `p` as its first element to satisfy
+    /// [`BatTheory::explain_propagation_clause`]'s requirements
     fn explain_propagation<'a>(
         this: &'a mut Wrap,
         p: Lit,
-        acts: &mut ExplainTheoryArg,
+        acts: &'a mut ExplainTheoryArg,
         is_final: bool,
-    ) -> &'a [Lit];
-
-    /// Sets the "assertion_level_lit"
-    ///
-    /// This literal, if not `None`, should be included in all propagations
-    /// and have its negation included in all conflicts
-    fn set_assertion_level_lit(&mut self, l: Option<Lit>);
-
-    /// Return the "assertion_level_lit"
-    fn assertion_level_lit(&self) -> Option<Lit>;
+    );
 
     fn clear(&mut self);
 }
@@ -78,15 +74,6 @@ struct PushInfo<X> {
     model_len: u32,
 }
 
-#[derive(Debug)]
-struct ExplainBuf([Lit; 2]);
-
-impl Default for ExplainBuf {
-    fn default() -> Self {
-        ExplainBuf([Lit::UNDEF; 2])
-    }
-}
-
 #[perfect_derive(Default, Debug)]
 pub struct IncrementalWrapper<Th: Theory<IncrementalWrapper<Th>>> {
     th: Th,
@@ -96,10 +83,9 @@ pub struct IncrementalWrapper<Th: Theory<IncrementalWrapper<Th>>> {
     prop_log: Vec<Lit>,
     // explanations for lits in prop_log (always the appropriate assertion level lit)
     prop_explain: HashMap<Lit, Lit, DefaultHashBuilder>,
-    explain_buf: ExplainBuf,
     // whether we've handled prop_log since the last push or pop
     done_prop_log: bool,
-    sat_level: u32,
+    decision_level: u32,
     assertion_level: u32,
 }
 
@@ -107,28 +93,23 @@ impl<Th: Theory<IncrementalWrapper<Th>>> IncrementalWrapper<Th> {
     /// Returns false when `self` has been popped below the assertion level
     /// In this case `self` will not produce any propagations or conflicts
     fn is_active(&self) -> bool {
-        self.sat_level >= self.assertion_level
+        self.decision_level >= self.assertion_level
     }
 
-    pub fn smt_push(&mut self, level_lit: Lit) {
+    pub fn smt_push(&mut self) {
         self.assertion_level += 1;
-        self.th.set_assertion_level_lit(Some(level_lit))
     }
 
-    pub fn smt_pop_to(&mut self, target_level: usize, level_lit: Option<Lit>) {
-        debug_assert_eq!(self.n_levels(), 0);
+    pub fn smt_pop_to(&mut self, target_level: usize) {
         if target_level < self.push_log.len() {
-            self.th.pop_to_level(self.push_log[target_level].clone().th);
-            for l in self
-                .prop_log
-                .drain(self.push_log[target_level].prop_log as usize..)
-            {
+            let level = self.push_log[target_level].clone();
+            self.th.pop_to_level(level.th);
+            for l in self.prop_log.drain(level.prop_log as usize..) {
                 self.prop_explain.remove(&l);
             }
-            self.push_log.truncate(target_level);
+            self.push_log.truncate(self.decision_level as usize);
         }
         self.assertion_level = target_level as u32;
-        self.th.set_assertion_level_lit(level_lit);
     }
 
     pub fn assertion_level(&self) -> usize {
@@ -141,7 +122,7 @@ impl<Th: Theory<IncrementalWrapper<Th>>> IncrementalWrapper<Th> {
         self.prop_log.clear();
         self.prop_explain.clear();
         self.done_prop_log = false;
-        self.sat_level = 0;
+        self.decision_level = 0;
         self.prev_len = 0;
         self.assertion_level = 0;
     }
@@ -154,6 +135,26 @@ impl<Th: Theory<IncrementalWrapper<Th>>> IncrementalWrapper<Th> {
 
     pub fn last_marker(&self) -> Option<&Th::LevelMarker> {
         self.push_log.last().map(|x| &x.th)
+    }
+
+    fn explain_propagation_clause_either<'a>(
+        &mut self,
+        p: Lit,
+        acts: &'a mut ExplainTheoryArg,
+        is_final: bool,
+    ) -> &'a [Lit] {
+        acts.clause_builder().clear();
+        acts.clause_builder().push(p);
+        if let Some(x) = self.prop_explain.get(&p) {
+            acts.clause_builder().push(*x);
+        } else {
+            if self.assertion_level > 0 {
+                let lit = acts.assertion_level_lit(self.assertion_level - 1);
+                acts.clause_builder().push(lit);
+            }
+            Th::explain_propagation(self, p, acts, is_final);
+        }
+        acts.clause_builder()
     }
 }
 
@@ -170,15 +171,15 @@ impl<Th: Theory<IncrementalWrapper<Th>>> BatTheory for IncrementalWrapper<Th> {
             };
             self.push_log.push(info)
         } else {
-            self.push_log[self.sat_level as usize].model_len = self.prev_len;
+            self.push_log[self.decision_level as usize].model_len = self.prev_len;
         }
-        self.sat_level += 1;
+        self.decision_level += 1;
     }
 
     fn pop_levels(&mut self, n: usize) {
         self.done_prop_log = false;
         let target_sat_level = self.n_levels() - n;
-        self.sat_level = target_sat_level as u32;
+        self.decision_level = target_sat_level as u32;
         self.prev_len = self.push_log[target_sat_level].model_len;
         let target_level = max(self.assertion_level as usize, target_sat_level);
         if target_level < self.push_log.len() {
@@ -188,17 +189,20 @@ impl<Th: Theory<IncrementalWrapper<Th>>> BatTheory for IncrementalWrapper<Th> {
     }
 
     fn n_levels(&self) -> usize {
-        self.sat_level as usize
+        self.decision_level as usize
     }
 
     fn partial_check(&mut self, acts: &mut TheoryArg) {
         debug!("Starting EUF check");
-        if self.sat_level <= self.assertion_level && !self.done_prop_log && self.sat_level > 0 {
+        if self.decision_level <= self.assertion_level
+            && !self.done_prop_log
+            && self.decision_level > 0
+        {
             self.done_prop_log = true;
-            let start = self.push_log[self.sat_level as usize - 1].prop_log as usize;
+            let start = self.push_log[self.decision_level as usize - 1].prop_log as usize;
             let end = self
                 .push_log
-                .get(self.sat_level as usize)
+                .get(self.decision_level as usize)
                 .map_or(self.prop_log.len(), |x| x.prop_log as usize);
             for l in &self.prop_log[start..end] {
                 trace!("reassert {l:?}");
@@ -211,7 +215,7 @@ impl<Th: Theory<IncrementalWrapper<Th>>> BatTheory for IncrementalWrapper<Th> {
             return;
         }
         let init_len = acts.model().len();
-        let _ = (|| {
+        let res = (|| {
             Th::initial_check(self, acts)?;
             while (self.prev_len as usize) < acts.model().len() {
                 Th::learn(self, acts.model()[self.prev_len as usize], acts)?;
@@ -224,31 +228,39 @@ impl<Th: Theory<IncrementalWrapper<Th>>> BatTheory for IncrementalWrapper<Th> {
                 Ok(())
             }
         })();
-        if self.assertion_level == self.sat_level && self.assertion_level != 0 {
+        if res.is_err() && self.assertion_level > 0 {
+            let lit = acts
+                .explain_arg()
+                .assertion_level_lit(self.assertion_level - 1);
+            acts.explain_arg().clause_builder().push(lit);
+        }
+        if self.assertion_level == self.decision_level && self.assertion_level != 0 {
             self.prop_log.extend(&acts.model()[init_len..]);
-            let all = self.th.assertion_level_lit().unwrap();
+            let all = acts
+                .explain_arg()
+                .assertion_level_lit(self.assertion_level - 1);
             for l in &acts.model()[init_len..] {
                 self.prop_explain.insert(*l, all);
             }
         }
     }
 
-    fn explain_propagation_clause(&mut self, p: Lit, acts: &mut ExplainTheoryArg) -> &[Lit] {
-        if let Some(x) = self.prop_explain.get(&p) {
-            self.explain_buf.0 = [p, !*x];
-            &self.explain_buf.0
-        } else {
-            Th::explain_propagation(self, p, acts, false)
-        }
+    #[inline]
+    fn explain_propagation_clause<'a>(
+        &mut self,
+        p: Lit,
+        acts: &'a mut ExplainTheoryArg,
+    ) -> &'a [Lit] {
+        self.explain_propagation_clause_either(p, acts, false)
     }
 
-    fn explain_propagation_clause_final(&mut self, p: Lit, acts: &mut ExplainTheoryArg) -> &[Lit] {
-        if let Some(x) = self.prop_explain.get(&p) {
-            self.explain_buf.0 = [p, !*x];
-            &self.explain_buf.0
-        } else {
-            Th::explain_propagation(self, p, acts, true)
-        }
+    #[inline]
+    fn explain_propagation_clause_final<'a>(
+        &mut self,
+        p: Lit,
+        acts: &'a mut ExplainTheoryArg,
+    ) -> &'a [Lit] {
+        self.explain_propagation_clause_either(p, acts, true)
     }
 }
 

@@ -5,7 +5,6 @@ extern crate alloc;
 extern crate no_std_compat as std;
 
 mod approx_bitset;
-mod buffered_solver;
 mod egraph;
 mod euf;
 mod exp;
