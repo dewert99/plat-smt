@@ -110,9 +110,9 @@ impl<Th: Theory<IncrementalWrapper<Th>>> IncrementalWrapper<Th> {
             debug!(
                 "SMT Pop internal level ({} -> {})",
                 self.push_log.len(),
-                self.decision_level
+                target_level
             );
-            self.push_log.truncate(self.decision_level as usize);
+            self.push_log.truncate(target_level);
         }
         self.assertion_level = target_level as u32;
     }
