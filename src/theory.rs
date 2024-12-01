@@ -107,6 +107,11 @@ impl<Th: Theory<IncrementalWrapper<Th>>> IncrementalWrapper<Th> {
             for l in self.prop_log.drain(level.prop_log as usize..) {
                 self.prop_explain.remove(&l);
             }
+            debug!(
+                "SMT Pop internal level ({} -> {})",
+                self.push_log.len(),
+                self.decision_level
+            );
             self.push_log.truncate(self.decision_level as usize);
         }
         self.assertion_level = target_level as u32;
@@ -163,6 +168,7 @@ impl<Th: Theory<IncrementalWrapper<Th>>> BatTheory for IncrementalWrapper<Th> {
 
     fn create_level(&mut self) {
         self.done_prop_log = false;
+        let old_len = self.push_log.len();
         if self.is_active() {
             let info = PushInfo {
                 th: self.th.create_level(),
@@ -173,10 +179,17 @@ impl<Th: Theory<IncrementalWrapper<Th>>> BatTheory for IncrementalWrapper<Th> {
         } else {
             self.push_log[self.decision_level as usize].model_len = self.prev_len;
         }
+        debug!(
+            "Push ({} -> {}), internal_level ({old_len} -> {})",
+            self.decision_level,
+            self.decision_level + 1,
+            self.push_log.len()
+        );
         self.decision_level += 1;
     }
 
     fn pop_levels(&mut self, n: usize) {
+        let old_len = self.push_log.len();
         self.done_prop_log = false;
         let target_sat_level = self.n_levels() - n;
         self.decision_level = target_sat_level as u32;
@@ -186,6 +199,11 @@ impl<Th: Theory<IncrementalWrapper<Th>>> BatTheory for IncrementalWrapper<Th> {
             self.th.pop_to_level(self.push_log[target_level].th.clone());
             self.push_log.truncate(target_level);
         }
+        debug!(
+            "Pop ({} -> {target_sat_level}), internal_level ({old_len} -> {})",
+            target_sat_level + n,
+            self.push_log.len()
+        );
     }
 
     fn n_levels(&self) -> usize {

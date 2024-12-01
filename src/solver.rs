@@ -24,7 +24,6 @@ type BatSolver = platsat::Solver<NoCb>;
 /// The main solver structure including the sat solver and egraph.
 ///
 /// It allows constructing and asserting expressions [`Exp`] within the solver
-#[derive(Default)]
 pub struct Solver {
     euf: EUF,
     pending_equalities: Vec<(Id, Id)>,
@@ -33,6 +32,22 @@ pub struct Solver {
     ifs: SPInsertMap<(Lit, Id, Id), Id>,
     pub intern: InternInfo,
     junction_buf: Vec<Lit>,
+}
+
+impl Default for Solver {
+    fn default() -> Self {
+        let mut res = Self {
+            euf: Default::default(),
+            pending_equalities: Default::default(),
+            sat: Default::default(),
+            function_info_buf: Default::default(),
+            ifs: Default::default(),
+            intern: Default::default(),
+            junction_buf: Default::default(),
+        };
+        res.euf.reserve(Var::unsafe_from_idx(res.sat.num_vars()));
+        res
+    }
 }
 
 impl DisplayInterned for UExp {
@@ -159,6 +174,9 @@ impl SolveResult {
 }
 
 impl Solver {
+    pub fn is_ok(&self) -> bool {
+        SatSolver::is_ok(&self.sat)
+    }
     fn fresh(&mut self) -> Var {
         let fresh = self.sat.new_var_default();
         self.euf.reserve(fresh);
@@ -276,6 +294,9 @@ impl Solver {
     }
 
     pub(crate) fn assert_raw_eq(&mut self, id1: Id, id2: Id) {
+        if !self.is_ok() {
+            return;
+        }
         if !self.euf.has_parents(id1) || !self.euf.has_parents(id2) {
             let _ = self.euf.union(&mut self.sat, id1, id2, Justification::NOOP);
         } else {
@@ -318,6 +339,9 @@ impl Solver {
     /// Equivalent to `self.`[`assert`](Self::assert)`(self.`[`bool_fn`](Self::bool_fn)`(f, children) ^ negate)`
     /// but more efficient
     pub fn assert_bool_fn(&mut self, f: Symbol, children: Children, negate: bool) {
+        if !self.is_ok() {
+            return;
+        }
         let (id1, _) = self.euf.add_blank_bool_node(f.into(), children);
         let id2 = self.euf.id_for_bool(!negate);
         self.assert_raw_eq(id1, id2);
@@ -397,6 +421,9 @@ impl Solver {
     /// Similar to calling [`sorted_fn`](Solver::sorted_fn) with the boolean sort, but returns
     /// a [`BoolExp`] instead of an [`Exp`]
     pub fn bool_fn(&mut self, fn_name: Symbol, children: Children) -> BoolExp {
+        if !self.is_ok() {
+            return BoolExp::FALSE;
+        }
         self.euf
             .add_bool_node(fn_name.into(), children, || {
                 Lit::new(self.sat.new_var_default(), true)
@@ -471,6 +498,11 @@ impl Solver {
     }
 
     pub fn push(&mut self) {
+        debug!(
+            "Push ({} -> {})",
+            self.euf.assertion_level(),
+            self.euf.assertion_level() + 1
+        );
         self.flush_pending();
         self.euf.reserve(Var::unsafe_from_idx(self.sat.num_vars()));
         self.sat.push_th(&mut self.euf);
@@ -478,6 +510,11 @@ impl Solver {
     }
 
     pub fn pop(&mut self, n: usize) {
+        debug!(
+            "Pop ({} -> {})",
+            self.euf.assertion_level(),
+            self.euf.assertion_level() - n
+        );
         if n > self.euf.assertion_level() {
             self.clear();
         } else if n > 0 {
@@ -491,6 +528,7 @@ impl Solver {
         self.sat.reset();
         self.euf.clear();
         self.ifs.clear();
+        self.euf.reserve(Var::unsafe_from_idx(self.sat.num_vars()))
     }
 
     /// Like [`check_sat_assuming`](Solver::check_sat_assuming) but takes in an
@@ -528,7 +566,11 @@ impl Solver {
     /// Simplifies `t` based on the current assertions
     pub fn canonize<T: ExpLike>(&self, t: T) -> T {
         let res = t.canonize(self);
-        debug!("{t:?} canonized to {res:?}");
+        debug!(
+            "{} canonized to {}",
+            t.with_intern(&self.intern),
+            res.with_intern(&self.intern)
+        );
         res
     }
 
