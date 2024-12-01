@@ -182,8 +182,6 @@ impl Theory<EUF> for EUFInner {
     }
 
     fn pop_to_level(&mut self, info: PushInfo) {
-        debug!("Pop");
-
         for lit in self.lit_id_log.drain(info.lit_log_len as usize..) {
             self.lit_ids[lit] = OpId::NONE;
         }
