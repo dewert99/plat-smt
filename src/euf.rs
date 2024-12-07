@@ -212,6 +212,7 @@ impl Theory<EUF> for EUFInner {
             EClass::Singleton => EClass::Singleton,
         });
         trace!("\n{:?}", self.egraph.dump_uncanonical());
+        trace!("\n{:?}", self.egraph.dump_classes())
     }
 
     fn initial_check(this: &mut EUF, acts: &mut TheoryArg) -> Result {
@@ -286,7 +287,7 @@ impl Theory<EUF> for EUFInner {
             debug!("EUF explains {p:?} with clause {explanation:?}");
             return;
         }
-        unreachable!()
+        unreachable!("EUF couldn't explain {p:?}")
     }
 
     fn clear(&mut self) {

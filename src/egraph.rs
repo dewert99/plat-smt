@@ -326,6 +326,10 @@ impl EGraph<EClass> {
         explain.explain_equivalence(id1, id2);
         explain.used_congruence()
     }
+
+    pub fn dump_classes(&self) -> impl Debug + '_ {
+        self.inner.dump_classes()
+    }
 }
 
 impl<D> Index<Id> for EGraph<D> {
