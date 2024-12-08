@@ -1077,6 +1077,7 @@ impl<W: Write> Parser<W> {
                     .solver_mut()
                     .assert(exp.as_bool().ok_or(AssertBool(exp.sort()))?);
                 rest.finish()?;
+                self.core.solver_mut().simplify();
             }
             Smt2Command::CheckSat => {
                 self.old_named_assertions = self.named_assertions.push();
