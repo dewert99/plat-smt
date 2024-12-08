@@ -189,7 +189,7 @@ mod test_smtlib_benchmarks {
                 base_file.read_to_end(&mut file_buf).unwrap();
                 base_file.rewind().unwrap();
                 let mut scrambled_file = File::create("tmp.smt2").unwrap();
-                let mut output_file = File::create("tmp.out").unwrap();
+                let mut output_file = File::create("tmp.rsmt2").unwrap();
                 interp_smt2(&*file_buf, &mut out, &mut err);
                 assert_eq!(&err, "");
                 file_buf.truncate(base_len);
@@ -209,13 +209,14 @@ mod test_smtlib_benchmarks {
                         drop(scrambled_file);
                         output_file.write_all(out.as_bytes()).unwrap();
                         out.clear();
-                        let validator_out = Command::new("./ModelValidator")
-                            .args(["--smt2", "tmp.smt2", "--model", "tmp.out"])
+                        let validator_out = Command::new("./dolmen")
+                            .args(["--check-model=true", "-r", "tmp.rsmt2", "tmp.smt2"])
                             .output()
                             .unwrap();
-                        assert!(validator_out
-                            .stdout
-                            .starts_with(b"model_validator_status=VALID"))
+                        if !validator_out.status.success() {
+                            std::io::stderr().write(&validator_out.stderr).unwrap();
+                            panic!();
+                        }
                     }
                     "unsat\n" => {
                         let scrambler_out = Command::new("./scrambler")
@@ -234,7 +235,7 @@ mod test_smtlib_benchmarks {
                         out.clear();
                         let scrambled_file = File::open("tmp.smt2").unwrap(); // open in read mode
                         let mut cored_child = Command::new("./scrambler")
-                            .args(["-seed", "0", "-core", "tmp.out"])
+                            .args(["-seed", "0", "-core", "tmp.rsmt2"])
                             .stdin(scrambled_file)
                             .stdout(Stdio::piped())
                             .spawn()
