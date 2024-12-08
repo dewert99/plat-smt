@@ -78,3 +78,10 @@ benches/starexec/incremental/QF_UF/2018-Goel-hwbench/QF_UF_plc.4.prop2_ab_core_m
 benches/starexec/incremental/QF_UF/2018-Goel-hwbench/QF_UF_brp.5.prop1_ab_core_max.smt2
 benches/starexec/incremental/QF_UF/2018-Goel-hwbench/QF_UF_elevator.3.prop1_ab_core_max.smt2
 benches/starexec/incremental/QF_UF/2018-Goel-hwbench/QF_UF_leader_election.2.prop1_ab_min_max.smt2
+benches/starexec/incremental/QF_UF/20190906-CLEARSY/0002/00126.smt2
+benches/starexec/non-incremental/QF_UF/2018-Goel-hwbench/QF_UF_frogs.3.prop1_ab_br_max.smt2
+benches/starexec/incremental/QF_UF/2018-Goel-hwbench/QF_UF_frogs.3.prop1_ab_core_max.smt2
+benches/starexec/incremental/QF_UF/2018-Goel-hwbench/QF_UF_sokoban.3.prop1_ab_min_max.smt2
+benches/starexec/incremental/QF_UF/2018-Goel-hwbench/QF_UF_pouring.1.prop1_ab_min_max.smt2
+benches/starexec/incremental/QF_UF/2018-Goel-hwbench/QF_UF_frogs.3.prop1_ab_min_max.smt2
+benches/starexec/incremental/QF_UF/2018-Goel-hwbench/QF_UF_rushhour.2.prop1_ab_min_max.smt2
