@@ -251,6 +251,7 @@ enum_str! {Smt2Command{
     "get-unsat-core" => GetUnsatCore(0),
     "get-value" => GetValue(1),
     "get-model" => GetModel(0),
+    "get-info" => GetInfo(1),
     "assert" => Assert(1),
     "check-sat" => CheckSat(1),
     "check-sat-assuming" => CheckSatAssuming(1),
@@ -769,9 +770,6 @@ impl<W: Write> Parser<W> {
             self.named_assertions.pop_to(self.old_named_assertions);
             self.state = State::Base;
         }
-        if self.core.solver().is_ok() {
-            self.check_point = Some(self.core.solver().checkpoint());
-        }
     }
 
     fn parse_command<R: FullBufRead>(
@@ -911,6 +909,34 @@ impl<W: Write> Parser<W> {
                     }
                 }
                 writeln!(self.writer, ")");
+            }
+            Smt2Command::GetInfo => {
+                match rest.next()? {
+                    SexpToken::Terminal(SexpTerminal::Keyword("name")) => {
+                        writeln!(&mut self.writer, "(:name \"PlatSmt\")")
+                    }
+                    SexpToken::Terminal(SexpTerminal::Keyword("authors")) => {
+                        writeln!(&mut self.writer, "(:authors \"David Ewert\")")
+                    }
+                    SexpToken::Terminal(
+                        SexpTerminal::Keyword(s @ "error-behaviour")
+                        | SexpTerminal::Keyword(s @ "error-behavior"),
+                    ) => {
+                        writeln!(&mut self.writer, "(:{s} continued-execution)")
+                    }
+                    SexpToken::Terminal(SexpTerminal::Keyword("version")) => {
+                        writeln!(&mut self.writer, "(:version \"{}\")", env!("GIT_VERSION"));
+                    }
+                    SexpToken::Terminal(SexpTerminal::Keyword("assertion-stack-levels")) => {
+                        writeln!(
+                            &mut self.writer,
+                            "(:assertion-stack-levels {})",
+                            self.core.solver().assertion_level()
+                        )
+                    }
+                    _ => return Err(InvalidCommand),
+                }
+                rest.finish()?;
             }
             Smt2Command::SetLogic => {
                 match rest.next()? {
@@ -1170,6 +1196,7 @@ impl<W: Write> Parser<W> {
             }
             _ => return Err(InvalidCommand),
         }
+        self.check_point = Some(self.core.solver().checkpoint());
         Ok(())
     }
 

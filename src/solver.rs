@@ -596,25 +596,31 @@ impl Solver {
     pub fn set_sat_options(&mut self, options: SolverOpts) -> Result<(), ()> {
         self.sat.set_options(options)
     }
+
+    pub fn assertion_level(&self) -> u32 {
+        self.euf.assertion_level() as u32
+    }
 }
 
 #[derive(Clone)]
 pub struct CheckPoint {
     sat: platsat::core::CheckPoint,
-    euf: euf::PushInfo,
+    euf: Option<euf::PushInfo>,
 }
 
 impl Solver {
     pub fn checkpoint(&self) -> CheckPoint {
         CheckPoint {
             sat: self.sat.checkpoint(),
-            euf: self.euf.deref().create_level(),
+            euf: self.is_ok().then(|| self.euf.deref().create_level()),
         }
     }
 
     pub fn restore_checkpoint(&mut self, checkpoint: CheckPoint) {
         self.sat.restore_checkpoint(checkpoint.sat);
-        self.euf.pop_to_level(checkpoint.euf, true)
+        if let Some(x) = checkpoint.euf {
+            self.euf.pop_to_level(x, true)
+        }
     }
 }
 
