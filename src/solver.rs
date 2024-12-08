@@ -62,9 +62,9 @@ impl Debug for BoolExp {
             Err(c) => Debug::fmt(&c, f),
             Ok(l) => {
                 if l.sign() {
-                    write!(f, "@Bool_{:?}", l.var())
+                    write!(f, "(as @b{:?} Bool)", l.var())
                 } else {
-                    write!(f, "(not @Bool_{:?})", l.var())
+                    write!(f, "(as (not @b{:?}) Bool)", l.var())
                 }
             }
         }
@@ -529,6 +529,11 @@ impl Solver {
         self.euf.clear();
         self.ifs.clear();
         self.euf.reserve(Var::unsafe_from_idx(self.sat.num_vars()))
+    }
+
+    pub fn simplify(&mut self) {
+        self.flush_pending();
+        self.sat.simplify_th(&mut self.euf);
     }
 
     /// Like [`check_sat_assuming`](Solver::check_sat_assuming) but takes in an
