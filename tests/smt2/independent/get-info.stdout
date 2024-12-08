@@ -1,0 +1,6 @@
+(:name "PlatSmt")
+(:authors "David Ewert")
+(:error-behavior continued-execution)
+(:assertion-stack-levels 0)
+(:assertion-stack-levels 1)
+(:assertion-stack-levels 0)

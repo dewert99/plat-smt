@@ -1,0 +1,8 @@
+(get-info :name)
+(get-info :authors)
+(get-info :error-behavior)
+(get-info :assertion-stack-levels)
+(push)
+(get-info :assertion-stack-levels)
+(pop)
+(get-info :assertion-stack-levels)

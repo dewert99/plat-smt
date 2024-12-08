@@ -24,6 +24,8 @@ that accepts a subset of SMT2LIB syntax for the logic `QF_UF`
 - [x] `push`,`pop`,`reset`,`reset-assertions`
 - [x] `set-option`
 - [x] `echo`
+- [x] `set-info`
+- [x] `get-info`
 - [ ] `get-proof`
 
 ## Binary usage
