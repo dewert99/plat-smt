@@ -181,7 +181,7 @@ impl Theory<EUF> for EUFInner {
         }
     }
 
-    fn pop_to_level(&mut self, info: PushInfo) {
+    fn pop_to_level(&mut self, info: PushInfo, clear_lits: bool) {
         for lit in self.lit_id_log.drain(info.lit_log_len as usize..) {
             self.lit_ids[lit] = OpId::NONE;
         }
@@ -203,6 +203,12 @@ impl Theory<EUF> for EUFInner {
             }
         }
         self.requests_handled = info.request_log_len;
+        if clear_lits {
+            for i in self.requests_handled as usize..self.eq_ids.requests.len() {
+                let ids = self.eq_ids.requests[i];
+                self.eq_ids.remove(&ids)
+            }
+        }
 
         self.egraph.pop(info.egraph, |class| match class {
             EClass::Uninterpreted(x) => EClass::Uninterpreted(*x),
