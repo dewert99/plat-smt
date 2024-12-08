@@ -504,8 +504,8 @@ impl Solver {
             self.euf.assertion_level() + 1
         );
         self.flush_pending();
-        self.euf.reserve(Var::unsafe_from_idx(self.sat.num_vars()));
         self.sat.push_th(&mut self.euf);
+        self.euf.reserve(Var::unsafe_from_idx(self.sat.num_vars()));
         self.euf.smt_push()
     }
 

@@ -420,7 +420,14 @@ impl OuterSolver {
             }
             sym => match self.bound.get(&sym) {
                 None => return Err(Unbound),
-                Some(Bound::Const(c)) => self.inner.canonize(*c),
+                Some(Bound::Const(c)) => {
+                    if let (ExprContext::Assert { negate }, Some(b)) = (ctx, c.as_bool()) {
+                        self.inner.assert(b ^ negate);
+                        BoolExp::from_bool(!negate).into()
+                    } else {
+                        self.inner.canonize(*c)
+                    }
+                }
                 Some(Bound::Fn(f)) => {
                     let children: Children = children
                         .zip(&f.args)
@@ -432,7 +439,12 @@ impl OuterSolver {
                             expected: f.args.len(),
                         });
                     }
-                    self.inner.sorted_fn(sym, children, f.ret)
+                    if let (ExprContext::Assert { negate }, BOOL_SORT) = (ctx, f.ret) {
+                        self.inner.assert_bool_fn(sym, children, negate);
+                        BoolExp::from_bool(!negate).into()
+                    } else {
+                        self.inner.sorted_fn(sym, children, f.ret)
+                    }
                 }
             },
         };
