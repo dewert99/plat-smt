@@ -29,7 +29,10 @@ pub trait Theory<Wrap: DerefMut<Target = Self>> {
     fn create_level(&mut self) -> Self::LevelMarker;
 
     /// Pop to the level indicated by marker
-    fn pop_to_level(&mut self, marker: Self::LevelMarker);
+    ///
+    /// If `clear_lits` is true, all literals created above the level are no longer valid and must
+    /// not be used anymore
+    fn pop_to_level(&mut self, marker: Self::LevelMarker, clear_lits: bool);
 
     /// Pre-check called before `learn`, return `Err` if there is a conflict
     #[allow(unused_variables)]
@@ -103,7 +106,7 @@ impl<Th: Theory<IncrementalWrapper<Th>>> IncrementalWrapper<Th> {
     pub fn smt_pop_to(&mut self, target_level: usize) {
         if target_level < self.push_log.len() {
             let level = self.push_log[target_level].clone();
-            self.th.pop_to_level(level.th);
+            self.th.pop_to_level(level.th, true);
             for l in self.prop_log.drain(level.prop_log as usize..) {
                 self.prop_explain.remove(&l);
             }
@@ -196,7 +199,8 @@ impl<Th: Theory<IncrementalWrapper<Th>>> BatTheory for IncrementalWrapper<Th> {
         self.prev_len = self.push_log[target_sat_level].model_len;
         let target_level = max(self.assertion_level as usize, target_sat_level);
         if target_level < self.push_log.len() {
-            self.th.pop_to_level(self.push_log[target_level].th.clone());
+            self.th
+                .pop_to_level(self.push_log[target_level].th.clone(), false);
             self.push_log.truncate(target_level);
         }
         debug!(
