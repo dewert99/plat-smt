@@ -425,7 +425,7 @@ impl OuterSolver {
                         self.inner.assert(b ^ negate);
                         BoolExp::from_bool(!negate).into()
                     } else {
-                        self.inner.canonize(*c)
+                        *c
                     }
                 }
                 Some(Bound::Fn(f)) => {

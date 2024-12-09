@@ -8,7 +8,7 @@ pub trait HasSort {
     fn sort(self) -> Sort;
 }
 
-#[derive(Copy, Clone, Debug)]
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
 pub struct UExp {
     id: Id,
     sort: Sort,
@@ -160,7 +160,7 @@ impl BitXor<bool> for BoolExp {
 }
 
 /// A dynamically sorted expression within a [`Solver`]
-#[derive(Copy, Clone)]
+#[derive(Copy, Clone, Eq, PartialEq)]
 pub struct Exp {
     sort: Sort,
     data: u32,

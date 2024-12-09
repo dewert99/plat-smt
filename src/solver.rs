@@ -8,6 +8,7 @@ use crate::sp_insert_map::SPInsertMap;
 use crate::theory::Theory as _;
 use crate::util::{display_debug, format_args2, DefaultHashBuilder, Either};
 use crate::{euf, Symbol};
+use core::cmp::Ordering;
 use core::ops::Deref;
 use hashbrown::HashMap;
 use log::debug;
@@ -93,7 +94,7 @@ impl DisplayInterned for Exp {
     }
 }
 
-pub trait ExpLike: Into<Exp> + Copy + Debug + DisplayInterned + HasSort {
+pub trait ExpLike: Into<Exp> + Copy + Debug + DisplayInterned + HasSort + Eq {
     fn canonize(self, solver: &Solver) -> Self;
 }
 
@@ -146,12 +147,17 @@ impl SatSolver for BatSolver {
     }
 
     fn propagate(&mut self, l: Lit) -> bool {
-        self.add_clause([l]);
+        let v = self.raw_value_lit(l);
+        if v == lbool::UNDEF {
+            self.add_clause_unchecked([l]);
+        } else if v == lbool::FALSE {
+            self.add_clause_unchecked([]);
+        }
         SolverInterface::is_ok(self)
     }
 
     fn raise_conflict(&mut self, _: bool) -> Option<&mut Vec<Lit>> {
-        self.add_clause([]);
+        self.add_clause_unchecked([]);
         None
     }
 }
@@ -191,24 +197,44 @@ impl Solver {
     }
 
     #[inline]
-    fn andor_reuse(&mut self, exps: &mut Vec<BLit>, is_and: bool, approx: Option<bool>) -> BLit {
+    fn andor_reuse(&mut self, exps: &mut Vec<BLit>, is_and: bool, approx: Option<bool>) -> BoolExp {
+        exps.sort_unstable();
+
+        let mut last_lit = Lit::UNDEF;
+        let mut j = 0;
+        // remove duplicates, true literals, etc.
+        for i in 0..exps.len() {
+            let lit_i = exps[i];
+            let value = self.sat.raw_value_lit(lit_i);
+            if (value == lbool::TRUE ^ is_and) || lit_i == !last_lit {
+                return BoolExp::from_bool(!is_and);
+            } else if !(value ^ is_and == lbool::FALSE) && lit_i != last_lit {
+                // not a duplicate
+                last_lit = lit_i;
+                exps[j] = lit_i;
+                j += 1;
+            }
+        }
+        exps.truncate(j);
+
         if let [exp] = &**exps {
-            return *exp;
+            return BoolExp::unknown(*exp);
         }
         let fresh = self.fresh();
         let res = Lit::new(fresh, true);
         for lit in &mut *exps {
             if approx != Some(is_and) {
-                self.sat
-                    .add_clause([*lit ^ !is_and, Lit::new(fresh, !is_and)]);
+                self.sat.add_clause_unchecked(
+                    [*lit ^ !is_and, Lit::new(fresh, !is_and)].iter().copied(),
+                );
             }
             *lit = *lit ^ is_and;
         }
         if approx != Some(!is_and) {
             exps.push(Lit::new(fresh, is_and));
-            self.sat.add_clause_reuse(exps);
+            self.sat.add_clause_unchecked(exps.iter().copied());
         }
-        res
+        BoolExp::unknown(res)
     }
 
     /// Collapse a [`Conjunction`] or [`Disjunction`] into a [`BoolExp`]
@@ -252,7 +278,7 @@ impl Solver {
         let res = match j.absorbing {
             true => BoolExp::from_bool(!IS_AND),
             false if j.lits.is_empty() => BoolExp::from_bool(IS_AND),
-            false => BoolExp::unknown(self.andor_reuse(&mut j.lits, IS_AND, approx)),
+            false => self.andor_reuse(&mut j.lits, IS_AND, approx),
         };
         self.junction_buf = j.lits;
         debug!("... {res}");
@@ -270,16 +296,28 @@ impl Solver {
     }
 
     pub fn xor(&mut self, b1: BoolExp, b2: BoolExp) -> BoolExp {
+        let b1 = self.canonize(b1);
+        let b2 = self.canonize(b2);
         let res = match (b1.to_lit(), b2.to_lit()) {
             (_, Err(b2)) => b1 ^ b2,
             (Err(b1), _) => b2 ^ b1,
             (Ok(l1), Ok(l2)) => {
+                let (l1, l2) = match l1.var().cmp(&l2.var()) {
+                    Ordering::Less => (l1, l2),
+                    Ordering::Equal if l1 == l2 => return BoolExp::FALSE,
+                    Ordering::Equal => return BoolExp::TRUE,
+                    Ordering::Greater => (l2, l1),
+                };
                 let fresh = self.fresh();
                 let fresh = Lit::new(fresh, true);
-                self.sat.add_clause([l1, l2, !fresh]);
-                self.sat.add_clause([!l1, l2, fresh]);
-                self.sat.add_clause([l1, !l2, fresh]);
-                self.sat.add_clause([!l1, !l2, !fresh]);
+                self.sat
+                    .add_clause_unchecked([l1, l2, !fresh].iter().copied());
+                self.sat
+                    .add_clause_unchecked([!l1, l2, fresh].iter().copied());
+                self.sat
+                    .add_clause_unchecked([l1, !l2, fresh].iter().copied());
+                self.sat
+                    .add_clause_unchecked([!l1, !l2, !fresh].iter().copied());
                 BoolExp::unknown(fresh)
             }
         };
@@ -335,7 +373,7 @@ impl Solver {
     /// Assert that no pair of `Id`s from `ids` are equal to each other
     pub fn assert_distinct(&mut self, ids: impl IntoIterator<Item = Id>) {
         if let Err(()) = self.euf.make_distinct(ids, &mut self.intern.symbols) {
-            self.sat.add_clause([]);
+            self.sat.add_clause_unchecked([]);
         }
     }
 
@@ -373,8 +411,8 @@ impl Solver {
             let Ok(eqe) = eqe.to_lit() else {
                 unreachable!()
             };
-            self.sat.add_clause([!i, eqt]);
-            self.sat.add_clause([i, eqe]);
+            self.sat.add_clause_unchecked([!i, eqt].iter().copied());
+            self.sat.add_clause_unchecked([i, eqe].iter().copied());
             fresh_id
         });
         self.ifs = ifs;
@@ -390,13 +428,19 @@ impl Solver {
         if tsort != esort {
             return Err((tsort, esort));
         }
-        let res = match i.to_lit() {
+        let res = match self.canonize(i).to_lit() {
             Err(true) => t,
             Err(false) => e,
             Ok(u) => {
-                let tid = self.id(t);
-                let eid = self.id(e);
-                self.raw_ite(u, tid, eid, tsort)
+                let t = self.canonize(t);
+                let e = self.canonize(e);
+                if t == e {
+                    t
+                } else {
+                    let tid = self.id(t);
+                    let eid = self.id(e);
+                    self.raw_ite(u, tid, eid, tsort)
+                }
             }
         };
         debug!("{res:?} is bound to (ite {i:?} {t:?} {e:?})");
@@ -440,10 +484,10 @@ impl Solver {
         match b.to_lit() {
             Err(true) => {}
             Ok(l) => {
-                self.sat.add_clause([l]);
+                self.sat.propagate(l);
             }
             Err(false) => {
-                self.sat.add_clause([]);
+                self.sat.add_clause_unchecked([]);
             }
         }
     }
@@ -558,7 +602,7 @@ impl Solver {
     /// See [`sorted_fn`](Solver::sorted_fn) and  [`bool_fn`](Solver::bool_fn)
     pub fn id(&mut self, exp: Exp) -> Id {
         match exp.expand() {
-            EExp::Bool(b) => match b.to_lit() {
+            EExp::Bool(b) => match self.canonize(b).to_lit() {
                 Err(b) => self.euf.id_for_bool(b),
                 Ok(lit) => self.euf.id_for_lit(lit, &mut self.intern.symbols),
             },

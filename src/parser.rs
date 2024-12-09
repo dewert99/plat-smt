@@ -858,7 +858,8 @@ impl<W: Write> Parser<W> {
                 };
                 let values = l
                     .zip_map_full(iter::repeat(()), |x, ()| {
-                        self.parse_exp(x?, StartExpCtx::Exact)
+                        let exp = self.parse_exp(x?, StartExpCtx::Exact)?;
+                        Ok(self.core.solver().canonize(exp))
                     })
                     .collect::<Result<Vec<_>>>()?;
                 drop(l);
