@@ -2,7 +2,7 @@ use crate::egraph::{children, Children, EGraph, Op, PushInfo as EGPushInfo, Symb
 use crate::exp::{BoolExp, Exp, UExp};
 use crate::explain::{EqIds, Justification};
 use crate::intern::{Sort, SymbolInfo, FALSE_SYM, TRUE_SYM};
-use crate::theory::{IncrementalWrapper, Theory};
+use crate::theory::{IncrementalArg, IncrementalWrapper, Theory};
 use crate::util::{format_args2, minmax, Bind, DebugIter, DefaultHashBuilder};
 use crate::Symbol;
 use hashbrown::HashMap;
@@ -168,7 +168,7 @@ impl Default for EUFInner {
 type Result = core::result::Result<(), ()>;
 
 pub type EUF = IncrementalWrapper<EUFInner>;
-impl Theory<EUF> for EUFInner {
+impl Theory for EUFInner {
     type LevelMarker = PushInfo;
 
     fn create_level(&self) -> PushInfo {
@@ -221,62 +221,63 @@ impl Theory<EUF> for EUFInner {
         trace!("\n{:?}", self.egraph.dump_classes())
     }
 
-    fn initial_check(this: &mut EUF, acts: &mut TheoryArg) -> Result {
-        while (this.requests_handled as usize) < this.eq_ids.requests.len() {
-            let [id0, id1] = this.eq_ids.requests[this.requests_handled as usize];
-            this.requests_handled += 1;
-            if this.find(id0) != this.find(id1) {
-                let lit = this.eq_ids.get_or_insert([id0, id1], || acts.mk_new_lit());
-                let (id, res) = this.add_uncanonical(EQ_OP, children![id0, id1], lit, acts);
-                this.add_id_to_lit(id, lit);
-                this.make_equality_true(id0, id1);
+    fn initial_check(&mut self, acts: &mut TheoryArg, iacts: &IncrementalArg<Self>) -> Result {
+        while (self.requests_handled as usize) < self.eq_ids.requests.len() {
+            let [id0, id1] = self.eq_ids.requests[self.requests_handled as usize];
+            self.requests_handled += 1;
+            if self.find(id0) != self.find(id1) {
+                let lit = self.eq_ids.get_or_insert([id0, id1], || acts.mk_new_lit());
+                let (id, res) = self.add_uncanonical(EQ_OP, children![id0, id1], lit, acts, iacts);
+                self.add_id_to_lit(id, lit);
+                self.make_equality_true(id0, id1);
                 debug!("lit{lit:?} is defined as (= {id0} {id1}) mid-search");
                 res.expect("Adding mid search shouldn't cause conflict");
             } else {
-                debug_assert!(this.eq_ids.get([id0, id1]).is_none());
+                debug_assert!(self.eq_ids.get([id0, id1]).is_none());
             }
         }
         Ok(())
     }
 
-    fn learn(this: &mut EUF, lit: Lit, acts: &mut TheoryArg) -> Result {
+    fn learn(&mut self, lit: Lit, acts: &mut TheoryArg, iacts: &IncrementalArg<Self>) -> Result {
         debug_assert!(acts.is_ok());
         debug!("EUF learns {lit:?}");
         let just = Justification::from_lit(lit);
         let tlit = lit.apply_sign(true);
-        if let Some(id) = this.lit_ids[tlit].expand() {
+        if let Some(id) = self.lit_ids[tlit].expand() {
             // Note it is important to union the children of an equality before union-ing the lit
             // with true because of an optimization in the explanation
-            let node = this.egraph.id_to_node(id);
-            if let Some([id0, id1]) = this.eq_ids.check_node_is_eq(node) {
-                this.union(acts, id0, id1, just)?;
+            let node = self.egraph.id_to_node(id);
+            if let Some([id0, id1]) = self.eq_ids.check_node_is_eq(node) {
+                self.union(acts, iacts, id0, id1, just)?;
             }
-            let cid = this.id_for_bool(true);
-            this.union(acts, cid, id, just)?;
+            let cid = self.id_for_bool(true);
+            self.union(acts, iacts, cid, id, just)?;
         }
-        if let Some(id) = this.lit_ids[!tlit].expand() {
-            let cid = this.id_for_bool(false);
-            this.union(acts, cid, id, just)?;
+        if let Some(id) = self.lit_ids[!tlit].expand() {
+            let cid = self.id_for_bool(false);
+            self.union(acts, iacts, cid, id, just)?;
         }
         Ok(())
     }
 
-    fn pre_decision_check(this: &mut EUF, acts: &mut TheoryArg) -> Result {
-        this.rebuild(acts)
+    fn pre_decision_check(&mut self, acts: &mut TheoryArg, iacts: &IncrementalArg<Self>) -> Result {
+        self.rebuild(acts, iacts)
     }
 
     fn explain_propagation<'a>(
-        this: &'a mut EUF,
+        &mut self,
         p: Lit,
         arg: &'a mut ExplainTheoryArg,
+        iacts: &IncrementalArg<Self>,
         is_final: bool,
     ) {
         let explanation = arg.clause_builder();
         let base_len = explanation.len();
-        if let Some(id) = this.lit_ids[p].expand() {
-            let const_bool = this.id_for_bool(true);
-            if this.egraph.find(id) == this.egraph.find(const_bool) {
-                this.explain(id, const_bool, is_final, explanation);
+        if let Some(id) = self.lit_ids[p].expand() {
+            let const_bool = self.id_for_bool(true);
+            if self.egraph.find(id) == self.egraph.find(const_bool) {
+                self.explain(id, const_bool, is_final, explanation, iacts);
                 if explanation.last() != Some(&!p) {
                     debug_assert!(!explanation.contains(&!p), "{explanation:?}, {p:?}");
                     debug!("EUF explains {p:?} with clause {explanation:?}");
@@ -287,9 +288,9 @@ impl Theory<EUF> for EUFInner {
                 }
             }
         }
-        if let Some(id) = this.lit_ids[!p].expand() {
-            let const_bool = this.id_for_bool(false);
-            this.explain(id, const_bool, is_final, explanation);
+        if let Some(id) = self.lit_ids[!p].expand() {
+            let const_bool = self.id_for_bool(false);
+            self.explain(id, const_bool, is_final, explanation, iacts);
             debug!("EUF explains {p:?} with clause {explanation:?}");
             return;
         }
@@ -386,112 +387,6 @@ impl<'a, S: 'a + SatSolver> MergeContext<'a, S> {
         }
     }
 }
-
-impl EUF {
-    /// writes an explanation clause of `id1 == id2` to `explanation`
-    /// returns whether the explanation would be a useful clause
-    fn explain(&mut self, id1: Id, id2: Id, is_final: bool, explanation: &mut Vec<Lit>) -> bool {
-        let base_unions = self
-            .base_marker()
-            .map(|x| x.egraph.number_of_unions())
-            .unwrap_or(usize::MAX);
-        let last_unions = if is_final {
-            base_unions // don't use shortcut explanations for `explain_propagation_final`
-        } else {
-            self.last_marker()
-                .map(|x| x.egraph.number_of_unions())
-                .unwrap_or(usize::MAX)
-        };
-        let this = &mut **self;
-        let add_clause = this.egraph.explain_equivalence(
-            id1,
-            id2,
-            explanation,
-            base_unions,
-            last_unions,
-            &mut this.eq_ids,
-        );
-        add_clause
-    }
-
-    fn conflict(&mut self, acts: &mut impl SatSolver, id1: Id, id2: Id) {
-        if let Some(explaination) = acts.raise_conflict(false) {
-            self.explain(id1, id2, false, explaination);
-            // TODO handle add_clause
-            debug!("EUF Conflict by {explaination:?}");
-        }
-    }
-
-    pub(crate) fn rebuild(&mut self, acts: &mut impl SatSolver) -> Result {
-        debug!("Rebuilding EGraph");
-        EGraph::try_rebuild(
-            self,
-            |this| &mut this.egraph,
-            |this, just, id1, id2| this.union(acts, id1, id2, just),
-        )
-    }
-
-    pub(crate) fn add_uncanonical(
-        &mut self,
-        op: Op,
-        children: Children,
-        lit: Lit,
-        acts: &mut impl SatSolver,
-    ) -> (Id, Result) {
-        let mut conflict = None;
-        let this = &mut **self;
-        let ctx = MergeContext {
-            acts,
-            history: &mut this.bool_class_history,
-            conflict: &mut conflict,
-        };
-        // this won't be used since the new class won't be EClass::Singleton
-        let dummy_id = Id::from(usize::MAX);
-        let id = this.egraph.add_uncanonical(
-            op,
-            children,
-            |_| EClass::Bool(BoolClass::Unknown(litvec![lit])),
-            ctx.merge_fn(dummy_id, dummy_id),
-        );
-        if !acts.is_ok() {
-            return (id, Err(()));
-        }
-
-        if let Some([id1, id2]) = conflict {
-            self.conflict(acts, id1, id2);
-            return (id, Err(()));
-        }
-        return (id, Ok(()));
-    }
-
-    pub(crate) fn union(
-        &mut self,
-        acts: &mut impl SatSolver,
-        id1: Id,
-        id2: Id,
-        just: Justification,
-    ) -> Result {
-        debug!("EUF union id{id1:?} with id{id2:?} by {just:?}");
-        let mut conflict = None;
-        let this = &mut **self;
-        let ctx = MergeContext {
-            acts,
-            history: &mut this.bool_class_history,
-            conflict: &mut conflict,
-        };
-        this.egraph.union(id1, id2, just, ctx.merge_fn(id1, id2));
-        if !acts.is_ok() {
-            return Err(());
-        }
-
-        if let Some([id1, id2]) = conflict {
-            self.conflict(acts, id1, id2);
-            return Err(());
-        }
-        Ok(())
-    }
-}
-
 impl EUFInner {
     fn init(&mut self) {
         let t_eq_f = self.egraph.add(
@@ -679,6 +574,126 @@ impl EUFInner {
     /// `id < self.len_id()`
     pub fn len_id(&self) -> Id {
         Id::from(self.egraph.number_of_uncanonical_nodes())
+    }
+
+    pub(crate) fn add_uncanonical(
+        &mut self,
+        op: Op,
+        children: Children,
+        lit: Lit,
+        acts: &mut impl SatSolver,
+        iacts: &IncrementalArg<Self>,
+    ) -> (Id, Result) {
+        let mut conflict = None;
+        let ctx = MergeContext {
+            acts,
+            history: &mut self.bool_class_history,
+            conflict: &mut conflict,
+        };
+        // this won't be used since the new class won't be EClass::Singleton
+        let dummy_id = Id::from(usize::MAX);
+        let id = self.egraph.add_uncanonical(
+            op,
+            children,
+            |_| EClass::Bool(BoolClass::Unknown(litvec![lit])),
+            ctx.merge_fn(dummy_id, dummy_id),
+        );
+        if !acts.is_ok() {
+            return (id, Err(()));
+        }
+
+        if let Some([id1, id2]) = conflict {
+            self.conflict(acts, id1, id2, iacts);
+            return (id, Err(()));
+        }
+        (id, Ok(()))
+    }
+
+    /// writes an explanation clause of `id1 == id2` to `explanation`
+    /// returns whether the explanation would be a useful clause
+    fn explain(
+        &mut self,
+        id1: Id,
+        id2: Id,
+        is_final: bool,
+        explanation: &mut Vec<Lit>,
+        iacts: &IncrementalArg<Self>,
+    ) -> bool {
+        let base_unions = iacts
+            .base_marker()
+            .map(|x| x.egraph.number_of_unions())
+            .unwrap_or(usize::MAX);
+        let last_unions = if is_final {
+            base_unions // don't use shortcut explanations for `explain_propagation_final`
+        } else {
+            iacts
+                .last_marker()
+                .map(|x| x.egraph.number_of_unions())
+                .unwrap_or(usize::MAX)
+        };
+        let add_clause = self.egraph.explain_equivalence(
+            id1,
+            id2,
+            explanation,
+            base_unions,
+            last_unions,
+            &mut self.eq_ids,
+        );
+        add_clause
+    }
+
+    fn conflict(
+        &mut self,
+        acts: &mut impl SatSolver,
+        id1: Id,
+        id2: Id,
+        iacts: &IncrementalArg<Self>,
+    ) {
+        if let Some(explaination) = acts.raise_conflict(false) {
+            self.explain(id1, id2, false, explaination, iacts);
+            // TODO handle add_clause
+            debug!("EUF Conflict by {explaination:?}");
+        }
+    }
+
+    pub(crate) fn rebuild(
+        &mut self,
+        acts: &mut impl SatSolver,
+        iacts: &IncrementalArg<Self>,
+    ) -> Result {
+        debug!("Rebuilding EGraph");
+        EGraph::try_rebuild(
+            self,
+            |this| &mut this.egraph,
+            |this, just, id1, id2| this.union(acts, iacts, id1, id2, just),
+        )
+    }
+
+    pub(crate) fn union(
+        &mut self,
+        acts: &mut impl SatSolver,
+        iacts: &IncrementalArg<Self>,
+        id1: Id,
+        id2: Id,
+        just: Justification,
+    ) -> Result {
+        debug!("EUF union id{id1:?} with id{id2:?} by {just:?}");
+        let mut conflict = None;
+        let ctx = MergeContext {
+            acts,
+            history: &mut self.bool_class_history,
+            conflict: &mut conflict,
+        };
+        self.egraph.union(id1, id2, just, ctx.merge_fn(id1, id2));
+        if !acts.is_ok() {
+            return Err(());
+        }
+
+        if let Some([id1, id2]) = conflict {
+            self.conflict(acts, id1, id2, iacts);
+            return Err(());
+        }
+        Ok(())
     }
 }
 

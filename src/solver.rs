@@ -300,7 +300,8 @@ impl Solver {
             return;
         }
         if !self.euf.has_parents(id1) || !self.euf.has_parents(id2) {
-            let _ = self.euf.union(&mut self.sat, id1, id2, Justification::NOOP);
+            let (euf, arg) = self.euf.open();
+            let _ = euf.union(&mut self.sat, arg, id1, id2, Justification::NOOP);
         } else {
             self.pending_equalities.push((id1, id2));
         }
@@ -449,8 +450,8 @@ impl Solver {
 
     fn flush_pending(&mut self) {
         let _ = self.pending_equalities.iter().try_for_each(|(id1, id2)| {
-            self.euf
-                .union(&mut self.sat, *id1, *id2, Justification::NOOP)
+            let (euf, arg) = self.euf.open();
+            euf.union(&mut self.sat, &arg, *id1, *id2, Justification::NOOP)
         });
         self.pending_equalities.clear();
     }
