@@ -591,7 +591,7 @@ impl EUFInner {
             conflict: &mut conflict,
         };
         // this won't be used since the new class won't be EClass::Singleton
-        let dummy_id = Id::from(usize::MAX);
+        let dummy_id = Id::MAX;
         let id = self.egraph.add_uncanonical(
             op,
             children,
