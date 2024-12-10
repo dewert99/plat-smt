@@ -126,7 +126,7 @@ pub(crate) fn id_for_bool(b: bool) -> Id {
 }
 
 #[derive(Debug)]
-pub struct EUFInner {
+pub struct EufInner {
     egraph: EGraph<EClass>,
     bool_class_history: Vec<MergeInfo>,
     lit_id_log: Vec<Lit>,
@@ -137,7 +137,7 @@ pub struct EUFInner {
     requests_handled: u32,
 }
 
-impl Default for EUFInner {
+impl Default for EufInner {
     fn default() -> Self {
         let mut egraph = EGraph::default();
         let fid = egraph.add(FALSE_SYM.into(), Children::new(), |_| {
@@ -146,7 +146,7 @@ impl Default for EUFInner {
         let tid = egraph.add(TRUE_SYM.into(), Children::new(), |_| {
             EClass::Bool(BoolClass::Const(true))
         });
-        let mut res = EUFInner {
+        let mut res = EufInner {
             egraph,
             bool_class_history: vec![],
             lit_id_log: vec![],
@@ -167,8 +167,8 @@ impl Default for EUFInner {
 
 type Result = core::result::Result<(), ()>;
 
-pub type EUF = IncrementalWrapper<EUFInner>;
-impl Theory for EUFInner {
+pub type Euf = IncrementalWrapper<EufInner>;
+impl Theory for EufInner {
     type LevelMarker = PushInfo;
 
     fn create_level(&self) -> PushInfo {
@@ -265,10 +265,10 @@ impl Theory for EUFInner {
         self.rebuild(acts, iacts)
     }
 
-    fn explain_propagation<'a>(
+    fn explain_propagation(
         &mut self,
         p: Lit,
-        arg: &'a mut ExplainTheoryArg,
+        arg: &mut ExplainTheoryArg,
         iacts: &IncrementalArg<Self>,
         is_final: bool,
     ) {
@@ -365,7 +365,7 @@ impl<'a, S: 'a + SatSolver> MergeContext<'a, S> {
                 MergeInfo::Left(lits)
             }
             (BoolClass::Unknown(lits), BoolClass::Const(b)) => {
-                self.propagate(&lits, b);
+                self.propagate(lits, b);
                 let res = MergeInfo::Right(mem::take(lits));
                 *lbool = BoolClass::Const(b);
                 res
@@ -387,7 +387,7 @@ impl<'a, S: 'a + SatSolver> MergeContext<'a, S> {
         }
     }
 }
-impl EUFInner {
+impl EufInner {
     fn init(&mut self) {
         let t_eq_f = self.egraph.add(
             EQ_OP,
@@ -429,7 +429,7 @@ impl EUFInner {
         mut fresh_lit: impl FnMut() -> Lit,
     ) -> (BoolExp, bool, Id) {
         let mut added = None;
-        let id = self.egraph.add(sym.into(), children, |_| {
+        let id = self.egraph.add(sym, children, |_| {
             let lit = fresh_lit();
             added = Some(lit);
             EClass::Bool(BoolClass::Unknown(litvec![lit]))
@@ -631,15 +631,14 @@ impl EUFInner {
                 .map(|x| x.egraph.number_of_unions())
                 .unwrap_or(usize::MAX)
         };
-        let add_clause = self.egraph.explain_equivalence(
+        self.egraph.explain_equivalence(
             id1,
             id2,
             explanation,
             base_unions,
             last_unions,
             &mut self.eq_ids,
-        );
-        add_clause
+        )
     }
 
     fn conflict(
@@ -705,7 +704,7 @@ pub struct FunctionInfo<L = SymbolLang> {
 
 pub struct FullFunctionInfo<'a, L = SymbolLang> {
     base: &'a FunctionInfo<L>,
-    euf: &'a EUFInner,
+    euf: &'a EufInner,
 }
 
 impl<L> FunctionInfo<L> {
@@ -718,7 +717,7 @@ impl<L> FunctionInfo<L> {
         self.indices.get(&s).map_or(&[], |r| &self.data[r.clone()])
     }
 
-    pub fn with_euf<'a>(&'a self, euf: &'a EUFInner) -> FullFunctionInfo<'a, L> {
+    pub fn with_euf<'a>(&'a self, euf: &'a EufInner) -> FullFunctionInfo<'a, L> {
         FullFunctionInfo { base: self, euf }
     }
 }

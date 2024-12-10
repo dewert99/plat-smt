@@ -318,12 +318,10 @@ impl OuterSolver {
         let res: Exp = match f {
             AND_SYM => {
                 if matches!(ctx, ExprContext::Assert { negate: false }) {
-                    children
-                        .map(|x| {
-                            self.inner.assert(x.as_bool()?);
-                            Ok(())
-                        })
-                        .collect::<Result<(), AddSexpError>>()?;
+                    children.try_for_each(|x| {
+                        self.inner.assert(x.as_bool()?);
+                        Ok(())
+                    })?;
                     BoolExp::TRUE.into()
                 } else {
                     let mut c: Conjunction = self.inner.new_junction();
@@ -333,12 +331,10 @@ impl OuterSolver {
             }
             OR_SYM => {
                 if matches!(ctx, ExprContext::Assert { negate: true }) {
-                    children
-                        .map(|x| {
-                            self.inner.assert(!x.as_bool()?);
-                            Ok(())
-                        })
-                        .collect::<Result<(), AddSexpError>>()?;
+                    children.try_for_each(|x| {
+                        self.inner.assert(!x.as_bool()?);
+                        Ok(())
+                    })?;
                     BoolExp::FALSE.into()
                 } else {
                     let mut d: Disjunction = self.inner.new_junction();
@@ -361,7 +357,7 @@ impl OuterSolver {
             }
             XOR_SYM => children
                 .map(|x| x.as_bool())
-                .fold(Ok(BoolExp::FALSE), |b1, b2| Ok(self.inner.xor(b1?, b2?)))?
+                .try_fold(BoolExp::FALSE, |b1, b2| Ok(self.inner.xor(b1, b2?)))?
                 .into(),
             EQ_SYM => {
                 let mut c: Conjunction = self.inner.new_junction();
@@ -375,7 +371,7 @@ impl OuterSolver {
                         match ctx {
                             ExprContext::Assert { negate: false } => {
                                 self.inner.assert_raw_eq(id1, id2);
-                                Ok(BoolExp::TRUE.into())
+                                Ok(BoolExp::TRUE)
                             }
                             _ => Ok(self.inner.raw_eq(id1, id2)),
                         }
@@ -475,12 +471,12 @@ impl OuterSolver {
                 info!(
                     "{} => {} in ctx {ctx:?}",
                     util::display_sexp(
-                        f.with_intern(&self.intern()),
+                        f.with_intern(self.intern()),
                         self.exp_stack[stack_len as usize..]
                             .iter()
-                            .map(|x| x.with_intern(&self.intern())),
+                            .map(|x| x.with_intern(self.intern())),
                     ),
-                    x.with_intern(&self.intern())
+                    x.with_intern(self.intern())
                 );
                 self.exp_stack.truncate(stack_len as usize);
                 Ok(x)

@@ -11,7 +11,7 @@ pub struct Symbol(pub(crate) u32);
 #[derive(Copy, Clone, Eq, PartialEq, Debug, Hash)]
 pub struct Sort(u32);
 
-const BASE_SYMBOLS: &'static [&'static str] = &[
+const BASE_SYMBOLS: &[&str] = &[
     "|Default|",
     "Bool",
     "true",
@@ -67,7 +67,7 @@ pub const LET_STAR_SYM: Symbol = base_symbol("let*");
 
 pub const ANNOT_SYM: Symbol = base_symbol("!");
 
-const BASE_SORTS: &'static [(Symbol, &'static [Sort])] = &[(BOOL_SYM, &[])];
+const BASE_SORTS: &[(Symbol, &[Sort])] = &[(BOOL_SYM, &[])];
 
 const fn sort_slice_eq(s0: &[Sort], s1: &[Sort]) -> bool {
     match (s0, s1) {
@@ -191,14 +191,12 @@ impl SortInfo {
         let hash = self.hasher.hash_one((name, args));
         match self.map.entry(
             hash,
-            |x| {
-                (|&(sym, start, end, _)| (sym, &self.sort_args[start as usize..end as usize]))(x)
-                    == (name, args)
+            |&(sym, start, end, _)| {
+                (sym, &self.sort_args[start as usize..end as usize]) == (name, args)
             },
-            |x| {
-                self.hasher.hash_one((|&(sym, start, end, _)| {
-                    (sym, &self.sort_args[start as usize..end as usize])
-                })(x))
+            |&(sym, start, end, _)| {
+                self.hasher
+                    .hash_one({ (sym, &self.sort_args[start as usize..end as usize]) })
             },
         ) {
             Entry::Occupied(occ) => Sort(occ.get().3),
@@ -285,7 +283,7 @@ impl DisplayInterned for Symbol {
 impl DisplayInterned for Sort {
     fn fmt(&self, i: &InternInfo, f: &mut Formatter<'_>) -> std::fmt::Result {
         let (name, params) = i.sorts.resolve(*self);
-        if params.len() == 0 {
+        if params.is_empty() {
             write!(f, "{}", name.with_intern(i))
         } else {
             write!(f, "({}", name.with_intern(i))?;

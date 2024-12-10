@@ -49,8 +49,8 @@ impl Op {
     /// Returns a congruence justification that is flipped if
     /// self's flipped-ness does not match other
     fn congruence_just(self, other: Self) -> Justification {
-        let f1 = u32::from(self.0) & FLIPPED_MASK;
-        let f2 = u32::from(other.0) & FLIPPED_MASK;
+        let f1 = self.0 & FLIPPED_MASK;
+        let f2 = other.0 & FLIPPED_MASK;
         Justification::congruence((f1 ^ f2) >> FLIPPED_SHIFT)
     }
 
@@ -97,7 +97,7 @@ impl Eq for Op {}
 
 impl PartialOrd<Self> for Op {
     fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
-        self.sym_u32().partial_cmp(&other.sym_u32())
+        Some(self.cmp(other))
     }
 }
 

@@ -429,7 +429,7 @@ impl<'a, 'b, R: FullBufRead> CountingParser<'a, 'b, R> {
     }
 
     fn next_parse<N: FromSexp>(&mut self) -> Result<N> {
-        Ok(N::from_sexp(self.next()?)?)
+        N::from_sexp(self.next()?)
     }
 
     fn try_next_parse<N: FromSexp>(&mut self) -> Result<Option<N>> {
@@ -704,7 +704,7 @@ impl<W: Write> Parser<W> {
         if self.currently_defining == Some(s) {
             return Err(NamedShadow(s));
         }
-        if let Err(_) = self.core.define(s, Bound::Const(exp)) {
+        if self.core.define(s, Bound::Const(exp)).is_err() {
             return Err(NamedShadow(s));
         }
         rest.finish()?;
@@ -866,7 +866,7 @@ impl<W: Write> Parser<W> {
                 write!(self.writer, "(");
                 let mut iter = values.into_iter().map(|(exp, span)| {
                     (
-                        exp.with_intern(&self.core.intern()),
+                        exp.with_intern(self.core.intern()),
                         rest.p.lookup_range(span),
                     )
                 });
@@ -1248,7 +1248,7 @@ impl<W: Write> Parser<W> {
             data,
             self,
             |this, t| this.parse_command_token(t?),
-            |this, e| writeln!(err, "{}", e.map(|x| x.with_intern(&this.core.intern()))).unwrap(),
+            |this, e| writeln!(err, "{}", e.map(|x| x.with_intern(this.core.intern()))).unwrap(),
         );
     }
 }

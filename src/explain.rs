@@ -322,7 +322,7 @@ impl<'x>
         let base_path_score = self.assoc_unions[usize::from(pred)];
         debug_assert_ne!(base_path_score, u32::MAX);
         if ancestor == other {
-            return (base_path_score, !other_is_left);
+            (base_path_score, !other_is_left)
         } else {
             let mut curr = other;
             loop {

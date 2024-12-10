@@ -73,10 +73,10 @@ pub trait Theory {
     ///
     /// `acts.clause_builder()` comes pre-initialized with `p` as its first element to satisfy
     /// [`BatTheory::explain_propagation_clause`]'s requirements
-    fn explain_propagation<'a>(
+    fn explain_propagation(
         &mut self,
         p: Lit,
-        acts: &'a mut ExplainTheoryArg,
+        acts: &mut ExplainTheoryArg,
         iacts: &IncrementalArg<Self>,
         is_final: bool,
     );

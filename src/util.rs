@@ -126,7 +126,7 @@ pub fn powi(mut f: f64, mut exp: u32) -> f64 {
         f *= f;
         exp >>= 1;
     }
-    return res;
+    res
 }
 
 #[test]

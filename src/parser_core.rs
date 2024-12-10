@@ -8,12 +8,8 @@ fn is_white_space_byte(c: u8) -> bool {
     matches!(c, b' ' | b'\n' | b'\t' | b'\r')
 }
 
-fn is_digit_byte(c: u8) -> bool {
-    matches!(c, b'0'..=b'9')
-}
-
 pub(crate) fn is_symbol_byte(c: u8) -> bool {
-    is_digit_byte(c) || is_non_digit_symbol_byte(c)
+    c.is_ascii_digit() || is_non_digit_symbol_byte(c)
 }
 
 pub(crate) fn is_non_digit_symbol_byte(c: u8) -> bool {
@@ -100,7 +96,7 @@ impl<'a, T> Spanned<'a, T> {
     pub fn map<U>(self, f: impl FnOnce(T) -> U) -> Spanned<'a, U> {
         Spanned {
             data: f(self.data),
-            src: &self.src,
+            src: self.src,
             span: self.span,
         }
     }
@@ -140,7 +136,7 @@ enum DropToken {
     LeftParen,
     RightParen,
     ErrEOI,
-    EOI,
+    Eoi,
     None,
 }
 
@@ -220,7 +216,7 @@ impl<R: FullBufRead> SexpLexer<R> {
         }
     }
 
-    fn read_number_raw<'x>(
+    fn read_number_raw(
         &mut self,
         first_byte: Option<u8>,
         radix: Radix,
@@ -396,7 +392,7 @@ impl<R: FullBufRead> SexpLexer<R> {
             }
             Some(_) => DropToken::None,
             // EOI or Error
-            None => DropToken::EOI,
+            None => DropToken::Eoi,
         }
     }
 
@@ -574,7 +570,7 @@ impl<'a, R: FullBufRead> SexpParser<'a, R> {
                 DropToken::None => {}
                 DropToken::LeftParen => depth += 1,
                 DropToken::RightParen if depth > 0 => depth -= 1,
-                DropToken::RightParen | DropToken::EOI | DropToken::ErrEOI => return,
+                DropToken::RightParen | DropToken::Eoi | DropToken::ErrEOI => return,
             }
         }
     }

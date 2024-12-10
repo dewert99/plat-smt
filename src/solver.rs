@@ -1,5 +1,5 @@
 use crate::egraph::Children;
-use crate::euf::{FullFunctionInfo, FunctionInfo, SatSolver, EUF};
+use crate::euf::{Euf, FullFunctionInfo, FunctionInfo, SatSolver};
 use crate::exp::*;
 use crate::explain::Justification;
 use crate::intern::*;
@@ -28,7 +28,7 @@ type BatSolver = platsat::Solver<NoCb>;
 ///
 /// It allows constructing and asserting expressions [`Exp`] within the solver
 pub struct Solver {
-    euf: EUF,
+    euf: Euf,
     pending_equalities: Vec<(Id, Id)>,
     sat: BatSolver,
     function_info_buf: FunctionInfo,
@@ -164,12 +164,12 @@ impl SatSolver for BatSolver {
 
 impl SolveResult {
     pub fn valid_when_expecting(self, oth: SolveResult) -> bool {
-        match (self, oth) {
+        matches!(
+            (self, oth),
             (SolveResult::Sat, SolveResult::Sat)
-            | (SolveResult::Unsat, SolveResult::Unsat)
-            | (_, SolveResult::Unknown) => true,
-            _ => false,
-        }
+                | (SolveResult::Unsat, SolveResult::Unsat)
+                | (_, SolveResult::Unknown)
+        )
     }
 
     pub fn as_lower_str(self) -> &'static str {
@@ -228,7 +228,7 @@ impl Solver {
                     [*lit ^ !is_and, Lit::new(fresh, !is_and)].iter().copied(),
                 );
             }
-            *lit = *lit ^ is_and;
+            *lit ^= is_and;
         }
         if approx != Some(!is_and) {
             exps.push(Lit::new(fresh, is_and));
@@ -366,7 +366,8 @@ impl Solver {
         if exp1.sort() != exp2.sort() {
             Err((exp1.sort(), exp2.sort()))
         } else {
-            Ok(self.assert_raw_eq(id1, id2))
+            self.assert_raw_eq(id1, id2);
+            Ok(())
         }
     }
 
@@ -495,7 +496,7 @@ impl Solver {
     fn flush_pending(&mut self) {
         let _ = self.pending_equalities.iter().try_for_each(|(id1, id2)| {
             let (euf, arg) = self.euf.open();
-            euf.union(&mut self.sat, &arg, *id1, *id2, Justification::NOOP)
+            euf.union(&mut self.sat, arg, *id1, *id2, Justification::NOOP)
         });
         self.pending_equalities.clear();
     }
