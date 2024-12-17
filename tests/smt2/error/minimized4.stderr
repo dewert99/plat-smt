@@ -1,0 +1,4 @@
+the function `check-sat-assuming` expects at least 1 arguments but only got 0 at 3:20
+(check-sat-assuming)
+                   ^
+

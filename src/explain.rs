@@ -1,7 +1,6 @@
 use no_std_compat::prelude::v1::*;
 // https://www.cs.upc.edu/~oliveras/rta05.pdf
 // 2.1 Union-find with an O(k log n) Explain operation
-use platsat::intmap::AsIndex;
 use platsat::Lit;
 use std::fmt::{Debug, Formatter};
 use std::ops::{Deref, DerefMut};
@@ -53,7 +52,7 @@ impl EqIdInfo {
         } else if self.0 == !1 {
             EEqIdInfo::Requested
         } else {
-            EEqIdInfo::Lit(Lit::from_index(self.0 as usize))
+            EEqIdInfo::Lit(Lit::from(self.0 as usize))
         }
     }
 }
@@ -169,7 +168,7 @@ impl Justification {
         match self.0 & !1 {
             C => EJustification::Congruence((self.0 & 1) != 0),
             N => EJustification::NoOp,
-            _ => EJustification::Lit(Lit::from_index(self.0 as usize)),
+            _ => EJustification::Lit(Lit::from(self.0 as usize)),
         }
     }
 }

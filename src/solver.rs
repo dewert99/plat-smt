@@ -27,6 +27,7 @@ type BatSolver = platsat::Solver<NoCb>;
 /// The main solver structure including the sat solver and egraph.
 ///
 /// It allows constructing and asserting expressions [`Exp`] within the solver
+#[perfect_derive(Default)]
 pub struct Solver {
     euf: Euf,
     pending_equalities: Vec<(Id, Id)>,
@@ -35,22 +36,6 @@ pub struct Solver {
     ifs: SPInsertMap<(Lit, Id, Id), Id>,
     pub intern: InternInfo,
     junction_buf: Vec<Lit>,
-}
-
-impl Default for Solver {
-    fn default() -> Self {
-        let mut res = Self {
-            euf: Default::default(),
-            pending_equalities: Default::default(),
-            sat: Default::default(),
-            function_info_buf: Default::default(),
-            ifs: Default::default(),
-            intern: Default::default(),
-            junction_buf: Default::default(),
-        };
-        res.euf.reserve(Var::unsafe_from_idx(res.sat.num_vars()));
-        res
-    }
 }
 
 impl DisplayInterned for UExp {
@@ -187,7 +172,6 @@ impl Solver {
     }
     fn fresh(&mut self) -> Var {
         let fresh = self.sat.new_var_default();
-        self.euf.reserve(fresh);
         fresh
     }
 
@@ -553,7 +537,6 @@ impl Solver {
         );
         self.flush_pending();
         self.sat.push_th(&mut self.euf);
-        self.euf.reserve(Var::unsafe_from_idx(self.sat.num_vars()));
         self.euf.smt_push()
     }
 
@@ -576,7 +559,6 @@ impl Solver {
         self.sat.reset();
         self.euf.clear();
         self.ifs.clear();
-        self.euf.reserve(Var::unsafe_from_idx(self.sat.num_vars()))
     }
 
     pub fn simplify(&mut self) {

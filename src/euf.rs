@@ -5,6 +5,7 @@ use crate::intern::{Sort, SymbolInfo, FALSE_SYM, TRUE_SYM};
 use crate::theory::{IncrementalArg, IncrementalWrapper, Theory};
 use crate::util::{format_args2, minmax, Bind, DebugIter, DefaultHashBuilder};
 use crate::Symbol;
+use default_vec2::ConstDefault;
 use hashbrown::HashMap;
 use log::{debug, trace};
 use no_std_compat::prelude::v1::*;
@@ -12,7 +13,7 @@ use perfect_derive::perfect_derive;
 use plat_egg::{raw::Language, Id};
 use platsat::core::ExplainTheoryArg;
 use platsat::LMap;
-use platsat::{Lit, TheoryArg, Var};
+use platsat::{Lit, TheoryArg};
 use std::fmt::{Debug, Formatter};
 use std::mem;
 use std::ops::Range;
@@ -50,6 +51,10 @@ impl Default for OpId {
     fn default() -> Self {
         OpId::NONE
     }
+}
+
+impl ConstDefault for OpId {
+    const DEFAULT: &'static Self = &OpId::NONE;
 }
 
 #[derive(Debug, Clone)]
@@ -408,12 +413,7 @@ impl EufInner {
         self.egraph.find(id)
     }
 
-    pub fn reserve(&mut self, v: Var) {
-        self.lit_ids.reserve_default(Lit::new(v, false));
-    }
-
     fn add_id_to_lit(&mut self, id: Id, l: Lit) {
-        self.reserve(l.var());
         self.lit_ids[l] = OpId::some(id);
         self.lit_id_log.push(l);
         debug!(

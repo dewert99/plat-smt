@@ -196,7 +196,7 @@ impl SortInfo {
             },
             |&(sym, start, end, _)| {
                 self.hasher
-                    .hash_one({ (sym, &self.sort_args[start as usize..end as usize]) })
+                    .hash_one((sym, &self.sort_args[start as usize..end as usize]))
             },
         ) {
             Entry::Occupied(occ) => Sort(occ.get().3),

@@ -1137,6 +1137,7 @@ impl<W: Write> Parser<W> {
                     .collect::<Result<Vec<_>>>()?;
                 drop(l);
                 rest.finish()?;
+                self.check_point = Some(self.core.solver().checkpoint());
                 self.named_assertions
                     .extend(conj.into_iter().map(|(b, s)| (b, UnsatCoreElt::Span(s))));
                 let res = self
@@ -1197,7 +1198,9 @@ impl<W: Write> Parser<W> {
             }
             _ => return Err(InvalidCommand),
         }
-        self.check_point = Some(self.core.solver().checkpoint());
+        if matches!(self.state, State::Base) {
+            self.check_point = Some(self.core.solver().checkpoint());
+        }
         Ok(())
     }
 

@@ -1,7 +1,6 @@
 use crate::intern::{Sort, BOOL_SORT};
 use plat_egg::Id;
 use platsat::clause::{Lit, Var};
-use platsat::intmap::AsIndex;
 use std::ops::{BitXor, Not};
 
 pub trait HasSort {
@@ -133,7 +132,7 @@ impl BoolExp {
     }
 
     fn from_u32(n: u32) -> Self {
-        BoolExp(Lit::from_index(n as usize))
+        BoolExp(Lit::from(n as usize))
     }
 }
 

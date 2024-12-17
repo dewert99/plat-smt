@@ -1,0 +1,6 @@
+(declare-sort U)
+(declare-const a U)
+(declare-const b U)
+(check-sat-assuming ((= a b)))
+(get-unsat-core)
+(pop)
