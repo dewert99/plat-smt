@@ -30,12 +30,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d468802bab17cbc0cc575e9b053f41e72aa36bfa6b7f55e3529ffa43161b97fa"
 
 [[package]]
-name = "bit-vec"
-version = "0.6.3"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "349f9b6a179ed607305526ca489b34ad0a41aed5f7980fa90eb03160b69598fb"
-
-[[package]]
 name = "bumpalo"
 version = "3.15.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -296,6 +290,12 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "9a3a5bfb195931eeb336b2a7b4d761daec841b97f947d34394601737a7bba5e4"
 
 [[package]]
+name = "internal-iterator"
+version = "0.2.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "969ee3fc68ec2e88eb21434ce4d9b7e1600d1ce92ff974560a6c4a304f5124b9"
+
+[[package]]
 name = "is-terminal"
 version = "0.4.12"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -424,6 +424,7 @@ dependencies = [
  "default-vec2",
  "env_logger",
  "hashbrown",
+ "internal-iterator",
  "log",
  "no-std-compat",
  "perfect-derive",
@@ -439,11 +440,11 @@ dependencies = [
 [[package]]
 name = "platsat"
 version = "0.5.0"
-source = "git+https://github.com/dewert99/platsat?branch=main#b336a06e0a44f418d81a2b146f9a9297c1dae3ac"
+source = "git+https://github.com/dewert99/platsat?branch=main#69f26f4c4686ec405bd7f1c60d2fbc5e015bbee4"
 dependencies = [
- "bit-vec",
  "bytemuck",
  "default-vec2",
+ "internal-iterator",
  "log",
  "no-std-compat",
 ]

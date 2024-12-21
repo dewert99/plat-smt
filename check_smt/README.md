@@ -1,0 +1,1 @@
+Script to use with [`ddSMT`](https://github.com/ddsmt/ddSMT)

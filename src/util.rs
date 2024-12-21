@@ -1,5 +1,7 @@
 use core::convert::Infallible;
 use core::fmt::{Debug, Display, Formatter};
+use core::ops::ControlFlow;
+use internal_iterator::InternalIterator;
 use no_std_compat::prelude::v1::*;
 
 pub(crate) struct DebugIter<'a, I>(pub &'a I);
@@ -111,6 +113,20 @@ impl<L: Iterator, R: Iterator<Item = L::Item>> Iterator for Either<L, R> {
         match self {
             Either::Left(l) => l.fold(init, f),
             Either::Right(r) => r.fold(init, f),
+        }
+    }
+}
+
+impl<L: InternalIterator, R: InternalIterator<Item = L::Item>> InternalIterator for Either<L, R> {
+    type Item = L::Item;
+
+    fn try_for_each<Res, F>(self, f: F) -> ControlFlow<Res>
+    where
+        F: FnMut(Self::Item) -> ControlFlow<Res>,
+    {
+        match self {
+            Either::Left(l) => l.try_for_each(f),
+            Either::Right(r) => r.try_for_each(f),
         }
     }
 }

@@ -10,6 +10,7 @@ use crate::util::{format_args2, parenthesized, powi, DefaultHashBuilder};
 use crate::{BoolExp, Exp, HasSort};
 use core::fmt::Arguments;
 use hashbrown::HashMap;
+use internal_iterator::InternalIterator;
 use no_std_compat::prelude::v1::*;
 use smallvec::SmallVec;
 use std::fmt::Formatter;
@@ -318,13 +319,6 @@ enum_option! {SetOption{
     "print-success" => PrintSuccess(bool),
 }}
 
-enum UnsatCoreElt {
-    /// from `check_sat_assuming`
-    Span(SpanRange),
-    /// from `:named` assertions
-    Sym(Symbol),
-}
-
 #[derive(Default)]
 enum State {
     Unsat,
@@ -356,7 +350,7 @@ struct Parser<W: Write> {
     /// Between a command `(check-sat-assuming)` and the next destructive command,
     /// `named_assertions` also contains the assumptions from `check-sat-assuming` and
     /// `old_named_assertion` contains the length it had before they were added
-    named_assertions: UnsatCoreConjunction<UnsatCoreElt>,
+    named_assertions: UnsatCoreConjunction<SpanRange>,
     // see above
     old_named_assertions: u32,
     push_info: Vec<PushInfo>,
@@ -561,14 +555,12 @@ impl<'a, W: Write> ExpVisitor<'a, W> {
             ANNOT_SYM => {
                 let mut rest = CountingParser::new(rest, StrSym::Sym(f), 3);
                 let mut exp = self.0.parse_exp(rest.next()?, StartExpCtx::Exact)?;
-                let name = self.0.parse_annot_after_exp(exp, rest)?;
+                let span = self.0.parse_annot_after_exp(exp, rest)?;
                 if matches!(ctx, StartExpCtx::Assert) {
                     match exp.as_bool() {
                         None => return Err(AssertBool(exp.sort())),
                         Some(b) => {
-                            self.0
-                                .named_assertions
-                                .extend([(b, UnsatCoreElt::Sym(name))]);
+                            self.0.named_assertions.extend([(b, span)]);
                             self.0.old_named_assertions = self.0.named_assertions.push();
                             // don't return exp since we don't want it to be asserted
                             exp = BoolExp::TRUE.into()
@@ -690,17 +682,19 @@ impl<W: Write> Parser<W> {
         &mut self,
         exp: Exp,
         mut rest: CountingParser<R>,
-    ) -> Result<Symbol> {
+    ) -> Result<SpanRange> {
         let SexpToken::Terminal(SexpTerminal::Keyword(k)) = rest.next()? else {
             return Err(InvalidAnnot);
         };
         if k != "named" {
             return Err(InvalidAnnotAttr(self.core.intern_mut().symbols.intern(k)));
         }
+        let start = rest.p.start_idx();
         let SexpToken::Terminal(SexpTerminal::Symbol(s)) = rest.next()? else {
             return Err(InvalidAnnot);
         };
         let s = self.core.intern_mut().symbols.intern(s);
+        let span = rest.p.end_idx(start);
         if self.currently_defining == Some(s) {
             return Err(NamedShadow(s));
         }
@@ -709,7 +703,7 @@ impl<W: Write> Parser<W> {
         }
         rest.finish()?;
         self.global_stack.push(s);
-        Ok(s)
+        Ok(span)
     }
 
     fn undo_let_bindings(&mut self, old_len: usize) {
@@ -828,21 +822,22 @@ impl<W: Write> Parser<W> {
                     return Err(ProduceCoreFalse);
                 }
                 write!(self.writer, "(");
-                let mut iter = self
-                    .named_assertions
+                let mut need_space = false;
+                self.named_assertions
                     .parts()
                     .1
-                    .core(self.core.solver().last_unsat_core())
+                    .core(self.core.solver_mut().last_unsat_core())
                     .map(|x| match *x {
-                        UnsatCoreElt::Span(s) => rest.p.lookup_range(s),
-                        UnsatCoreElt::Sym(s) => self.core.intern().symbols.resolve(s),
+                        s => rest.p.lookup_range(s),
+                    })
+                    .for_each(|x| {
+                        if need_space {
+                            write!(self.writer, " {x}");
+                        } else {
+                            write!(self.writer, "{x}");
+                            need_space = true;
+                        }
                     });
-                if let Some(x) = iter.next() {
-                    write!(self.writer, "{x}");
-                }
-                for x in iter {
-                    write!(self.writer, " {x}");
-                }
                 writeln!(self.writer, ")");
                 rest.finish()?;
             }
@@ -1139,7 +1134,7 @@ impl<W: Write> Parser<W> {
                 rest.finish()?;
                 self.check_point = Some(self.core.solver().checkpoint());
                 self.named_assertions
-                    .extend(conj.into_iter().map(|(b, s)| (b, UnsatCoreElt::Span(s))));
+                    .extend(conj.into_iter().map(|(b, s)| (b, s)));
                 let res = self
                     .core
                     .solver_mut()

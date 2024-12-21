@@ -319,37 +319,13 @@ impl Theory for EufInner {
         self.init();
     }
 }
-
-pub(crate) trait SatSolver {
-    fn is_ok(&self) -> bool;
-    fn propagate(&mut self, p: Lit) -> bool;
-
-    /// returns an empty vec to store the conflict clause in if it is relevant
-    fn raise_conflict(&mut self, costly: bool) -> Option<&mut Vec<Lit>>;
-}
-
-impl<'a> SatSolver for TheoryArg<'a> {
-    fn is_ok(&self) -> bool {
-        self.is_ok()
-    }
-
-    fn propagate(&mut self, p: Lit) -> bool {
-        self.propagate(p)
-    }
-
-    fn raise_conflict(&mut self, costly: bool) -> Option<&mut Vec<Lit>> {
-        self.raise_conflict(&[], costly);
-        Some(self.explain_arg().clause_builder())
-    }
-}
-
-struct MergeContext<'a, S: SatSolver> {
-    acts: &'a mut S,
+struct MergeContext<'a, 'b> {
+    acts: &'a mut TheoryArg<'b>,
     history: &'a mut Vec<MergeInfo>,
     conflict: &'a mut Option<[Id; 2]>,
 }
 
-impl<'a, S: 'a + SatSolver> MergeContext<'a, S> {
+impl<'a, 'b> MergeContext<'a, 'b> {
     fn propagate(&mut self, lits: &[Lit], b: bool) {
         let lits = lits.iter().map(|l| *l ^ !b);
         debug!("EUF propagates {:?}", DebugIter(&lits));
@@ -383,7 +359,7 @@ impl<'a, S: 'a + SatSolver> MergeContext<'a, S> {
         self.history.push(info);
     }
 
-    fn merge_fn(mut self, id1: Id, id2: Id) -> impl FnMut(&mut EClass, EClass) + Bind<&'a S> {
+    fn merge_fn(mut self, id1: Id, id2: Id) -> impl FnMut(&mut EClass, EClass) + Bind<&'a &'b ()> {
         move |lclass, rclass| match (lclass, rclass) {
             (EClass::Uninterpreted(sort), EClass::Uninterpreted(sort2)) if *sort == sort2 => {}
             (EClass::Bool(lbool), EClass::Bool(rbool)) => self.merge_bools(lbool, rbool),
@@ -581,7 +557,7 @@ impl EufInner {
         op: Op,
         children: Children,
         lit: Lit,
-        acts: &mut impl SatSolver,
+        acts: &mut TheoryArg,
         iacts: &IncrementalArg<Self>,
     ) -> (Id, Result) {
         let mut conflict = None;
@@ -641,25 +617,15 @@ impl EufInner {
         )
     }
 
-    fn conflict(
-        &mut self,
-        acts: &mut impl SatSolver,
-        id1: Id,
-        id2: Id,
-        iacts: &IncrementalArg<Self>,
-    ) {
-        if let Some(explaination) = acts.raise_conflict(false) {
-            self.explain(id1, id2, false, explaination, iacts);
-            // TODO handle add_clause
-            debug!("EUF Conflict by {explaination:?}");
-        }
+    fn conflict(&mut self, acts: &mut TheoryArg, id1: Id, id2: Id, iacts: &IncrementalArg<Self>) {
+        acts.raise_conflict(&[], false);
+        let explanation = acts.explain_arg().clause_builder();
+        self.explain(id1, id2, false, explanation, iacts);
+        // TODO handle add_clause
+        debug!("EUF Conflict by {explanation:?}");
     }
 
-    pub(crate) fn rebuild(
-        &mut self,
-        acts: &mut impl SatSolver,
-        iacts: &IncrementalArg<Self>,
-    ) -> Result {
+    pub(crate) fn rebuild(&mut self, acts: &mut TheoryArg, iacts: &IncrementalArg<Self>) -> Result {
         debug!("Rebuilding EGraph");
         EGraph::try_rebuild(
             self,
@@ -670,7 +636,7 @@ impl EufInner {
 
     pub(crate) fn union(
         &mut self,
-        acts: &mut impl SatSolver,
+        acts: &mut TheoryArg,
         iacts: &IncrementalArg<Self>,
         id1: Id,
         id2: Id,

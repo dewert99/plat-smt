@@ -1,5 +1,5 @@
 use crate::egraph::Children;
-use crate::euf::{Euf, FullFunctionInfo, FunctionInfo, SatSolver};
+use crate::euf::{Euf, FullFunctionInfo, FunctionInfo};
 use crate::exp::*;
 use crate::explain::Justification;
 use crate::intern::*;
@@ -11,6 +11,7 @@ use crate::{euf, Symbol};
 use core::cmp::Ordering;
 use core::ops::Deref;
 use hashbrown::HashMap;
+use internal_iterator::{InternalIterator, IteratorExt};
 use log::debug;
 use no_std_compat::prelude::v1::*;
 use perfect_derive::perfect_derive;
@@ -126,27 +127,6 @@ pub enum SolveResult {
     Unknown,
 }
 
-impl SatSolver for BatSolver {
-    fn is_ok(&self) -> bool {
-        SolverInterface::is_ok(self)
-    }
-
-    fn propagate(&mut self, l: Lit) -> bool {
-        let v = self.raw_value_lit(l);
-        if v == lbool::UNDEF {
-            self.add_clause_unchecked([l]);
-        } else if v == lbool::FALSE {
-            self.add_clause_unchecked([]);
-        }
-        SolverInterface::is_ok(self)
-    }
-
-    fn raise_conflict(&mut self, _: bool) -> Option<&mut Vec<Lit>> {
-        self.add_clause_unchecked([]);
-        None
-    }
-}
-
 impl SolveResult {
     pub fn valid_when_expecting(self, oth: SolveResult) -> bool {
         matches!(
@@ -168,7 +148,7 @@ impl SolveResult {
 
 impl Solver {
     pub fn is_ok(&self) -> bool {
-        SatSolver::is_ok(&self.sat)
+        self.sat.is_ok()
     }
     fn fresh(&mut self) -> Var {
         let fresh = self.sat.new_var_default();
@@ -323,7 +303,9 @@ impl Solver {
         }
         if !self.euf.has_parents(id1) || !self.euf.has_parents(id2) {
             let (euf, arg) = self.euf.open();
-            let _ = euf.union(&mut self.sat, arg, id1, id2, Justification::NOOP);
+            self.sat.with_theory_arg(|acts| {
+                let _ = euf.union(acts, arg, id1, id2, Justification::NOOP);
+            });
         } else {
             self.pending_equalities.push((id1, id2));
         }
@@ -466,10 +448,10 @@ impl Solver {
     /// Assert that `b` is true
     pub fn assert(&mut self, b: BoolExp) {
         debug!("assert {b}");
-        match b.to_lit() {
+        match self.canonize(b).to_lit() {
             Err(true) => {}
             Ok(l) => {
-                self.sat.propagate(l);
+                self.sat.add_clause_unchecked([l]);
             }
             Err(false) => {
                 self.sat.add_clause_unchecked([]);
@@ -478,9 +460,12 @@ impl Solver {
     }
 
     fn flush_pending(&mut self) {
-        let _ = self.pending_equalities.iter().try_for_each(|(id1, id2)| {
+        let _ = self.pending_equalities.iter().try_for_each(|&(id1, id2)| {
             let (euf, arg) = self.euf.open();
-            euf.union(&mut self.sat, arg, *id1, *id2, Justification::NOOP)
+            let mut res = Ok(());
+            self.sat
+                .with_theory_arg(|acts| res = euf.union(acts, arg, id1, id2, Justification::NOOP));
+            res
         });
         self.pending_equalities.clear();
     }
@@ -501,15 +486,12 @@ impl Solver {
                 .solve_limited_preserving_trail_th(&mut self.euf, &c.lits),
         };
         if res == lbool::FALSE {
-            debug!(
-                "check-sat {c:?} returned unsat, core:\n{:?}",
-                self.sat.unsat_core(),
-            );
+            debug!("check-sat {c:?} returned unsat",);
             SolveResult::Unsat
         } else if res == lbool::TRUE {
             debug!(
                 "check-sat {c:?} returned sat, model:\n{:?}",
-                self.sat.get_model()
+                self.sat.raw_model()
             );
             SolveResult::Sat
         } else {
@@ -572,7 +554,7 @@ impl Solver {
     pub fn check_sat_assuming_for_core<'a, T>(
         &'a mut self,
         c: &'a UnsatCoreConjunction<T>,
-    ) -> Option<impl Iterator<Item = &'a T>> {
+    ) -> Option<impl InternalIterator<Item = &'a T>> {
         let (conj, info) = c.parts();
         match self.check_sat_assuming(conj) {
             SolveResult::Unsat => Some(info.core(self.last_unsat_core())),
@@ -609,8 +591,8 @@ impl Solver {
         res
     }
 
-    pub(crate) fn last_unsat_core(&self) -> &[Lit] {
-        self.sat.unsat_core()
+    pub(crate) fn last_unsat_core(&mut self) -> impl InternalIterator<Item = Lit> + '_ {
+        self.sat.unsat_core(&mut self.euf)
     }
 
     pub fn function_info(&mut self) -> (FullFunctionInfo<'_>, &Self) {
@@ -675,10 +657,13 @@ impl<T> UnsatCoreInfo<T> {
         }
     }
 
-    pub(crate) fn core<'a>(&'a self, lits: &'a [Lit]) -> impl Iterator<Item = &'a T> {
+    pub(crate) fn core(
+        &self,
+        lits: impl InternalIterator<Item = Lit>,
+    ) -> impl InternalIterator<Item = &T> {
         match &self.false_by {
-            Some(x) => Either::Right(core::iter::once(x)),
-            None => Either::Left(lits.iter().filter_map(|x| self.data.get(x))),
+            Some(x) => Either::Right(core::iter::once(x).into_internal()),
+            None => Either::Left(lits.filter_map(|x| self.data.get(&x))),
         }
     }
 }
