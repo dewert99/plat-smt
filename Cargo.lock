@@ -405,7 +405,7 @@ dependencies = [
 [[package]]
 name = "plat-egg"
 version = "0.9.5"
-source = "git+https://github.com/dewert99/plat-egg?branch=no-path-compress#6dc6ca4413f7a3028d2e39d46900fca3bb6998da"
+source = "git+https://github.com/dewert99/plat-egg?branch=main#b2b8397a4506d1dc51882ea2ac14d9fe7ac44433"
 dependencies = [
  "default-vec2",
  "hashbrown",
