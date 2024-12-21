@@ -1,5 +1,6 @@
 use crate::Symbol;
 use no_std_compat::prelude::v1::*;
+use plat_egg::raw::reflect_const::PathCompress;
 pub use plat_egg::raw::semi_persistent1::PushInfo;
 use plat_egg::raw::{semi_persistent1::UndoLog, EGraphResidual, Language, RawEClass, RawEGraph};
 use plat_egg::Id;
@@ -204,7 +205,7 @@ impl<D> Default for EGraph<D> {
 }
 
 impl<D> Deref for EGraph<D> {
-    type Target = EGraphResidual<SymbolLang>;
+    type Target = EGraphResidual<SymbolLang, PathCompress<false>>;
 
     fn deref(&self) -> &Self::Target {
         &self.inner
