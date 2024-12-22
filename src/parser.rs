@@ -300,6 +300,7 @@ macro_rules! enum_option {
 enum_option! {SetOption{
     "sat.var_decay" => VarDecay(f32),
     "sat.clause_decay" => ClauseDecay(f64),
+    "sat.decay_on_theory_conflict" => DecayOnTheoryConflict(bool),
     "sat.random_var_freq" => RandomVarFreq(f64),
     "sat.random_seed" => RandomSeed(f64),
     "sat.luby_restart" => LubyRestart(bool),
@@ -968,6 +969,7 @@ impl<W: Write> Parser<W> {
                 match SetOption::from_parser(rest)? {
                     SetOption::VarDecay(x) => prev_option.var_decay = x,
                     SetOption::ClauseDecay(x) => prev_option.clause_decay = x,
+                    SetOption::DecayOnTheoryConflict(x) => prev_option.decay_on_theory_conflict = x,
                     SetOption::RandomVarFreq(x) => prev_option.random_var_freq = x,
                     SetOption::RandomSeed(mut x) | SetOption::BaseRandomSeed(mut x) => {
                         if x <= 0.0 {
