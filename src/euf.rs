@@ -620,9 +620,11 @@ impl EufInner {
     fn conflict(&mut self, acts: &mut TheoryArg, id1: Id, id2: Id, iacts: &IncrementalArg<Self>) {
         acts.raise_conflict(&[], false);
         let explanation = acts.explain_arg().clause_builder();
-        self.explain(id1, id2, false, explanation, iacts);
-        // TODO handle add_clause
-        debug!("EUF Conflict by {explanation:?}");
+        let add_clause = self.explain(id1, id2, false, explanation, iacts);
+        debug!("EUF Conflict by {explanation:?} (costly: {add_clause})");
+        if add_clause {
+            acts.make_conflict_costly();
+        }
     }
 
     pub(crate) fn rebuild(&mut self, acts: &mut TheoryArg, iacts: &IncrementalArg<Self>) -> Result {
