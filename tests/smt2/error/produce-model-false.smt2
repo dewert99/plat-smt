@@ -3,5 +3,4 @@
 (assert a)
 (check-sat)
 (get-model)
-(check-sat)
 (get-value (a))

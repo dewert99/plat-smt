@@ -603,6 +603,7 @@ impl Solver {
             self.euf.pop_to_level(x, true);
             self.ifs.remove_after(self.euf.len_id());
         }
+        self.pending_equalities.clear();
     }
 }
 

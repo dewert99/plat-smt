@@ -123,7 +123,7 @@ pub struct PushInfo {
     egraph: EGPushInfo,
     lit_log_len: u32,
     eq_id_log_len: u32,
-    request_log_len: u32,
+    requests_handled: u32,
 }
 
 pub(crate) fn id_for_bool(b: bool) -> Id {
@@ -182,11 +182,12 @@ impl Theory for EufInner {
             egraph: self.egraph.push(),
             lit_log_len: self.lit_id_log.len() as u32,
             eq_id_log_len: self.eq_id_log.len() as u32,
-            request_log_len: self.eq_ids.requests.len() as u32,
+            requests_handled: self.requests_handled,
         }
     }
 
     fn pop_to_level(&mut self, info: PushInfo, clear_lits: bool) {
+        debug!("Requests handled = {}", info.requests_handled);
         for lit in self.lit_id_log.drain(info.lit_log_len as usize..) {
             self.lit_ids[lit] = OpId::NONE;
         }
@@ -197,7 +198,7 @@ impl Theory for EufInner {
             // ensure all requests contain valid ids
             // TODO use `extract_if` when it becomes stable
             let eq_ids = &mut self.eq_ids;
-            for i in (info.request_log_len as usize..eq_ids.requests.len()).rev() {
+            for i in (info.requests_handled as usize..eq_ids.requests.len()).rev() {
                 let [lower_id, higher_id] = eq_ids.requests[i];
                 debug_assert!(lower_id <= higher_id);
                 if usize::from(higher_id) >= info.egraph.number_of_uncanonical_nodes() {
@@ -207,7 +208,7 @@ impl Theory for EufInner {
                 }
             }
         }
-        self.requests_handled = info.request_log_len;
+        self.requests_handled = info.requests_handled;
         if clear_lits {
             for i in self.requests_handled as usize..self.eq_ids.requests.len() {
                 let ids = self.eq_ids.requests[i];

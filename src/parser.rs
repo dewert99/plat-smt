@@ -784,12 +784,13 @@ impl<W: Write> Parser<W> {
                 Ok(())
             }
             Err(err) => {
-                self.reset_state();
                 self.undo_base_bindings(old_len);
                 self.named_assertions.pop_to(self.old_named_assertions);
                 self.core.reset_working_exp();
                 if let Some(c) = self.check_point.clone() {
-                    self.core.solver_mut().restore_checkpoint(c)
+                    if matches!(self.state, State::Base) {
+                        self.core.solver_mut().restore_checkpoint(c)
+                    }
                 } else {
                     self.core.solver_mut().clear()
                 }
@@ -1062,6 +1063,7 @@ impl<W: Write> Parser<W> {
         self.sort_stack.clear();
         self.declared_sorts.insert(BOOL_SYM, 0);
         self.named_assertions.pop_to(0);
+        self.check_point = None;
         self.old_named_assertions = 0;
         self.state = State::Init;
     }
@@ -1167,7 +1169,7 @@ impl<W: Write> Parser<W> {
             Smt2Command::Pop => {
                 let n = rest.try_next_parse()?.unwrap_or(1);
                 if n > self.push_info.len() {
-                    debug!("Pop ({} -> {})", self.push_info.len(), 0);
+                    debug!("Pop ({} -> clear)", self.push_info.len());
                     self.clear()
                 } else if n > 0 {
                     debug!(
