@@ -11,6 +11,7 @@ use crate::{BoolExp, Exp, HasSort};
 use core::fmt::Arguments;
 use hashbrown::HashMap;
 use internal_iterator::InternalIterator;
+use log::debug;
 use no_std_compat::prelude::v1::*;
 use smallvec::SmallVec;
 use std::fmt::Formatter;
@@ -333,6 +334,7 @@ struct PushInfo {
     sort: u32,
     bound: u32,
     named_assert: u32,
+    solver: CheckPoint,
 }
 
 struct Parser<W: Write> {
@@ -786,7 +788,9 @@ impl<W: Write> Parser<W> {
                 self.named_assertions.pop_to(self.old_named_assertions);
                 self.core.reset_working_exp();
                 if let Some(c) = self.check_point.clone() {
-                    self.core.solver_mut().restore_checkpoint(c)
+                    if matches!(self.state, State::Base) {
+                        self.core.solver_mut().restore_checkpoint(c)
+                    }
                 } else {
                     self.core.solver_mut().clear()
                 }
@@ -928,7 +932,7 @@ impl<W: Write> Parser<W> {
                         writeln!(
                             &mut self.writer,
                             "(:assertion-stack-levels {})",
-                            self.core.solver().assertion_level()
+                            self.push_info.len()
                         )
                     }
                     _ => return Err(InvalidCommand),
@@ -1059,6 +1063,7 @@ impl<W: Write> Parser<W> {
         self.sort_stack.clear();
         self.declared_sorts.insert(BOOL_SYM, 0);
         self.named_assertions.pop_to(0);
+        self.check_point = None;
         self.old_named_assertions = 0;
         self.state = State::Init;
     }
@@ -1147,26 +1152,37 @@ impl<W: Write> Parser<W> {
             Smt2Command::Push => {
                 let n = rest.try_next_parse()?.unwrap_or(1);
                 for _ in 0..n {
-                    self.core.solver_mut().push();
                     let info = PushInfo {
                         bound: self.global_stack.len() as u32,
                         sort: self.sort_stack.len() as u32,
                         named_assert: self.named_assertions.push(),
+                        solver: self.core.solver().checkpoint(),
                     };
+                    debug!(
+                        "Push ({} -> {})",
+                        self.push_info.len(),
+                        self.push_info.len() + 1
+                    );
                     self.push_info.push(info);
                 }
             }
             Smt2Command::Pop => {
                 let n = rest.try_next_parse()?.unwrap_or(1);
                 if n > self.push_info.len() {
+                    debug!("Pop ({} -> clear)", self.push_info.len());
                     self.clear()
                 } else if n > 0 {
-                    self.core.solver_mut().pop(n);
+                    debug!(
+                        "Pop ({} -> {})",
+                        self.push_info.len(),
+                        self.push_info.len() - n
+                    );
                     let mut info = None;
                     for _ in 0..n {
                         info = self.push_info.pop();
                     }
                     let info = info.unwrap();
+                    self.core.solver_mut().restore_checkpoint(info.solver);
                     self.undo_base_bindings(info.bound as usize);
 
                     for s in self.sort_stack.drain(info.sort as usize..).rev() {

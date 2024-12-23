@@ -511,32 +511,6 @@ impl Solver {
         self.sat.pop_model(&mut self.euf);
     }
 
-    pub fn push(&mut self) {
-        debug!(
-            "Push ({} -> {})",
-            self.euf.assertion_level(),
-            self.euf.assertion_level() + 1
-        );
-        self.flush_pending();
-        self.sat.push_th(&mut self.euf);
-        self.euf.smt_push()
-    }
-
-    pub fn pop(&mut self, n: usize) {
-        debug!(
-            "Pop ({} -> {})",
-            self.euf.assertion_level(),
-            self.euf.assertion_level() - n
-        );
-        if n > self.euf.assertion_level() {
-            self.clear();
-        } else if n > 0 {
-            self.sat.pop_n_th(&mut self.euf, n as u32);
-            self.euf.smt_pop_to(self.euf.assertion_level() - n);
-            self.ifs.remove_after(self.euf.len_id());
-        }
-    }
-
     pub fn clear(&mut self) {
         self.sat.reset();
         self.euf.clear();
@@ -606,10 +580,6 @@ impl Solver {
     pub fn set_sat_options(&mut self, options: SolverOpts) -> Result<(), ()> {
         self.sat.set_options(options)
     }
-
-    pub fn assertion_level(&self) -> u32 {
-        self.euf.assertion_level() as u32
-    }
 }
 
 #[derive(Clone)]
@@ -627,10 +597,13 @@ impl Solver {
     }
 
     pub fn restore_checkpoint(&mut self, checkpoint: CheckPoint) {
+        self.euf.restore_trail_len(checkpoint.sat.trail_len());
         self.sat.restore_checkpoint(checkpoint.sat);
         if let Some(x) = checkpoint.euf {
-            self.euf.pop_to_level(x, true)
+            self.euf.pop_to_level(x, true);
+            self.ifs.remove_after(self.euf.len_id());
         }
+        self.pending_equalities.clear();
     }
 }
 
