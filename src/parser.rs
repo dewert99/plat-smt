@@ -765,6 +765,7 @@ impl<W: Write> Parser<W> {
         if !matches!(self.state, State::Base) {
             self.core.solver_mut().pop_model();
             self.named_assertions.pop_to(self.old_named_assertions);
+            self.check_point = Some(self.core.solver().checkpoint());
             self.state = State::Base;
         }
     }
@@ -1116,7 +1117,6 @@ impl<W: Write> Parser<W> {
                     .solver_mut()
                     .assert(exp.as_bool().ok_or(AssertBool(exp.sort()))?);
                 rest.finish()?;
-                self.core.solver_mut().simplify();
             }
             Smt2Command::CheckSat => {
                 self.old_named_assertions = self.named_assertions.push();

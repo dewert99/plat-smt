@@ -31,7 +31,6 @@ type BatSolver = platsat::Solver<NoCb>;
 #[perfect_derive(Default)]
 pub struct Solver {
     euf: Euf,
-    pending_equalities: Vec<(Id, Id)>,
     sat: BatSolver,
     function_info_buf: FunctionInfo,
     ifs: SPInsertMap<(Lit, Id, Id), Id>,
@@ -301,14 +300,11 @@ impl Solver {
         if !self.is_ok() {
             return;
         }
-        if !self.euf.has_parents(id1) || !self.euf.has_parents(id2) {
-            let (euf, arg) = self.euf.open();
-            self.sat.with_theory_arg(|acts| {
-                let _ = euf.union(acts, arg, id1, id2, Justification::NOOP);
-            });
-        } else {
-            self.pending_equalities.push((id1, id2));
-        }
+        let (euf, arg) = self.euf.open();
+        self.sat.with_theory_arg(|acts| {
+            let _ = euf.union(acts, arg, id1, id2, Justification::NOOP);
+        });
+        self.simplify();
     }
 
     /// Produce a boolean expression representing the equality of the two expressions
@@ -452,22 +448,12 @@ impl Solver {
             Err(true) => {}
             Ok(l) => {
                 self.sat.add_clause_unchecked([l]);
+                self.simplify();
             }
             Err(false) => {
                 self.sat.add_clause_unchecked([]);
             }
         }
-    }
-
-    fn flush_pending(&mut self) {
-        let _ = self.pending_equalities.iter().try_for_each(|&(id1, id2)| {
-            let (euf, arg) = self.euf.open();
-            let mut res = Ok(());
-            self.sat
-                .with_theory_arg(|acts| res = euf.union(acts, arg, id1, id2, Justification::NOOP));
-            res
-        });
-        self.pending_equalities.clear();
     }
 
     /// Check if the current assertions are satisfiable
@@ -478,7 +464,6 @@ impl Solver {
     /// Check if the current assertions combined with the assertions in `c` are satisfiable
     /// Leave the solver in a state representing the model
     pub fn check_sat_assuming_preserving_trail(&mut self, c: &Conjunction) -> SolveResult {
-        self.flush_pending();
         let res = match c.absorbing {
             true => lbool::FALSE,
             false => self
@@ -518,7 +503,6 @@ impl Solver {
     }
 
     pub fn simplify(&mut self) {
-        self.flush_pending();
         self.sat.simplify_th(&mut self.euf);
     }
 
@@ -603,7 +587,6 @@ impl Solver {
             self.euf.pop_to_level(x, true);
             self.ifs.remove_after(self.euf.len_id());
         }
-        self.pending_equalities.clear();
     }
 }
 
