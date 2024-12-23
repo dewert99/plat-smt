@@ -440,7 +440,7 @@ dependencies = [
 [[package]]
 name = "platsat"
 version = "0.5.0"
-source = "git+https://github.com/dewert99/platsat?branch=main#cbe4ed9c2193132171f4f1a081d1f599cd142604"
+source = "git+https://github.com/dewert99/platsat?branch=push-alt#fa55decf74d9db8ed862b956a6d7bd53449d98f7"
 dependencies = [
  "bytemuck",
  "default-vec2",
