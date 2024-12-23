@@ -1,4 +1,5 @@
 use crate::Symbol;
+use core::num::NonZeroU32;
 use no_std_compat::prelude::v1::*;
 use plat_egg::raw::reflect_const::PathCompress;
 pub use plat_egg::raw::semi_persistent1::PushInfo;
@@ -33,7 +34,7 @@ pub struct Op(u32);
 
 impl Op {
     pub const fn new(sym: Symbol, symmetric: bool) -> Self {
-        let sym = sym.0;
+        let sym = sym.0.get();
         assert!(sym & SYMBOL_MASK == sym);
         Op(sym | (symmetric as u32) << SYMMETRY_SHIFT)
     }
@@ -56,7 +57,7 @@ impl Op {
     }
 
     pub fn sym(self) -> Symbol {
-        Symbol(self.sym_u32())
+        Symbol(NonZeroU32::new(self.sym_u32()).unwrap())
     }
 
     fn sym_u32(self) -> u32 {

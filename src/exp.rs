@@ -19,7 +19,6 @@ impl UExp {
     }
 
     pub fn new(id: Id, sort: Sort) -> Self {
-        assert_ne!(sort, BOOL_SORT);
         UExp { id, sort }
     }
 
@@ -51,51 +50,37 @@ pub struct BoolExp(Lit);
 
 impl From<BoolExp> for Exp {
     fn from(value: BoolExp) -> Self {
-        Exp {
-            sort: BOOL_SORT,
-            data: value.to_u32(),
-        }
+        Exp::Bool(value)
     }
 }
 
 impl From<UExp> for Exp {
     fn from(value: UExp) -> Self {
-        let data: usize = value.id.into();
-        Exp {
-            sort: value.sort,
-            data: data as u32,
-        }
+        Exp::Uninterpreted(value)
     }
 }
 
 impl HasSort for Exp {
     fn sort(self) -> Sort {
-        self.sort
+        match self {
+            Exp::Bool(_) => BOOL_SORT,
+            Exp::Uninterpreted(u) => u.sort,
+        }
     }
 }
 
-#[derive(Copy, Clone)]
-pub(crate) enum EExp {
+/// A dynamically sorted expression within a [`Solver`]
+#[derive(Copy, Clone, Eq, PartialEq)]
+pub enum Exp {
     Bool(BoolExp),
     Uninterpreted(UExp),
 }
 
 impl Exp {
-    pub(crate) fn expand(self) -> EExp {
-        if self.sort == BOOL_SORT {
-            EExp::Bool(BoolExp::from_u32(self.data))
-        } else {
-            EExp::Uninterpreted(UExp {
-                sort: self.sort,
-                id: Id::from(self.data as usize),
-            })
-        }
-    }
-
     /// Try to downcast into a [`BoolExp`]
     pub fn as_bool(self) -> Option<BoolExp> {
-        match self.expand() {
-            EExp::Bool(b) => Some(b),
+        match self {
+            Exp::Bool(b) => Some(b),
             _ => None,
         }
     }
@@ -126,14 +111,6 @@ impl BoolExp {
             Ok(self.0)
         }
     }
-
-    fn to_u32(self) -> u32 {
-        self.0.idx()
-    }
-
-    fn from_u32(n: u32) -> Self {
-        BoolExp(Lit::from(n as usize))
-    }
 }
 
 impl HasSort for BoolExp {
@@ -156,11 +133,4 @@ impl BitXor<bool> for BoolExp {
     fn bitxor(self, rhs: bool) -> Self::Output {
         BoolExp(self.0 ^ rhs)
     }
-}
-
-/// A dynamically sorted expression within a [`Solver`]
-#[derive(Copy, Clone, Eq, PartialEq)]
-pub struct Exp {
-    sort: Sort,
-    data: u32,
 }

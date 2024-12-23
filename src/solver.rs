@@ -63,18 +63,18 @@ display_debug!(BoolExp);
 
 impl Debug for Exp {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
-        match self.expand() {
-            EExp::Bool(b) => Debug::fmt(&b, f),
-            EExp::Uninterpreted(u) => Debug::fmt(&u, f),
+        match self {
+            Exp::Bool(b) => Debug::fmt(&b, f),
+            Exp::Uninterpreted(u) => Debug::fmt(&u, f),
         }
     }
 }
 
 impl DisplayInterned for Exp {
     fn fmt(&self, i: &InternInfo, f: &mut Formatter<'_>) -> std::fmt::Result {
-        match &self.expand() {
-            EExp::Bool(b) => DisplayInterned::fmt(b, i, f),
-            EExp::Uninterpreted(u) => DisplayInterned::fmt(u, i, f),
+        match self {
+            Exp::Bool(b) => DisplayInterned::fmt(b, i, f),
+            Exp::Uninterpreted(u) => DisplayInterned::fmt(u, i, f),
         }
     }
 }
@@ -109,9 +109,9 @@ impl ExpLike for UExp {
 
 impl ExpLike for Exp {
     fn canonize(self, solver: &Solver) -> Self {
-        match self.expand() {
-            EExp::Bool(b) => b.canonize(solver).into(),
-            EExp::Uninterpreted(u) => u.canonize(solver).into(),
+        match self {
+            Exp::Bool(b) => b.canonize(solver).into(),
+            Exp::Uninterpreted(u) => u.canonize(solver).into(),
         }
     }
 }
@@ -532,12 +532,12 @@ impl Solver {
     ///
     /// See [`sorted_fn`](Solver::sorted_fn) and  [`bool_fn`](Solver::bool_fn)
     pub fn id(&mut self, exp: Exp) -> Id {
-        match exp.expand() {
-            EExp::Bool(b) => match self.canonize(b).to_lit() {
+        match exp {
+            Exp::Bool(b) => match self.canonize(b).to_lit() {
                 Err(b) => self.euf.id_for_bool(b),
                 Ok(lit) => self.euf.id_for_lit(lit, &mut self.intern.symbols),
             },
-            EExp::Uninterpreted(u) => u.id(),
+            Exp::Uninterpreted(u) => u.id(),
         }
     }
 
