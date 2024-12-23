@@ -259,6 +259,10 @@ impl Solver {
     }
 
     pub fn xor(&mut self, b1: BoolExp, b2: BoolExp) -> BoolExp {
+        self.xor_approx(b1, b2, None)
+    }
+
+    pub fn xor_approx(&mut self, b1: BoolExp, b2: BoolExp, approx: Option<bool>) -> BoolExp {
         let b1 = self.canonize(b1);
         let b2 = self.canonize(b2);
         let res = match (b1.to_lit(), b2.to_lit()) {
@@ -273,14 +277,18 @@ impl Solver {
                 };
                 let fresh = self.fresh();
                 let fresh = Lit::new(fresh, true);
-                self.sat
-                    .add_clause_unchecked([l1, l2, !fresh].iter().copied());
-                self.sat
-                    .add_clause_unchecked([!l1, l2, fresh].iter().copied());
-                self.sat
-                    .add_clause_unchecked([l1, !l2, fresh].iter().copied());
-                self.sat
-                    .add_clause_unchecked([!l1, !l2, !fresh].iter().copied());
+                if approx != Some(true) {
+                    self.sat
+                        .add_clause_unchecked([l1, l2, !fresh].iter().copied());
+                    self.sat
+                        .add_clause_unchecked([!l1, !l2, !fresh].iter().copied());
+                }
+                if approx != Some(false) {
+                    self.sat
+                        .add_clause_unchecked([!l1, l2, fresh].iter().copied());
+                    self.sat
+                        .add_clause_unchecked([l1, !l2, fresh].iter().copied());
+                }
                 BoolExp::unknown(fresh)
             }
         };

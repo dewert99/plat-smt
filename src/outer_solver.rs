@@ -353,12 +353,18 @@ impl OuterSolver {
                 let other = children.map(|x| Ok(!mem::replace(&mut last, x.as_bool()?)));
                 extend_result(&mut d, other)?;
                 d.push(last);
-                self.inner.collapse_bool(d).into()
+                self.inner.collapse_bool_approx(d, ctx.to_approx()).into()
             }
-            XOR_SYM => children
-                .map(|x| x.as_bool())
-                .try_fold(BoolExp::FALSE, |b1, b2| Ok(self.inner.xor(b1, b2?)))?
-                .into(),
+            XOR_SYM => {
+                let child_len = children.len();
+                children
+                    .map(|x| (x.as_bool(), x.0 .0 + 1 == child_len))
+                    .try_fold(BoolExp::FALSE, |b1, (b2, last)| {
+                        let approx = if last { ctx.to_approx() } else { None };
+                        Ok(self.inner.xor_approx(b1, b2?, approx))
+                    })?
+                    .into()
+            }
             EQ_SYM => {
                 let mut c: Conjunction = self.inner.new_junction();
                 let [exp1] = mandatory_args(children)?;
