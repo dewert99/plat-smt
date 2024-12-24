@@ -15,6 +15,7 @@ pub mod junction;
 pub mod outer_solver;
 mod parser;
 pub mod parser_core;
+mod reborrow;
 mod solver;
 mod sp_insert_map;
 mod theory;

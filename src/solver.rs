@@ -5,7 +5,7 @@ use crate::explain::Justification;
 use crate::intern::*;
 use crate::junction::*;
 use crate::sp_insert_map::SPInsertMap;
-use crate::theory::Theory as _;
+use crate::theory::Incremental;
 use crate::util::{display_debug, format_args2, DefaultHashBuilder, Either};
 use crate::{euf, Symbol};
 use core::cmp::Ordering;
@@ -34,7 +34,6 @@ pub struct Solver {
     sat: BatSolver,
     function_info_buf: FunctionInfo,
     ifs: SPInsertMap<(Lit, Id, Id), Id>,
-    pub intern: InternInfo,
     junction_buf: Vec<Lit>,
 }
 
@@ -305,12 +304,9 @@ impl Solver {
     }
 
     pub(crate) fn assert_raw_eq(&mut self, id1: Id, id2: Id) {
-        if !self.is_ok() {
-            return;
-        }
-        let (euf, arg) = self.euf.open();
         self.sat.with_theory_arg(|acts| {
-            let _ = euf.union(acts, arg, id1, id2, Justification::NOOP);
+            let (euf, mut acts) = self.euf.open(acts);
+            let _ = euf.union(&mut acts, id1, id2, Justification::NOOP);
         });
         self.simplify();
     }
@@ -343,9 +339,20 @@ impl Solver {
 
     /// Assert that no pair of `Id`s from `ids` are equal to each other
     pub fn assert_distinct(&mut self, ids: impl IntoIterator<Item = Id>) {
-        if let Err(()) = self.euf.make_distinct(ids, &mut self.intern.symbols) {
-            self.sat.add_clause_unchecked([]);
-        }
+        self.sat.with_theory_arg(|acts| {
+            let (euf, mut acts) = self.euf.open(acts);
+            if let Err(()) = euf.make_distinct(ids, &mut acts) {
+                acts.raise_conflict(&[], false);
+            }
+        });
+    }
+
+    pub fn intern(&self) -> &InternInfo {
+        self.euf.intern()
+    }
+
+    pub fn intern_mut(&mut self) -> &mut InternInfo {
+        self.euf.intern_mut()
     }
 
     /// Equivalent to `self.`[`assert`](Self::assert)`(self.`[`bool_fn`](Self::bool_fn)`(f, children) ^ negate)`
@@ -369,7 +376,7 @@ impl Solver {
         let mut ifs = mem::take(&mut self.ifs);
         let id = ifs.get_or_insert((i, t, e), || {
             let sym = self
-                .intern
+                .intern_mut()
                 .symbols
                 .gen_sym(&format_args2!("if|{i:?}|id{t}|id{e}"));
             let fresh = self.sorted_fn(sym, Children::new(), s);
@@ -535,7 +542,11 @@ impl Solver {
         match exp {
             Exp::Bool(b) => match self.canonize(b).to_lit() {
                 Err(b) => self.euf.id_for_bool(b),
-                Ok(lit) => self.euf.id_for_lit(lit, &mut self.intern.symbols),
+                Ok(lit) => {
+                    let mut m = &mut ();
+                    let (euf, mut acts) = self.euf.open(&mut m);
+                    euf.id_for_lit(lit, &mut acts.intern_mut().symbols)
+                }
             },
             Exp::Uninterpreted(u) => u.id(),
         }
@@ -551,8 +562,8 @@ impl Solver {
         let res = t.canonize(self);
         debug!(
             "{} canonized to {}",
-            t.with_intern(&self.intern),
-            res.with_intern(&self.intern)
+            t.with_intern(self.intern()),
+            res.with_intern(self.intern())
         );
         res
     }

@@ -524,7 +524,7 @@ impl OuterSolver {
                 Bound::Fn(f) => (sym, BoundDefinition::Fn(f, function_info.get(sym))),
             }
         });
-        (&inner.intern, iter)
+        (inner.intern(), iter)
     }
 
     /// Like [`clear`](Solver::clear) but also clears defintions
@@ -547,11 +547,11 @@ impl OuterSolver {
     }
 
     pub fn intern(&self) -> &InternInfo {
-        &self.inner.intern
+        self.inner.intern()
     }
 
     pub fn intern_mut(&mut self) -> &mut InternInfo {
-        &mut self.inner.intern
+        self.inner.intern_mut()
     }
 }
 
