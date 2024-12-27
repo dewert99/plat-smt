@@ -1,17 +1,19 @@
-use crate::egraph::{children, Children, EGraph, Op, PushInfo as EGPushInfo, SymbolLang, EQ_OP};
-use crate::exp::{BoolExp, Exp, UExp};
-use crate::explain::{EqIds, Justification};
-use crate::intern::{Sort, SymbolInfo, FALSE_SYM, TRUE_SYM};
-use crate::theory::{ExplainTheoryArg, Incremental, IncrementalWrapper, Theory, TheoryArg};
-use crate::util::{format_args2, minmax, Bind, DebugIter, DefaultHashBuilder};
+use super::egraph::{children, Children, EGraph, Op, PushInfo as EGPushInfo, SymbolLang, EQ_OP};
+use super::explain::{EqIds, Justification};
+use crate::exp::{BoolExp, Exp};
+use crate::intern::{DisplayInterned, Sort, FALSE_SYM, TRUE_SYM};
+use crate::theory::{ExplainTheoryArg, Incremental, Theory, TheoryArg};
+use crate::util::{format_args2, minmax, Bind, DebugIter, DefaultHashBuilder, DisplayFn};
 use crate::Symbol;
+use core::fmt::Display;
 use default_vec2::ConstDefault;
 use hashbrown::HashMap;
 use log::{debug, trace};
 use no_std_compat::prelude::v1::*;
 use perfect_derive::perfect_derive;
-use plat_egg::{raw::Language, Id};
-use platsat::{LMap, Lit};
+use plat_egg::raw::Language;
+use plat_egg::Id;
+use platsat::{lbool, LMap, Lit};
 use std::fmt::{Debug, Formatter};
 use std::mem;
 use std::ops::Range;
@@ -19,8 +21,9 @@ use std::ops::Range;
 type Arg<'a> = TheoryArg<'a, PushInfo>;
 type ExplainArg<'a> = ExplainTheoryArg<'a, PushInfo>;
 
-type LitVec = smallvec::SmallVec<[Lit; 4]>;
-use smallvec::smallvec as litvec;
+pub(super) type LitVec = smallvec::SmallVec<[Lit; 4]>;
+use crate::sp_insert_map::SPInsertMap;
+pub(super) use smallvec::smallvec as litvec;
 
 #[derive(Copy, Clone, Eq, PartialEq)]
 struct OpId(u32);
@@ -59,7 +62,7 @@ impl ConstDefault for OpId {
 }
 
 #[derive(Debug, Clone)]
-pub(crate) enum BoolClass {
+pub(super) enum BoolClass {
     Const(bool),
     Unknown(LitVec),
 }
@@ -74,7 +77,7 @@ impl BoolClass {
 }
 
 #[derive(Debug, Clone)]
-pub(crate) enum EClass {
+pub(super) enum EClass {
     Uninterpreted(Sort),
     Bool(BoolClass),
     /// EClass that creates a conflict whenever it is merged
@@ -83,7 +86,7 @@ pub(crate) enum EClass {
 }
 
 impl EClass {
-    fn to_exp(&self, id: Id) -> Exp {
+    fn to_exp(&self, id: Id) -> Exp<UExp> {
         match self {
             EClass::Bool(b) => b.to_exp().into(),
             EClass::Uninterpreted(s) => UExp::new(id, *s).into(),
@@ -127,23 +130,38 @@ pub struct PushInfo {
     requests_handled: u32,
 }
 
-pub(crate) fn id_for_bool(b: bool) -> Id {
+pub(super) fn id_for_bool(b: bool) -> Id {
     Id::from(b as usize)
 }
 
+#[derive(Debug, Default)]
+pub(super) struct LitInfo {
+    ids: LMap<OpId>,
+    log: Vec<Lit>,
+}
+
+impl LitInfo {
+    pub(super) fn add_id_to_lit(&mut self, id: Id, l: Lit) {
+        self.ids[l] = OpId::some(id);
+        self.log.push(l);
+        debug!("(as v{id:?} Bool) is defined as {:?}", BoolExp::unknown(l),);
+    }
+}
+
 #[derive(Debug)]
-pub struct EufInner {
-    egraph: EGraph<EClass>,
+pub struct Euf {
+    pub(super) egraph: EGraph<EClass>,
     bool_class_history: Vec<MergeInfo>,
-    lit_id_log: Vec<Lit>,
-    lit_ids: LMap<OpId>,
-    distinct_gensym: u32,
+    pub(super) lit: LitInfo,
+    pub(super) distinct_gensym: u32,
     eq_ids: EqIds,
     eq_id_log: Vec<[Id; 2]>,
     requests_handled: u32,
+    function_info: FunctionInfo,
+    pub(super) ifs: SPInsertMap<(Lit, Id, Id), Id>,
 }
 
-impl Default for EufInner {
+impl Default for Euf {
     fn default() -> Self {
         let mut egraph = EGraph::default();
         let fid = egraph.add(FALSE_SYM.into(), Children::new(), |_| {
@@ -152,15 +170,16 @@ impl Default for EufInner {
         let tid = egraph.add(TRUE_SYM.into(), Children::new(), |_| {
             EClass::Bool(BoolClass::Const(true))
         });
-        let mut res = EufInner {
+        let mut res = Euf {
             egraph,
             bool_class_history: vec![],
-            lit_id_log: vec![],
-            lit_ids: Default::default(),
+            lit: Default::default(),
             distinct_gensym: 0,
             eq_ids: Default::default(),
             eq_id_log: vec![],
             requests_handled: 0,
+            function_info: Default::default(),
+            ifs: Default::default(),
         };
         res.init();
         debug_assert_eq!(tid, id_for_bool(true));
@@ -173,16 +192,14 @@ impl Default for EufInner {
 
 type Result = core::result::Result<(), ()>;
 
-pub type Euf = IncrementalWrapper<EufInner>;
-
-impl Incremental for EufInner {
+impl Incremental for Euf {
     type LevelMarker = PushInfo;
 
     fn create_level(&self) -> PushInfo {
         debug!("Push");
         PushInfo {
             egraph: self.egraph.push(),
-            lit_log_len: self.lit_id_log.len() as u32,
+            lit_log_len: self.lit.log.len() as u32,
             eq_id_log_len: self.eq_id_log.len() as u32,
             requests_handled: self.requests_handled,
         }
@@ -190,8 +207,10 @@ impl Incremental for EufInner {
 
     fn pop_to_level(&mut self, info: PushInfo, clear_lits: bool) {
         debug!("Requests handled = {}", info.requests_handled);
-        for lit in self.lit_id_log.drain(info.lit_log_len as usize..) {
-            self.lit_ids[lit] = OpId::NONE;
+        self.ifs
+            .remove_after(Id::from(info.egraph.number_of_uncanonical_nodes()));
+        for lit in self.lit.log.drain(info.lit_log_len as usize..) {
+            self.lit.ids[lit] = OpId::NONE;
         }
         for ids in self.eq_id_log.drain(info.eq_id_log_len as usize..) {
             self.eq_ids.remove(&ids);
@@ -233,9 +252,10 @@ impl Incremental for EufInner {
         let bools = [false, true];
         let bool_syms = bools.map(|b| self.egraph.id_to_node(self.id_for_bool(b)).op());
         self.egraph.clear();
-        self.lit_id_log.clear();
-        self.lit_ids.clear();
+        self.lit.log.clear();
+        self.lit.ids.clear();
         self.bool_class_history.clear();
+        self.ifs.clear();
         self.eq_ids.clear();
         for (b, s) in bools.into_iter().zip(bool_syms) {
             let id = self
@@ -247,17 +267,24 @@ impl Incremental for EufInner {
     }
 }
 
-impl<'a> Theory<TheoryArg<'a, PushInfo>, ExplainTheoryArg<'a, PushInfo>> for EufInner {
+impl<'a> Theory<TheoryArg<'a, PushInfo>, ExplainTheoryArg<'a, PushInfo>> for Euf {
     fn initial_check(&mut self, acts: &mut Arg) -> Result {
         while (self.requests_handled as usize) < self.eq_ids.requests.len() {
             let [id0, id1] = self.eq_ids.requests[self.requests_handled as usize];
             self.requests_handled += 1;
             if self.find(id0) != self.find(id1) {
-                let lit = self.eq_ids.get_or_insert([id0, id1], || acts.mk_new_lit());
+                let lit = self.eq_ids.get_or_insert([id0, id1], || {
+                    Lit::new(acts.new_var(lbool::FALSE, true), true)
+                });
                 let (id, res) = self.add_uncanonical(EQ_OP, children![id0, id1], lit, acts);
-                self.add_id_to_lit(id, lit);
+                self.lit.add_id_to_lit(id, lit);
                 self.make_equality_true(id0, id1);
-                debug!("lit{lit:?} is defined as (= {id0} {id1}) mid-search");
+                debug!(
+                    "{} is defined as (= {} {}) mid-search",
+                    BoolExp::unknown(lit),
+                    self.id_to_display_exp(id0, acts),
+                    self.id_to_display_exp(id1, acts)
+                );
                 res.expect("Adding mid search shouldn't cause conflict");
             } else {
                 debug_assert!(self.eq_ids.get([id0, id1]).is_none());
@@ -271,7 +298,7 @@ impl<'a> Theory<TheoryArg<'a, PushInfo>, ExplainTheoryArg<'a, PushInfo>> for Euf
         debug!("EUF learns {lit:?}");
         let just = Justification::from_lit(lit);
         let tlit = lit.apply_sign(true);
-        if let Some(id) = self.lit_ids[tlit].expand() {
+        if let Some(id) = self.lit.ids[tlit].expand() {
             // Note it is important to union the children of an equality before union-ing the lit
             // with true because of an optimization in the explanation
             let node = self.egraph.id_to_node(id);
@@ -281,7 +308,7 @@ impl<'a> Theory<TheoryArg<'a, PushInfo>, ExplainTheoryArg<'a, PushInfo>> for Euf
             let cid = self.id_for_bool(true);
             self.union(acts, cid, id, just)?;
         }
-        if let Some(id) = self.lit_ids[!tlit].expand() {
+        if let Some(id) = self.lit.ids[!tlit].expand() {
             let cid = self.id_for_bool(false);
             self.union(acts, cid, id, just)?;
         }
@@ -294,7 +321,7 @@ impl<'a> Theory<TheoryArg<'a, PushInfo>, ExplainTheoryArg<'a, PushInfo>> for Euf
 
     fn explain_propagation(&mut self, p: Lit, acts: &mut ExplainArg, is_final: bool) {
         let base_len = acts.clause_builder().len();
-        if let Some(id) = self.lit_ids[p].expand() {
+        if let Some(id) = self.lit.ids[p].expand() {
             let const_bool = self.id_for_bool(true);
             if self.egraph.find(id) == self.egraph.find(const_bool) {
                 self.explain(id, const_bool, is_final, acts);
@@ -309,7 +336,7 @@ impl<'a> Theory<TheoryArg<'a, PushInfo>, ExplainTheoryArg<'a, PushInfo>> for Euf
                 }
             }
         }
-        if let Some(id) = self.lit_ids[!p].expand() {
+        if let Some(id) = self.lit.ids[!p].expand() {
             let const_bool = self.id_for_bool(false);
             self.explain(id, const_bool, is_final, acts);
             debug!("EUF explains {p:?} with clause {:?}", acts.clause_builder());
@@ -363,11 +390,15 @@ impl<'a, 'b> MergeContext<'a, 'b> {
             (EClass::Uninterpreted(sort), EClass::Uninterpreted(sort2)) if *sort == sort2 => {}
             (EClass::Bool(lbool), EClass::Bool(rbool)) => self.merge_bools(lbool, rbool),
             (EClass::Singleton, EClass::Singleton) => *self.conflict = Some([id1, id2]),
-            (l, r) => unreachable!("merging eclasses with different sorts {:?} {:?}", l, r),
+            (l, r) => unreachable!(
+                "merging eclasses with different sorts {} {}",
+                l.to_exp(id1).with_intern(&self.acts.intern()),
+                r.to_exp(id2).with_intern(&self.acts.intern())
+            ),
         }
     }
 }
-impl EufInner {
+impl Euf {
     fn init(&mut self) {
         let t_eq_f = self.egraph.add(
             EQ_OP,
@@ -384,79 +415,42 @@ impl EufInner {
             },
         )
     }
-    pub(crate) fn find(&self, id: Id) -> Id {
+    pub(super) fn find(&self, id: Id) -> Id {
         self.egraph.find(id)
     }
-
-    fn add_id_to_lit(&mut self, id: Id, l: Lit) {
-        self.lit_ids[l] = OpId::some(id);
-        self.lit_id_log.push(l);
-        debug!(
-            "{l:?} is defined as {:?} and given id{id:?}",
-            self.egraph.id_to_node(id)
-        );
-    }
-
-    pub(crate) fn add_bool_node(
-        &mut self,
-        sym: Op,
-        children: Children,
-        mut fresh_lit: impl FnMut() -> Lit,
-    ) -> (BoolExp, bool, Id) {
-        let mut added = None;
-        let id = self.egraph.add(sym, children, |_| {
-            let lit = fresh_lit();
-            added = Some(lit);
-            EClass::Bool(BoolClass::Unknown(litvec![lit]))
-        });
-        if let Some(l) = added {
-            self.add_id_to_lit(id, l);
-            (BoolExp::unknown(l), true, id)
-        } else {
-            let b = match &*self.egraph[id] {
-                EClass::Uninterpreted(x) => {
-                    unreachable!("merging eclasses with different sorts {:?}, Bool", x)
-                }
-                EClass::Bool(b) => b.to_exp(),
-                _ => unreachable!(),
-            };
-            (b, false, id)
-        }
-    }
-
-    /// add a boolean node with the intention to immediately union it to another bool node
-    /// returns the id and whether it is new
-    pub(crate) fn add_blank_bool_node(&mut self, op: Op, children: Children) -> (Id, bool) {
-        let mut added = false;
-        let id = self.egraph.add(op, children, |_| {
-            added = true;
-            EClass::Bool(BoolClass::Unknown(litvec![]))
-        });
-        (id, added)
-    }
-
-    pub(crate) fn add_eq_node(
-        &mut self,
-        id1: Id,
-        id2: Id,
-        fresh_lit: impl FnMut() -> Lit,
-    ) -> BoolExp {
-        if self.egraph.find(id1) == self.egraph.find(id2) {
+    pub(super) fn add_eq_node(&mut self, id1: Id, id2: Id, acts: &mut Arg) -> BoolExp {
+        let cid1 = self.find(id1);
+        let cid2 = self.find(id2);
+        if cid1 == cid2 {
             return BoolExp::TRUE;
         }
-        let (res, added, id) =
-            self.add_bool_node(EQ_OP, Children::from_slice(&[id1, id2]), fresh_lit);
-        if added {
-            if let Ok(l) = res.to_lit() {
-                let ids = minmax(id1, id2);
-                self.eq_id_log.push(ids);
-                self.eq_ids.insert(ids, l);
-            }
+        let mut added = None;
+        let eq_id = self
+            .egraph
+            .add(EQ_OP, Children::from_slice(&[cid1, cid2]), |_| {
+                let lit = Lit::new(acts.new_var_default(), true);
+                added = Some(lit);
+                EClass::Bool(BoolClass::Unknown(litvec![lit]))
+            });
+        if let Some(l) = added {
+            let res = BoolExp::unknown(l);
+            debug!(
+                "{} is defined as (= {} {})",
+                res,
+                self.id_to_display_exp(id1, acts),
+                self.id_to_display_exp(id2, acts)
+            );
+            self.lit.add_id_to_lit(eq_id, l);
+            let ids = minmax(cid1, cid2);
+            self.eq_id_log.push(ids);
+            self.eq_ids.insert(ids, l);
 
-            self.make_equality_true(id1, id2);
+            self.make_equality_true(cid1, cid2);
+
+            res
+        } else {
+            self.id_to_exp(eq_id).as_bool().unwrap()
         }
-        debug!("{res:?} is defined as (= id{id1:?} id{id2:?}) and given id{id:?}");
-        res
     }
 
     // union one of (= alt_id alt_id) or (= id id) with true
@@ -475,37 +469,26 @@ impl EufInner {
             })
     }
 
-    pub(crate) fn add_uninterpreted_node(&mut self, sym: Op, children: Children, sort: Sort) -> Id {
-        self.egraph
-            .add(sym, children, |_| EClass::Uninterpreted(sort))
-    }
-
-    pub(crate) fn make_distinct(
-        &mut self,
-        ids: impl IntoIterator<Item = Id>,
-        acts: &mut Arg,
-    ) -> Result {
-        let s = acts.intern_mut().symbols.gen_sym("distinct");
-        self.distinct_gensym += 1;
-        for id in ids {
-            let mut added = false;
-            self.egraph.add(s.into(), Children::from_slice(&[id]), |_| {
-                added = true;
-                EClass::Singleton
-            });
-            if !added {
-                return Err(());
-            }
-        }
-        Ok(())
-    }
-
-    pub fn id_for_lit(&mut self, lit: Lit, syms: &mut SymbolInfo) -> Id {
-        match &mut self.lit_ids[lit].expand() {
-            Some(id) => *id,
-            None => {
-                let sym = syms.gen_sym(&format_args2!("bool|lit|{lit:?}"));
-                self.add_bool_node(sym.into(), Children::new(), || lit).2
+    pub fn id_for_lit(&mut self, lit: Lit, acts: &mut Arg) -> Id {
+        let val = acts.value(lit.var()) ^ !lit.sign();
+        if val == lbool::TRUE {
+            id_for_bool(true)
+        } else if val == lbool::FALSE {
+            id_for_bool(false)
+        } else {
+            match &mut self.lit.ids[lit].expand() {
+                Some(id) => *id,
+                None => {
+                    let sym = acts
+                        .intern_mut()
+                        .symbols
+                        .gen_sym(&format_args2!("bool|lit|{lit:?}"));
+                    let id = self.egraph.add(sym.into(), Children::new(), |_| {
+                        EClass::Bool(BoolClass::Unknown(litvec![lit]))
+                    });
+                    self.lit.add_id_to_lit(id, lit);
+                    id
+                }
             }
         }
     }
@@ -513,11 +496,30 @@ impl EufInner {
         id_for_bool(b)
     }
 
-    pub fn function_info(&self, buf: &mut FunctionInfo) {
+    pub fn id_for_exp(&mut self, exp: Exp<UExp>, acts: &mut Arg) -> Id {
+        match exp {
+            Exp::Bool(b) => match b.to_lit() {
+                Err(b) => id_for_bool(b),
+                Ok(lit) => self.id_for_lit(lit, acts),
+            },
+            Exp::Other(u) => u.id(),
+        }
+    }
+
+    pub fn resolve_children(
+        &mut self,
+        children: impl Iterator<Item = Exp<UExp>>,
+        acts: &mut Arg,
+    ) -> Children {
+        children.map(|x| self.id_for_exp(x, acts)).collect()
+    }
+
+    pub fn init_function_info(&mut self) {
+        let buf = &mut self.function_info;
         buf.clear();
         for (id, node) in self.egraph.uncanonical_nodes() {
-            let node = node.clone().map_children(|id| self.find(id));
-            buf.data.push((node, self.find(id)))
+            let node = node.clone().map_children(|id| self.egraph.find(id));
+            buf.data.push((node, self.egraph.find(id)))
         }
         buf.data.sort_unstable_by(|x, y| x.0.cmp(&y.0));
         buf.data.dedup_by(|x, y| x.0 == y.0);
@@ -537,8 +539,29 @@ impl EufInner {
         }
     }
 
-    pub fn id_to_exp(&self, id: Id) -> Exp {
+    pub fn get_function_info(&self, s: Symbol) -> FunctionInfoIter {
+        let iter = self.function_info.get(s).iter();
+        FunctionInfoIter {
+            pairs: iter,
+            euf: &self,
+        }
+    }
+
+    pub fn id_to_exp(&self, id: Id) -> Exp<UExp> {
         self.egraph[id].to_exp(id)
+    }
+
+    fn id_to_display_exp<'a>(&'a self, id: Id, acts: &'a Arg) -> impl Display + 'a {
+        let intern = acts.intern();
+        DisplayFn(move |f| match &*self.egraph[id] {
+            &EClass::Uninterpreted(sort) => DisplayInterned::fmt(&UExp { id, sort }, intern, f),
+            EClass::Bool(BoolClass::Const(b)) => Display::fmt(b, f),
+            EClass::Bool(BoolClass::Unknown(l)) if l.len() > 0 => {
+                Display::fmt(&BoolExp::unknown(l[0]), f)
+            }
+            EClass::Bool(BoolClass::Unknown(_)) => f.write_str("(as _ Bool)"),
+            EClass::Singleton => f.write_str("Singleton"),
+        })
     }
 
     pub fn has_parents(&self, id: Id) -> bool {
@@ -551,7 +574,7 @@ impl EufInner {
         Id::from(self.egraph.number_of_uncanonical_nodes())
     }
 
-    pub(crate) fn add_uncanonical(
+    pub(super) fn add_uncanonical(
         &mut self,
         op: Op,
         children: Children,
@@ -619,7 +642,7 @@ impl EufInner {
         }
     }
 
-    pub(crate) fn rebuild(&mut self, acts: &mut Arg) -> Result {
+    pub(super) fn rebuild(&mut self, acts: &mut Arg) -> Result {
         debug!("Rebuilding EGraph");
         EGraph::try_rebuild(
             self,
@@ -628,14 +651,18 @@ impl EufInner {
         )
     }
 
-    pub(crate) fn union(
+    pub(super) fn union(
         &mut self,
         acts: &mut Arg,
         id1: Id,
         id2: Id,
         just: Justification,
     ) -> Result {
-        debug!("EUF union id{id1:?} with id{id2:?} by {just:?}");
+        debug!(
+            "EUF union {} with {} by {just:?}",
+            self.id_to_display_exp(id1, acts),
+            self.id_to_display_exp(id2, acts)
+        );
         let mut conflict = None;
         let ctx = MergeContext {
             acts,
@@ -655,43 +682,80 @@ impl EufInner {
     }
 }
 
-#[perfect_derive(Default)]
-pub struct FunctionInfo<L = SymbolLang> {
+#[perfect_derive(Default, Debug)]
+pub struct FunctionInfo {
     indices: HashMap<Symbol, Range<usize>, DefaultHashBuilder>,
-    data: Vec<(L, Id)>,
+    data: Vec<(SymbolLang, Id)>,
 }
 
-pub struct FullFunctionInfo<'a, L = SymbolLang> {
-    base: &'a FunctionInfo<L>,
-    euf: &'a EufInner,
-}
-
-impl<L> FunctionInfo<L> {
+impl FunctionInfo {
     pub fn clear(&mut self) {
         self.indices.clear();
         self.data.clear();
     }
 
-    pub fn get(&self, s: Symbol) -> &[(L, Id)] {
+    pub fn get(&self, s: Symbol) -> &[(SymbolLang, Id)] {
         self.indices.get(&s).map_or(&[], |r| &self.data[r.clone()])
     }
+}
 
-    pub fn with_euf<'a>(&'a self, euf: &'a EufInner) -> FullFunctionInfo<'a, L> {
-        FullFunctionInfo { base: self, euf }
+pub struct ExpIter<'a> {
+    ids: core::slice::Iter<'a, Id>,
+    euf: &'a Euf,
+}
+
+impl<'a> Iterator for ExpIter<'a> {
+    type Item = Exp<UExp>;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        Some(self.euf.id_to_exp(*self.ids.next()?))
+    }
+
+    fn fold<B, F>(self, init: B, f: F) -> B
+    where
+        Self: Sized,
+        F: FnMut(B, Self::Item) -> B,
+    {
+        self.ids.map(|&id| self.euf.id_to_exp(id)).fold(init, f)
     }
 }
 
-impl<'a, L: Language> FullFunctionInfo<'a, L> {
-    pub fn get(&self, s: Symbol) -> FunctionAssignment!['a] {
-        let iter = self.base.get(s).iter();
-        let id_to_exp = |id: &Id| self.euf.id_to_exp(*id);
-        iter.map(move |(node, id)| (node.children().iter().map(id_to_exp), id_to_exp(id)))
+pub struct FunctionInfoIter<'a> {
+    pairs: core::slice::Iter<'a, (SymbolLang, Id)>,
+    euf: &'a Euf,
+}
+
+impl<'a> Iterator for FunctionInfoIter<'a> {
+    type Item = (ExpIter<'a>, Exp<UExp>);
+
+    fn next(&mut self) -> Option<Self::Item> {
+        let (node, cid) = self.pairs.next()?;
+        Some((
+            ExpIter {
+                ids: node.children().iter(),
+                euf: &self.euf,
+            },
+            self.euf.id_to_exp(*cid),
+        ))
+    }
+
+    fn fold<B, F>(self, init: B, f: F) -> B
+    where
+        Self: Sized,
+        F: FnMut(B, Self::Item) -> B,
+    {
+        self.pairs
+            .map(|(node, cid)| {
+                (
+                    ExpIter {
+                        ids: node.children().iter(),
+                        euf: &self.euf,
+                    },
+                    self.euf.id_to_exp(*cid),
+                )
+            })
+            .fold(init, f)
     }
 }
 
-#[macro_export]
-macro_rules! FunctionAssignment {
-    ($a:lifetime) => {impl ExactSizeIterator<Item = (impl Iterator<Item = Exp> + $a, Exp)>};
-}
-
-pub use FunctionAssignment;
+use super::euf_impl::UExp;

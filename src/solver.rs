@@ -1,24 +1,37 @@
-use crate::egraph::Children;
-use crate::euf::{Euf, FullFunctionInfo, FunctionInfo};
+use crate::euf::EufT;
 use crate::exp::*;
-use crate::explain::Justification;
 use crate::intern::*;
 use crate::junction::*;
-use crate::sp_insert_map::SPInsertMap;
-use crate::theory::Incremental;
-use crate::util::{display_debug, format_args2, DefaultHashBuilder, Either};
-use crate::{euf, Symbol};
+use crate::local_error::LocalError::SortMismatch;
+use crate::local_error::{IResult, Result};
+use crate::theory::{IncrementalWrapper, TheoryArg};
+use crate::util::{display_debug, DefaultHashBuilder, Either};
+use crate::Symbol;
 use core::cmp::Ordering;
+use core::hash::Hash;
 use core::ops::Deref;
 use hashbrown::HashMap;
 use internal_iterator::{InternalIterator, IteratorExt};
-use log::debug;
+use log::{debug, trace};
 use no_std_compat::prelude::v1::*;
 use perfect_derive::perfect_derive;
-use plat_egg::Id;
 use platsat::{lbool, Callbacks, Lit, SolverInterface, SolverOpts, Var};
 use std::fmt::{Debug, Formatter};
 use std::mem;
+
+/// [`Solver`] methods that return [`BoolExp`]s often have an `approx` variant that take an
+/// [`Approx`] when allows for optimizations when the result doesn't have to match exactly
+#[derive(Copy, Clone, Eq, PartialEq, Debug)]
+pub enum Approx {
+    /// The returned boolean exactly matches
+    Exact,
+    /// If `approx` is `Approx(false)` the returned boolean is assigned false whenever the expected result is assigned to false,
+    /// and when the expected result is assigned to true the returned boolean is either also true or unconstrained
+    ///
+    /// If `approx` is `Approx(true)` the returned boolean is assigned true whenever the expected result is assigned to true,
+    /// and when the expected result is assigned to false the returned boolean is either false true or unconstrained
+    Approx(bool),
+}
 
 #[derive(Default)]
 struct NoCb;
@@ -29,18 +42,10 @@ type BatSolver = platsat::Solver<NoCb>;
 ///
 /// It allows constructing and asserting expressions [`Exp`] within the solver
 #[perfect_derive(Default)]
-pub struct Solver {
-    euf: Euf,
+pub struct Solver<Euf: EufT> {
+    euf: IncrementalWrapper<Euf>,
     sat: BatSolver,
-    function_info_buf: FunctionInfo,
-    ifs: SPInsertMap<(Lit, Id, Id), Id>,
     junction_buf: Vec<Lit>,
-}
-
-impl DisplayInterned for UExp {
-    fn fmt(&self, i: &InternInfo, f: &mut Formatter<'_>) -> std::fmt::Result {
-        write!(f, "(as @v{:?} {})", self.id(), self.sort().with_intern(i))
-    }
 }
 
 impl Debug for BoolExp {
@@ -49,9 +54,9 @@ impl Debug for BoolExp {
             Err(c) => Debug::fmt(&c, f),
             Ok(l) => {
                 if l.sign() {
-                    write!(f, "(as @b{:?} Bool)", l.var())
+                    write!(f, "(as b{:?} Bool)", l.var())
                 } else {
-                    write!(f, "(as (not @b{:?}) Bool)", l.var())
+                    write!(f, "(as (not b{:?}) Bool)", l.var())
                 }
             }
         }
@@ -60,30 +65,32 @@ impl Debug for BoolExp {
 
 display_debug!(BoolExp);
 
-impl Debug for Exp {
+impl<UExp: Debug> Debug for Exp<UExp> {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         match self {
             Exp::Bool(b) => Debug::fmt(&b, f),
-            Exp::Uninterpreted(u) => Debug::fmt(&u, f),
+            Exp::Other(u) => Debug::fmt(&u, f),
         }
     }
 }
 
-impl DisplayInterned for Exp {
+impl<UExp: DisplayInterned> DisplayInterned for Exp<UExp> {
     fn fmt(&self, i: &InternInfo, f: &mut Formatter<'_>) -> std::fmt::Result {
         match self {
             Exp::Bool(b) => DisplayInterned::fmt(b, i, f),
-            Exp::Uninterpreted(u) => DisplayInterned::fmt(u, i, f),
+            Exp::Other(u) => DisplayInterned::fmt(u, i, f),
         }
     }
 }
 
-pub trait ExpLike: Into<Exp> + Copy + Debug + DisplayInterned + HasSort + Eq {
-    fn canonize(self, solver: &Solver) -> Self;
+pub trait ExpLike<Euf: EufT>:
+    Into<Exp<Euf::UExp>> + Copy + Debug + DisplayInterned + HasSort + Eq + Hash + Ord
+{
+    fn canonize(self, solver: &Solver<Euf>) -> Self;
 }
 
-impl ExpLike for BoolExp {
-    fn canonize(self, solver: &Solver) -> Self {
+impl<Euf: EufT> ExpLike<Euf> for BoolExp {
+    fn canonize(self, solver: &Solver<Euf>) -> Self {
         match self.to_lit() {
             Ok(x) => {
                 let val = solver.sat.raw_value_lit(x);
@@ -100,17 +107,11 @@ impl ExpLike for BoolExp {
     }
 }
 
-impl ExpLike for UExp {
-    fn canonize(self, solver: &Solver) -> Self {
-        self.with_id(solver.euf.find(self.id()))
-    }
-}
-
-impl ExpLike for Exp {
-    fn canonize(self, solver: &Solver) -> Self {
+impl<Euf: EufT> ExpLike<Euf> for Exp<Euf::UExp> {
+    fn canonize(self, solver: &Solver<Euf>) -> Self {
         match self {
             Exp::Bool(b) => b.canonize(solver).into(),
-            Exp::Uninterpreted(u) => u.canonize(solver).into(),
+            Exp::Other(u) => u.canonize(solver).into(),
         }
     }
 }
@@ -144,7 +145,7 @@ impl SolveResult {
     }
 }
 
-impl Solver {
+impl<Euf: EufT> Solver<Euf> {
     pub fn is_ok(&self) -> bool {
         self.sat.is_ok()
     }
@@ -159,7 +160,7 @@ impl Solver {
     }
 
     #[inline]
-    fn andor_reuse(&mut self, exps: &mut Vec<BLit>, is_and: bool, approx: Option<bool>) -> BoolExp {
+    fn andor_reuse(&mut self, exps: &mut Vec<BLit>, is_and: bool, approx: Approx) -> BoolExp {
         exps.sort_unstable();
 
         let mut last_lit = Lit::UNDEF;
@@ -185,14 +186,14 @@ impl Solver {
         let fresh = self.fresh();
         let res = Lit::new(fresh, true);
         for lit in &mut *exps {
-            if approx != Some(is_and) {
+            if approx != Approx::Approx(is_and) {
                 self.sat.add_clause_unchecked(
                     [*lit ^ !is_and, Lit::new(fresh, !is_and)].iter().copied(),
                 );
             }
             *lit ^= is_and;
         }
-        if approx != Some(!is_and) {
+        if approx != Approx::Approx(!is_and) {
             exps.push(Lit::new(fresh, is_and));
             self.sat.add_clause_unchecked(exps.iter().copied());
         }
@@ -205,7 +206,7 @@ impl Solver {
     /// Doing this will leave `j` in an unspecified state, so it should be
     /// [`clear`](Junction::clear)ed before it is used again
     pub fn collapse_bool<const IS_AND: bool>(&mut self, j: Junction<IS_AND>) -> BoolExp {
-        self.collapse_bool_approx(j, None)
+        self.collapse_bool_approx(j, Approx::Exact)
     }
 
     /// Similar to [`collapse_bool`](Self::collapse_bool), but returns a boolean that approximates `j`
@@ -220,12 +221,14 @@ impl Solver {
     ///
     /// ## Example
     /// ```
+    /// use plat_smt::Approx;
+    /// use plat_smt::euf::Euf;
     /// use plat_smt::Solver;
     /// use plat_smt::SolveResult;
-    /// let mut s = Solver::default();
+    /// let mut s = Solver::<Euf>::default();
     /// let a = s.fresh_bool();
     /// let b = s.fresh_bool();
-    /// let ab = s.collapse_bool_approx(a | b, Some(false));
+    /// let ab = s.collapse_bool_approx(a | b, Approx::Approx(false));
     /// s.assert(!a);
     /// s.assert(!b);
     /// s.assert(ab);
@@ -234,7 +237,7 @@ impl Solver {
     pub fn collapse_bool_approx<const IS_AND: bool>(
         &mut self,
         mut j: Junction<IS_AND>,
-        approx: Option<bool>,
+        approx: Approx,
     ) -> BoolExp {
         debug!("{j:?} (approx: {approx:?}) was collapsed to ...");
         let res = match j.absorbing {
@@ -258,10 +261,10 @@ impl Solver {
     }
 
     pub fn xor(&mut self, b1: BoolExp, b2: BoolExp) -> BoolExp {
-        self.xor_approx(b1, b2, None)
+        self.xor_approx(b1, b2, Approx::Exact)
     }
 
-    pub fn xor_approx(&mut self, b1: BoolExp, b2: BoolExp, approx: Option<bool>) -> BoolExp {
+    pub fn xor_approx(&mut self, b1: BoolExp, b2: BoolExp, approx: Approx) -> BoolExp {
         let b1 = self.canonize(b1);
         let b2 = self.canonize(b2);
         let res = match (b1.to_lit(), b2.to_lit()) {
@@ -276,13 +279,13 @@ impl Solver {
                 };
                 let fresh = self.fresh();
                 let fresh = Lit::new(fresh, true);
-                if approx != Some(true) {
+                if approx != Approx::Approx(true) {
                     self.sat
                         .add_clause_unchecked([l1, l2, !fresh].iter().copied());
                     self.sat
                         .add_clause_unchecked([!l1, !l2, !fresh].iter().copied());
                 }
-                if approx != Some(false) {
+                if approx != Approx::Approx(false) {
                     self.sat
                         .add_clause_unchecked([!l1, l2, fresh].iter().copied());
                     self.sat
@@ -295,56 +298,59 @@ impl Solver {
         res
     }
 
-    pub(crate) fn raw_eq(&mut self, id1: Id, id2: Id) -> BoolExp {
-        let res = self
-            .euf
-            .add_eq_node(id1, id2, || Lit::new(self.sat.new_var_default(), true));
-        debug!("{res:?} is defined as (= id{id1:?} id{id2:?})");
-        res
-    }
-
-    pub(crate) fn assert_raw_eq(&mut self, id1: Id, id2: Id) {
+    fn open<U>(
+        &mut self,
+        f: impl FnOnce(&mut Euf, &mut TheoryArg<Euf::LevelMarker>) -> U,
+        default: U,
+    ) -> U {
+        let mut ret = default;
         self.sat.with_theory_arg(|acts| {
             let (euf, mut acts) = self.euf.open(acts);
-            let _ = euf.union(&mut acts, id1, id2, Justification::NOOP);
+            ret = f(euf, &mut acts)
         });
-        self.simplify();
+        ret
     }
 
     /// Produce a boolean expression representing the equality of the two expressions
     ///
     /// If the two expressions have different sorts returns an error containing both sorts
-    pub fn eq(&mut self, exp1: Exp, exp2: Exp) -> Result<BoolExp, (Sort, Sort)> {
-        let id1 = self.id(exp1);
-        let id2 = self.id(exp2);
-        if exp1.sort() != exp2.sort() {
-            Err((exp1.sort(), exp2.sort()))
-        } else {
-            Ok(self.raw_eq(id1, id2))
-        }
+    pub fn eq(&mut self, exp1: Exp<Euf::UExp>, exp2: Exp<Euf::UExp>) -> Result<BoolExp> {
+        self.eq_approx(exp1, exp2, Approx::Exact)
+    }
+
+    pub fn eq_approx(
+        &mut self,
+        exp1: Exp<Euf::UExp>,
+        exp2: Exp<Euf::UExp>,
+        approx: Approx,
+    ) -> Result<BoolExp> {
+        self.open(
+            |euf, acts| euf.eq_approx(exp1, exp2, approx, acts),
+            Ok(BoolExp::TRUE),
+        )
     }
 
     /// Equivalent to `self.`[`assert`](Self::assert)`(self.`[`eq`](Self::eq)`(exp1, exp2)?)` but
     /// more efficient
-    pub fn assert_eq(&mut self, exp1: Exp, exp2: Exp) -> Result<(), (Sort, Sort)> {
-        let id1 = self.id(exp1);
-        let id2 = self.id(exp2);
-        if exp1.sort() != exp2.sort() {
-            Err((exp1.sort(), exp2.sort()))
-        } else {
-            self.assert_raw_eq(id1, id2);
-            Ok(())
-        }
+    pub fn assert_eq(&mut self, exp1: Exp<Euf::UExp>, exp2: Exp<Euf::UExp>) -> Result<()> {
+        let c1 = self.canonize(exp1);
+        let c2 = self.canonize(exp2);
+        self.open(|euf, acts| euf.assert_eq(c1, c2, acts), Ok(()))?;
+        self.simplify();
+        Ok(())
     }
 
     /// Assert that no pair of `Id`s from `ids` are equal to each other
-    pub fn assert_distinct(&mut self, ids: impl IntoIterator<Item = Id>) {
-        self.sat.with_theory_arg(|acts| {
-            let (euf, mut acts) = self.euf.open(acts);
-            if let Err(()) = euf.make_distinct(ids, &mut acts) {
-                acts.raise_conflict(&[], false);
-            }
-        });
+    pub fn assert_distinct(
+        &mut self,
+        exps: impl IntoIterator<Item = Exp<Euf::UExp>>,
+    ) -> IResult<()> {
+        self.open(
+            |euf, acts| euf.assert_distinct(exps.into_iter(), acts),
+            Ok(()),
+        )?;
+        self.simplify();
+        Ok(())
     }
 
     pub fn intern(&self) -> &InternInfo {
@@ -355,74 +361,53 @@ impl Solver {
         self.euf.intern_mut()
     }
 
+    /// Equivalent to `self.`[`assert`](Self::assert_eq)`(self.`[`sorted_fn`](Self::sorted_fn)`(f, children, exp.sort()), exp)`
+    /// but more efficient
+    pub fn assert_fn_eq(
+        &mut self,
+        f: Symbol,
+        children: impl IntoIterator<Item = Exp<Euf::UExp>>,
+        exp: Exp<Euf::UExp>,
+    ) -> Result<()> {
+        self.open(
+            |euf, acts| euf.assert_fn_eq(f, children.into_iter(), exp, acts),
+            Ok(()),
+        )?;
+        self.simplify();
+        Ok(())
+    }
+
     /// Equivalent to `self.`[`assert`](Self::assert)`(self.`[`bool_fn`](Self::bool_fn)`(f, children) ^ negate)`
     /// but more efficient
-    pub fn assert_bool_fn(&mut self, f: Symbol, children: Children, negate: bool) {
-        if !self.is_ok() {
-            return;
-        }
-        let (id1, _) = self.euf.add_blank_bool_node(f.into(), children);
-        let id2 = self.euf.id_for_bool(!negate);
-        self.assert_raw_eq(id1, id2);
-    }
-
-    pub fn assert_inv(&self) {
-        if let Some((_, id)) = self.ifs.entries.last() {
-            assert!(*id < self.euf.len_id())
-        }
-    }
-
-    fn raw_ite(&mut self, i: Lit, t: Id, e: Id, s: Sort) -> Exp {
-        let mut ifs = mem::take(&mut self.ifs);
-        let id = ifs.get_or_insert((i, t, e), || {
-            let sym = self
-                .intern_mut()
-                .symbols
-                .gen_sym(&format_args2!("if|{i:?}|id{t}|id{e}"));
-            let fresh = self.sorted_fn(sym, Children::new(), s);
-            let fresh_id = self.id(fresh);
-            let eqt = self.raw_eq(fresh_id, t);
-            let Ok(eqt) = eqt.to_lit() else {
-                unreachable!()
-            };
-            let eqe = self.raw_eq(fresh_id, e);
-            let Ok(eqe) = eqe.to_lit() else {
-                unreachable!()
-            };
-            self.sat.add_clause_unchecked([!i, eqt].iter().copied());
-            self.sat.add_clause_unchecked([i, eqe].iter().copied());
-            fresh_id
-        });
-        self.ifs = ifs;
-        self.euf.id_to_exp(id)
+    pub fn assert_bool_fn(
+        &mut self,
+        f: Symbol,
+        children: impl IntoIterator<Item = Exp<Euf::UExp>>,
+        negate: bool,
+    ) -> Result<()> {
+        self.assert_fn_eq(f, children, BoolExp::from_bool(!negate).into())
     }
 
     /// Produce an expression representing that is equivalent to `t` if `i` is true or `e` otherwise
     ///
     /// If `t` and `e` have different sorts returns an error containing both sorts
-    pub fn ite(&mut self, i: BoolExp, t: Exp, e: Exp) -> Result<Exp, (Sort, Sort)> {
-        let tsort = t.sort();
-        let esort = e.sort();
-        if tsort != esort {
-            return Err((tsort, esort));
+    pub fn ite(
+        &mut self,
+        i: BoolExp,
+        t: Exp<Euf::UExp>,
+        e: Exp<Euf::UExp>,
+    ) -> Result<Exp<Euf::UExp>> {
+        if t.sort() != e.sort() {
+            return Err(SortMismatch {
+                actual: e.sort(),
+                expected: t.sort(),
+            });
         }
-        let res = match self.canonize(i).to_lit() {
-            Err(true) => t,
-            Err(false) => e,
-            Ok(u) => {
-                let t = self.canonize(t);
-                let e = self.canonize(e);
-                if t == e {
-                    t
-                } else {
-                    let tid = self.id(t);
-                    let eid = self.id(e);
-                    self.raw_ite(u, tid, eid, tsort)
-                }
-            }
-        };
-        debug!("{res:?} is bound to (ite {i:?} {t:?} {e:?})");
-        Ok(res)
+        let i = self.canonize(i);
+        self.open(
+            |euf, acts| euf.ite(i, t, e, acts),
+            Ok(Euf::placeholder_exp_from_sort(t.sort())),
+        )
     }
 
     /// Creates a function call expression with a given name and children and return sort
@@ -432,28 +417,29 @@ impl Solver {
     /// This method does not check sorts of the children so callers need to ensure that functions
     /// call expressions with the same name but different return sorts do not become congruently
     /// equal (This would cause a panic when it happens)
-    pub fn sorted_fn(&mut self, fn_name: Symbol, children: Children, sort: Sort) -> Exp {
-        if sort == BOOL_SORT {
-            self.bool_fn(fn_name, children).into()
-        } else {
-            let id = self
-                .euf
-                .add_uninterpreted_node(fn_name.into(), children, sort);
-            UExp::new(id, sort).into()
-        }
+    pub fn sorted_fn(
+        &mut self,
+        fn_name: Symbol,
+        children: impl IntoIterator<Item = Exp<Euf::UExp>>,
+        sort: Sort,
+    ) -> Result<Exp<Euf::UExp>> {
+        self.open(
+            |euf, acts| euf.sorted_fn(fn_name, children.into_iter(), sort, acts),
+            Ok(Euf::placeholder_exp_from_sort(sort)),
+        )
     }
 
     /// Similar to calling [`sorted_fn`](Solver::sorted_fn) with the boolean sort, but returns
     /// a [`BoolExp`] instead of an [`Exp`]
-    pub fn bool_fn(&mut self, fn_name: Symbol, children: Children) -> BoolExp {
-        if !self.is_ok() {
-            return BoolExp::FALSE;
-        }
-        self.euf
-            .add_bool_node(fn_name.into(), children, || {
-                Lit::new(self.sat.new_var_default(), true)
-            })
-            .0
+    pub fn bool_fn(
+        &mut self,
+        fn_name: Symbol,
+        children: impl IntoIterator<Item = Exp<Euf::UExp>>,
+    ) -> Result<BoolExp> {
+        Ok(self
+            .sorted_fn(fn_name, children, BOOL_SORT)?
+            .as_bool()
+            .unwrap())
     }
 
     /// Assert that `b` is true
@@ -514,7 +500,6 @@ impl Solver {
     pub fn clear(&mut self) {
         self.sat.reset();
         self.euf.clear();
-        self.ifs.clear();
     }
 
     pub fn simplify(&mut self) {
@@ -535,30 +520,16 @@ impl Solver {
         }
     }
 
-    /// Returns the id of an `exp`
-    ///
-    /// See [`sorted_fn`](Solver::sorted_fn) and  [`bool_fn`](Solver::bool_fn)
-    pub fn id(&mut self, exp: Exp) -> Id {
-        match exp {
-            Exp::Bool(b) => match self.canonize(b).to_lit() {
-                Err(b) => self.euf.id_for_bool(b),
-                Ok(lit) => {
-                    let mut m = &mut ();
-                    let (euf, mut acts) = self.euf.open(&mut m);
-                    euf.id_for_lit(lit, &mut acts.intern_mut().symbols)
-                }
-            },
-            Exp::Uninterpreted(u) => u.id(),
-        }
-    }
-
     /// Returns the boolean sort
     pub fn bool_sort(&self) -> Sort {
         BOOL_SORT
     }
 
     /// Simplifies `t` based on the current assertions
-    pub fn canonize<T: ExpLike>(&self, t: T) -> T {
+    pub fn canonize<T: ExpLike<Euf>>(&self, t: T) -> T {
+        if !self.is_ok() {
+            return t;
+        }
         let res = t.canonize(self);
         debug!(
             "{} canonized to {}",
@@ -572,39 +543,44 @@ impl Solver {
         self.sat.unsat_core(&mut self.euf)
     }
 
-    pub fn function_info(&mut self) -> (FullFunctionInfo<'_>, &Self) {
-        self.euf.function_info(&mut self.function_info_buf);
-        (self.function_info_buf.with_euf(&self.euf), &*self)
+    pub fn function_info<'a>(&'a mut self) -> (impl Fn(Symbol) -> Euf::FunctionInfo<'a>, &'a Self) {
+        self.euf.init_function_info();
+        (|f| self.euf.get_function_info(f), self)
     }
+
+    pub fn theory(&self) -> &Euf {
+        &self.euf
+    }
+
     pub fn sat_options(&self) -> SolverOpts {
         self.sat.options()
     }
 
-    pub fn set_sat_options(&mut self, options: SolverOpts) -> Result<(), ()> {
+    pub fn set_sat_options(&mut self, options: SolverOpts) -> core::result::Result<(), ()> {
         self.sat.set_options(options)
     }
 }
 
 #[derive(Clone)]
-pub struct CheckPoint {
+pub struct LevelMarker<M> {
     sat: platsat::core::CheckPoint,
-    euf: Option<euf::PushInfo>,
+    euf: Option<M>,
 }
 
-impl Solver {
-    pub fn checkpoint(&self) -> CheckPoint {
-        CheckPoint {
+impl<Euf: EufT> Solver<Euf> {
+    pub fn create_level(&self) -> LevelMarker<Euf::LevelMarker> {
+        LevelMarker {
             sat: self.sat.checkpoint(),
             euf: self.is_ok().then(|| self.euf.deref().create_level()),
         }
     }
 
-    pub fn restore_checkpoint(&mut self, checkpoint: CheckPoint) {
-        self.euf.restore_trail_len(checkpoint.sat.trail_len());
-        self.sat.restore_checkpoint(checkpoint.sat);
-        if let Some(x) = checkpoint.euf {
+    pub fn pop_to_level(&mut self, maker: LevelMarker<Euf::LevelMarker>) {
+        self.euf.restore_trail_len(maker.sat.trail_len());
+        self.sat.restore_checkpoint(maker.sat);
+        trace!("Sat model: {:?}", self.sat.raw_model());
+        if let Some(x) = maker.euf {
             self.euf.pop_to_level(x, true);
-            self.ifs.remove_after(self.euf.len_id());
         }
     }
 }

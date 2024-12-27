@@ -13,11 +13,11 @@ use std::hash::{Hash, Hasher};
 use std::mem;
 use std::ops::{Deref, Index};
 
-use crate::explain::{EqIds, Explain, Justification};
+use super::explain::{EqIds, Explain, Justification};
 
 const N: usize = 4;
 pub type Children = SmallVec<[Id; N]>;
-use crate::euf::EClass;
+use super::euf::EClass;
 use crate::intern::EQ_SYM;
 pub use smallvec::smallvec as children;
 
@@ -70,7 +70,7 @@ pub const EQ_OP: Op = Op::new(EQ_SYM, true);
 #[test]
 fn test_flip() {
     let op1 = Op::new(EQ_SYM, true);
-    use crate::explain::EJustification;
+    use super::explain::EJustification;
     assert!(matches!(
         op1.congruence_just(op1).expand(),
         EJustification::Congruence(false)

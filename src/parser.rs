@@ -1,13 +1,14 @@
-use crate::euf::FunctionAssignment;
+use crate::euf::{Euf, EufT};
 use crate::full_buf_read::FullBufRead;
 use crate::intern::*;
+use crate::local_error::LocalError;
 use crate::outer_solver::AddSexpError::*;
 use crate::outer_solver::{AddSexpError, Bound, BoundDefinition, FnSort, OuterSolver, StartExpCtx};
 use crate::parser::Error::*;
 use crate::parser_core::{ParseError, SexpParser, SexpTerminal, SexpToken, SexpVisitor, SpanRange};
-use crate::solver::{CheckPoint, SolveResult, UnsatCoreConjunction};
+use crate::solver::{SolveResult, UnsatCoreConjunction};
 use crate::util::{format_args2, parenthesized, powi, DefaultHashBuilder};
-use crate::{BoolExp, Exp, HasSort};
+use crate::{solver, BoolExp, Exp, HasSort};
 use core::fmt::Arguments;
 use hashbrown::HashMap;
 use internal_iterator::InternalIterator;
@@ -95,11 +96,15 @@ enum Error {
 impl DisplayInterned for Error {
     fn fmt(&self, i: &InternInfo, fmt: &mut Formatter<'_>) -> std::fmt::Result {
         match self {
-            AddSexp(f, SortMismatch {
+            AddSexp(f, ArgError {
                 arg_n,
-                actual,
-                expected,
+                local: LocalError::SortMismatch{ actual,
+                expected,}
             }) => write!(fmt, "the {arg_n}th argument of the function {} has sort {} but should have sort {}", f.with_intern(i), actual.with_intern(i), expected.with_intern(i)),
+            AddSexp(f, ArgError {
+                arg_n,
+                local: LocalError::Unsupported(s)
+            }) => write!(fmt, "unsupported feature {s} at the {arg_n}th argument of the function {} ", f.with_intern(i)),
             AddSexp(f, AsSortMismatch {
                 actual,
                 expected
@@ -330,19 +335,19 @@ enum State {
     Init,
 }
 
-struct PushInfo {
+struct LevelMarker<M> {
     sort: u32,
     bound: u32,
     named_assert: u32,
-    solver: CheckPoint,
+    solver: solver::LevelMarker<M>,
 }
 
-struct Parser<W: Write> {
+struct Parser<W: Write, Euf: EufT> {
     /// List of global variables in the order defined
     /// Used to remove global variable during `(pop)`
     global_stack: Vec<Symbol>,
     /// List of let bound variable with the old value they are shadowing
-    let_bound_stack: Vec<(Symbol, Option<Bound>)>,
+    let_bound_stack: Vec<(Symbol, Option<Bound<Euf::UExp>>)>,
     /// A symbol we are currently defining (it cannot be used with :named even though it's not bound
     /// yet
     currently_defining: Option<Symbol>,
@@ -356,11 +361,11 @@ struct Parser<W: Write> {
     named_assertions: UnsatCoreConjunction<SpanRange>,
     // see above
     old_named_assertions: u32,
-    push_info: Vec<PushInfo>,
-    core: OuterSolver,
+    push_info: Vec<LevelMarker<Euf::LevelMarker>>,
+    core: OuterSolver<Euf>,
     writer: PrintSuccessWriter<W>,
     state: State,
-    check_point: Option<CheckPoint>,
+    command_level_marker: Option<solver::LevelMarker<Euf::LevelMarker>>,
     options: Options,
     last_status_info: Option<SolveResult>,
 }
@@ -451,10 +456,18 @@ impl<'a, 'b, R: FullBufRead> CountingParser<'a, 'b, R> {
     }
 }
 
-struct ExpVisitor<'a, W: Write>(&'a mut Parser<W>, StartExpCtx, Option<Exp>);
+struct ExpVisitor<'a, W: Write, Euf: EufT>(
+    &'a mut Parser<W, Euf>,
+    StartExpCtx,
+    Option<Exp<Euf::UExp>>,
+);
 
-impl<'a, W: Write> ExpVisitor<'a, W> {
-    fn parse_exp_terminal(&mut self, terminal: SexpTerminal, ctx: StartExpCtx) -> Result<Exp> {
+impl<'a, W: Write, Euf: EufT> ExpVisitor<'a, W, Euf> {
+    fn parse_exp_terminal(
+        &mut self,
+        terminal: SexpTerminal,
+        ctx: StartExpCtx,
+    ) -> Result<Exp<Euf::UExp>> {
         match terminal {
             SexpTerminal::Symbol(s) => {
                 let s = self.0.core.intern_mut().symbols.intern(s);
@@ -579,7 +592,7 @@ impl<'a, W: Write> ExpVisitor<'a, W> {
         Ok(())
     }
 
-    fn end_exp_list(&mut self) -> Result<Exp> {
+    fn end_exp_list(&mut self) -> Result<Exp<Euf::UExp>> {
         if let Some(x) = self.2.take() {
             Ok(x)
         } else {
@@ -591,11 +604,11 @@ impl<'a, W: Write> ExpVisitor<'a, W> {
     }
 }
 
-impl<'a, W: Write> SexpVisitor for ExpVisitor<'a, W> {
-    type T = Exp;
+impl<'a, W: Write, Euf: EufT> SexpVisitor for ExpVisitor<'a, W, Euf> {
+    type T = Exp<Euf::UExp>;
     type E = Error;
 
-    fn handle_outer_terminal(&mut self, s: SexpTerminal) -> Result<Exp> {
+    fn handle_outer_terminal(&mut self, s: SexpTerminal) -> Result<Exp<Euf::UExp>> {
         self.parse_exp_terminal(s, self.1)
     }
 
@@ -613,7 +626,7 @@ impl<'a, W: Write> SexpVisitor for ExpVisitor<'a, W> {
         self.start_exp_list(p, StartExpCtx::Opt)
     }
 
-    fn end_outer_list(&mut self) -> Result<Exp> {
+    fn end_outer_list(&mut self) -> Result<Exp<Euf::UExp>> {
         self.end_exp_list()
     }
 
@@ -624,7 +637,7 @@ impl<'a, W: Write> SexpVisitor for ExpVisitor<'a, W> {
     }
 }
 
-impl<W: Write> Parser<W> {
+impl<W: Write, Euf: EufT> Parser<W, Euf> {
     fn new(writer: W) -> Self {
         let mut res = Parser {
             global_stack: Default::default(),
@@ -634,7 +647,7 @@ impl<W: Write> Parser<W> {
             core: Default::default(),
             writer: PrintSuccessWriter::new(writer),
             state: State::Init,
-            check_point: None,
+            command_level_marker: None,
             sort_stack: vec![],
             last_status_info: None,
             currently_defining: None,
@@ -661,11 +674,14 @@ impl<W: Write> Parser<W> {
         &mut self,
         token: SexpToken<R>,
         context: StartExpCtx,
-    ) -> Result<Exp> {
+    ) -> Result<Exp<Euf::UExp>> {
         ExpVisitor(self, context, None).visit(token)
     }
 
-    fn parse_binding<R: FullBufRead>(&mut self, token: SexpToken<R>) -> Result<(Symbol, Exp)> {
+    fn parse_binding<R: FullBufRead>(
+        &mut self,
+        token: SexpToken<R>,
+    ) -> Result<(Symbol, Exp<Euf::UExp>)> {
         match token {
             SexpToken::List(mut l) => {
                 let sym = match l.next().ok_or(InvalidBinding)?? {
@@ -683,7 +699,7 @@ impl<W: Write> Parser<W> {
 
     fn parse_annot_after_exp<R: FullBufRead>(
         &mut self,
-        exp: Exp,
+        exp: Exp<Euf::UExp>,
         mut rest: CountingParser<R>,
     ) -> Result<SpanRange> {
         let SexpToken::Terminal(SexpTerminal::Keyword(k)) = rest.next()? else {
@@ -765,7 +781,7 @@ impl<W: Write> Parser<W> {
         if !matches!(self.state, State::Base) {
             self.core.solver_mut().pop_model();
             self.named_assertions.pop_to(self.old_named_assertions);
-            self.check_point = Some(self.core.solver().checkpoint());
+            self.command_level_marker = Some(self.core.solver().create_level());
             self.state = State::Base;
         }
     }
@@ -788,9 +804,9 @@ impl<W: Write> Parser<W> {
                 self.undo_base_bindings(old_len);
                 self.named_assertions.pop_to(self.old_named_assertions);
                 self.core.reset_working_exp();
-                if let Some(c) = self.check_point.clone() {
+                if let Some(c) = self.command_level_marker.clone() {
                     if matches!(self.state, State::Base) {
-                        self.core.solver_mut().restore_checkpoint(c)
+                        self.core.solver_mut().pop_to_level(c)
                     }
                 } else {
                     self.core.solver_mut().clear()
@@ -906,7 +922,7 @@ impl<W: Write> Parser<W> {
                             let args = parenthesized(args, " ");
                             let ret = f.ret().with_intern(intern);
                             writeln!(self.writer, " (define-fun {k_i} {args} {ret}");
-                            write_body(&mut self.writer, assignment, k_i, ret, intern);
+                            write_body::<_, Euf>(&mut self.writer, assignment, k_i, ret, intern);
                         }
                     }
                 }
@@ -1064,7 +1080,7 @@ impl<W: Write> Parser<W> {
         self.sort_stack.clear();
         self.declared_sorts.insert(BOOL_SYM, 0);
         self.named_assertions.pop_to(0);
-        self.check_point = None;
+        self.command_level_marker = None;
         self.old_named_assertions = 0;
         self.state = State::Init;
     }
@@ -1139,7 +1155,7 @@ impl<W: Write> Parser<W> {
                     .collect::<Result<Vec<_>>>()?;
                 drop(l);
                 rest.finish()?;
-                self.check_point = Some(self.core.solver().checkpoint());
+                self.command_level_marker = Some(self.core.solver().create_level());
                 self.named_assertions
                     .extend(conj.into_iter().map(|(b, s)| (b, s)));
                 let res = self
@@ -1152,11 +1168,11 @@ impl<W: Write> Parser<W> {
             Smt2Command::Push => {
                 let n = rest.try_next_parse()?.unwrap_or(1);
                 for _ in 0..n {
-                    let info = PushInfo {
+                    let info = LevelMarker {
                         bound: self.global_stack.len() as u32,
                         sort: self.sort_stack.len() as u32,
                         named_assert: self.named_assertions.push(),
-                        solver: self.core.solver().checkpoint(),
+                        solver: self.core.solver().create_level(),
                     };
                     debug!(
                         "Push ({} -> {})",
@@ -1182,7 +1198,7 @@ impl<W: Write> Parser<W> {
                         info = self.push_info.pop();
                     }
                     let info = info.unwrap();
-                    self.core.solver_mut().restore_checkpoint(info.solver);
+                    self.core.solver_mut().pop_to_level(info.solver);
                     self.undo_base_bindings(info.bound as usize);
 
                     for s in self.sort_stack.drain(info.sort as usize..).rev() {
@@ -1212,7 +1228,7 @@ impl<W: Write> Parser<W> {
             _ => return Err(InvalidCommand),
         }
         if matches!(self.state, State::Base) {
-            self.check_point = Some(self.core.solver().checkpoint());
+            self.command_level_marker = Some(self.core.solver().create_level());
         }
         Ok(())
     }
@@ -1234,7 +1250,7 @@ impl<W: Write> Parser<W> {
         Ok(())
     }
 
-    fn insert_bound(&mut self, name: Symbol, val: Bound) -> Result<()> {
+    fn insert_bound(&mut self, name: Symbol, val: Bound<Euf::UExp>) -> Result<()> {
         self.core.define(name, val).map_err(|_| Shadow(name))?;
         self.global_stack.push(name);
         Ok(())
@@ -1269,15 +1285,16 @@ impl<W: Write> Parser<W> {
     }
 }
 
-fn write_body<'a, W: Write>(
+fn write_body<'a, W: Write, Euf: EufT>(
     writer: &mut PrintSuccessWriter<W>,
-    assignment: FunctionAssignment!['a],
+    assignment: Euf::FunctionInfo<'a>,
     name: WithIntern<Symbol>,
     ret: WithIntern<Sort>,
     intern: &InternInfo,
 ) {
-    let len = assignment.len();
+    let mut len = 0;
     for (case, res) in assignment {
+        len += 1;
         let res = res.with_intern(intern);
         let mut case = case
             .enumerate()
@@ -1306,6 +1323,6 @@ fn write_body<'a, W: Write>(
 /// Evaluate `data`, the bytes of an `smt2` file, reporting results to `stdout` and errors to
 /// `stderr`
 pub fn interp_smt2(data: impl FullBufRead, out: impl Write, err: impl Write) {
-    let mut p = Parser::new(out);
+    let mut p = Parser::<_, Euf>::new(out);
     p.interp_smt2(data, err)
 }

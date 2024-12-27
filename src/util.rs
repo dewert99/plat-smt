@@ -16,7 +16,7 @@ where
 }
 
 #[derive(Copy, Clone)]
-pub struct DisplayFn<F>(pub F);
+pub struct DisplayFn<F: Fn(&mut Formatter) -> core::fmt::Result>(pub F);
 
 impl<F: Fn(&mut Formatter) -> core::fmt::Result> Display for DisplayFn<F> {
     fn fmt(&self, f: &mut Formatter<'_>) -> core::fmt::Result {

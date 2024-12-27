@@ -1,5 +1,5 @@
 use crate::util::DefaultHashBuilder;
-use core::fmt::Debug;
+use core::fmt::{Debug, Formatter};
 use core::hash::{BuildHasher, Hash};
 use hashbrown::hash_table::Entry;
 use hashbrown::HashTable;
@@ -52,5 +52,16 @@ impl<K: Hash + Eq + Debug, V: Hash + Ord + Copy + Debug> SPInsertMap<K, V> {
     pub(crate) fn clear(&mut self) {
         self.entries.clear();
         self.map.clear();
+    }
+}
+
+impl<K: Debug, V: Debug + Eq> Debug for SPInsertMap<K, V> {
+    fn fmt(&self, f: &mut Formatter<'_>) -> core::fmt::Result {
+        f.debug_map()
+            .entries(self.entries.iter().map(|(hash, v)| {
+                let (k, v) = self.map.find(*hash, |(_, v2)| v2 == v).unwrap();
+                (k, v)
+            }))
+            .finish()
     }
 }

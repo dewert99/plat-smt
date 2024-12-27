@@ -1,0 +1,133 @@
+use crate::intern::{Symbol, BOOL_SORT};
+use crate::local_error::*;
+use crate::solver::ExpLike;
+use crate::theory::{ExplainTheoryArg, Incremental, Theory, TheoryArg};
+use crate::{Approx, BoolExp, Exp, HasSort, Sort};
+
+pub trait EufT:
+    Incremental
+    + for<'a> Theory<TheoryArg<'a, Self::LevelMarker>, ExplainTheoryArg<'a, Self::LevelMarker>>
+{
+    type UExp: ExpLike<Self>;
+
+    /// Create a [`BoolExp`] that represents the equality of `e1` and `e2`
+    fn eq_approx(
+        &mut self,
+        e1: Exp<Self::UExp>,
+        e2: Exp<Self::UExp>,
+        approx: Approx,
+        acts: &mut TheoryArg<Self::LevelMarker>,
+    ) -> Result<BoolExp>;
+
+    /// Assert that `e1` and `e2` are equal
+    fn assert_eq(
+        &mut self,
+        e1: Exp<Self::UExp>,
+        e2: Exp<Self::UExp>,
+        acts: &mut TheoryArg<Self::LevelMarker>,
+    ) -> Result<()> {
+        let eq = self.eq_approx(e1, e2, Approx::Exact, acts)?;
+        acts.assert_bool(eq);
+        Ok(())
+    }
+
+    /// Assert that all the expressions in `exps` are distinct
+    fn assert_distinct(
+        &mut self,
+        exps: impl Iterator<Item = Exp<Self::UExp>>,
+        acts: &mut TheoryArg<Self::LevelMarker>,
+    ) -> IResult<()>;
+
+    /// Creates a function call expression with a given name and children and return sort
+    ///
+    /// [`Id`]s for the children can be created with [`id`](Solver::id)
+    ///
+    /// This method does not check sorts of the children so callers need to ensure that functions
+    /// call expressions with the same name but different return sorts do not become congruently
+    /// equal (This would cause a panic when it happens)
+    fn sorted_fn(
+        &mut self,
+        f: Symbol,
+        children: impl Iterator<Item = Exp<Self::UExp>>,
+        target_sort: Sort,
+        acts: &mut TheoryArg<Self::LevelMarker>,
+    ) -> Result<Exp<Self::UExp>>;
+
+    /// Assert `self.sorted_fn(f, children, target_exp.sort(), acts)` is equal to target_exp
+    fn assert_fn_eq(
+        &mut self,
+        f: Symbol,
+        children: impl Iterator<Item = Exp<Self::UExp>>,
+        target_exp: Exp<Self::UExp>,
+        acts: &mut TheoryArg<Self::LevelMarker>,
+    ) -> Result<()> {
+        let f = self.sorted_fn(f, children, target_exp.sort(), acts)?;
+        self.assert_eq(f, target_exp, acts)?;
+        Ok(())
+    }
+
+    /// Requires `t` and `e` have the same sort
+    /// Produce an expression representing that is equivalent to `t` if `i` is true or `e` otherwise
+    ///
+    /// If `t` and `e` have different sorts returns an error containing both sorts
+    fn ite(
+        &mut self,
+        i: BoolExp,
+        t: Exp<Self::UExp>,
+        e: Exp<Self::UExp>,
+        acts: &mut TheoryArg<Self::LevelMarker>,
+    ) -> Result<Exp<Self::UExp>>;
+
+    /// Return an arbitrary placeholder [`UExp`](EufT::UExp) that must have sort `sort`
+    fn placeholder_uexp_from_sort(sort: Sort) -> Self::UExp;
+
+    /// Return an arbitrary placeholder [`Exp`] that must have sort `sort`
+    fn placeholder_exp_from_sort(sort: Sort) -> Exp<Self::UExp> {
+        if sort == BOOL_SORT {
+            Exp::Bool(BoolExp::TRUE)
+        } else {
+            Exp::Other(Self::placeholder_uexp_from_sort(sort))
+        }
+    }
+
+    /// Must be called before [`get_function_info`](Self::get_function_info)
+    fn init_function_info(&mut self);
+
+    type FunctionInfo<'a>: FunctionAssignmentT<Self::UExp>
+    where
+        Self: 'a;
+
+    /// Gets the definition of an uninterpreted function `f` as a sequence of pairs mapping its
+    /// arguments to its return value
+    ///
+    /// `self` must not have been mutated since the last call to
+    /// [`init_function_info`](Self::init_function_info)
+    fn get_function_info(&self, f: Symbol) -> Self::FunctionInfo<'_>;
+}
+
+pub trait FunctionAssignmentT<UExp>: Iterator<Item = (Self::H, Exp<UExp>)> {
+    type H: Iterator<Item = Exp<UExp>>;
+}
+
+impl<UExp, H: Iterator<Item = Exp<UExp>>, I: Iterator<Item = (H, Exp<UExp>)>>
+    FunctionAssignmentT<UExp> for I
+{
+    type H = H;
+}
+
+pub fn assert_distinct<M>(b1: BoolExp, b2: BoolExp, acts: &mut TheoryArg<M>) {
+    match (b1.to_lit(), b2.to_lit()) {
+        (Ok(l), Err(pol)) | (Err(pol), Ok(l)) => {
+            acts.propagate(l ^ pol);
+        }
+        (Err(b1), Err(b2)) => {
+            if b1 == b2 {
+                acts.raise_conflict(&[], false);
+            }
+        }
+        (Ok(l1), Ok(l2)) => {
+            acts.add_theory_lemma(&[l1, l2]);
+            acts.add_theory_lemma(&[!l1, !l2]);
+        }
+    }
+}

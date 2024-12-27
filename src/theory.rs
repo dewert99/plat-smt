@@ -1,4 +1,5 @@
 use crate::intern::InternInfo;
+use crate::BoolExp;
 use core::fmt::{Debug, Formatter};
 use log::debug;
 use no_std_compat::prelude::v1::*;
@@ -148,6 +149,17 @@ impl<'a, M> TheoryArg<'a, M> {
             incr: self.incr.reborrow(),
         }
     }
+
+    pub fn assert_bool(&mut self, b: BoolExp) -> bool {
+        match b.to_lit() {
+            Ok(l) => self.propagate(l),
+            Err(true) => true,
+            Err(false) => {
+                self.raise_conflict(&[], false);
+                false
+            }
+        }
+    }
 }
 
 /// Theory that parametrizes the solver and can react on events.
@@ -201,7 +213,7 @@ impl<
     pub fn open<'a, S: Reborrow>(
         &'a mut self,
         sat: &'a mut S,
-    ) -> (&mut Th, TheoryArgRaw<'a, S::Target<'a>, Th::LevelMarker>) {
+    ) -> (&'a mut Th, TheoryArgRaw<'a, S::Target<'a>, Th::LevelMarker>) {
         (
             &mut self.th,
             TheoryArgRaw {

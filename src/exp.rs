@@ -1,39 +1,9 @@
 use crate::intern::{Sort, BOOL_SORT};
-use plat_egg::Id;
 use platsat::clause::{Lit, Var};
 use std::ops::{BitXor, Not};
 
 pub trait HasSort {
     fn sort(self) -> Sort;
-}
-
-#[derive(Copy, Clone, Debug, Eq, PartialEq)]
-pub struct UExp {
-    id: Id,
-    sort: Sort,
-}
-
-impl UExp {
-    pub fn id(self) -> Id {
-        self.id
-    }
-
-    pub fn new(id: Id, sort: Sort) -> Self {
-        UExp { id, sort }
-    }
-
-    pub fn with_id(self, new_id: Id) -> Self {
-        UExp {
-            id: new_id,
-            sort: self.sort,
-        }
-    }
-}
-
-impl HasSort for UExp {
-    fn sort(self) -> Sort {
-        self.sort
-    }
 }
 
 /// A boolean sorted expression within a [`Solver`]
@@ -45,38 +15,32 @@ impl HasSort for UExp {
 /// [`Not`], but its [`BitAnd`](core::ops::BitAnd) and [`BitOr`](core::ops::BitOr)
 /// implementations produces [`Conjunction`]s and [`Disjunction`]s respectively.
 /// [`Solver::collapse_bool`] can be used to collapse these types back into [`BoolExp`]s
-#[derive(Copy, Clone, Eq, PartialEq)]
+#[derive(Copy, Clone, Eq, PartialEq, Hash, Ord, PartialOrd)]
 pub struct BoolExp(Lit);
 
-impl From<BoolExp> for Exp {
+impl<UExp> From<BoolExp> for Exp<UExp> {
     fn from(value: BoolExp) -> Self {
         Exp::Bool(value)
     }
 }
 
-impl From<UExp> for Exp {
-    fn from(value: UExp) -> Self {
-        Exp::Uninterpreted(value)
-    }
-}
-
-impl HasSort for Exp {
+impl<UExp: HasSort> HasSort for Exp<UExp> {
     fn sort(self) -> Sort {
         match self {
             Exp::Bool(_) => BOOL_SORT,
-            Exp::Uninterpreted(u) => u.sort,
+            Exp::Other(u) => u.sort(),
         }
     }
 }
 
 /// A dynamically sorted expression within a [`Solver`]
-#[derive(Copy, Clone, Eq, PartialEq)]
-pub enum Exp {
+#[derive(Copy, Clone, Eq, PartialEq, Hash, Ord, PartialOrd)]
+pub enum Exp<UExp> {
     Bool(BoolExp),
-    Uninterpreted(UExp),
+    Other(UExp),
 }
 
-impl Exp {
+impl<UExp: Copy> Exp<UExp> {
     /// Try to downcast into a [`BoolExp`]
     pub fn as_bool(self) -> Option<BoolExp> {
         match self {

@@ -1,13 +1,13 @@
-use crate::egraph::Children;
 use crate::intern::*;
 use crate::util::{extend_result, pairwise_sym, DefaultHashBuilder};
-use crate::{util, BoolExp, Conjunction, Disjunction, Exp, HasSort, Solver, Sort};
+use crate::{
+    local_error, util, Approx, BoolExp, Conjunction, Disjunction, Exp, HasSort, Solver, Sort,
+};
 use alloc::vec::Vec;
 use hashbrown::hash_map::{Entry, HashMap};
 use log::{debug, info};
-use plat_egg::Id;
 use smallvec::SmallVec;
-use std::{iter, mem};
+use std::mem;
 
 #[derive(Clone)]
 pub struct FnSort {
@@ -37,11 +37,11 @@ impl FnSort {
 }
 
 #[derive(Clone)]
-pub enum Bound {
+pub enum Bound<UExp> {
     /// An uninterpreted function with the given sort
     Fn(FnSort),
     /// A constant with the given value
-    Const(Exp),
+    Const(Exp<UExp>),
 }
 
 /// Requirements on the `Exp` returned by `add_sexp`
@@ -58,10 +58,10 @@ enum ExprContext {
 }
 
 impl ExprContext {
-    fn to_approx(self) -> Option<bool> {
+    fn to_approx(self) -> Approx {
         match self {
-            ExprContext::Assert { negate: a } | ExprContext::Approx(a) => Some(a),
-            _ => None,
+            ExprContext::Assert { negate: a } | ExprContext::Approx(a) => Approx::Approx(a),
+            _ => Approx::Exact,
         }
     }
 }
@@ -91,7 +91,8 @@ struct Frame {
 /// ```
 /// use plat_smt::intern::{EQ_SYM, FALSE_SYM, NOT_SYM, TRUE_SYM};
 /// use plat_smt::outer_solver::{StartExpCtx::*, OuterSolver};
-/// let mut solver = OuterSolver::default();
+/// use plat_smt::euf::Euf;
+/// let mut solver = OuterSolver::<Euf>::default();
 /// // Use Assert to start since this is an assertion
 /// solver.start_exp(NOT_SYM, None, Assert);
 /// // Afterwards we use Opt to optimize sub expressions by knowing their position in the whole expression
@@ -107,18 +108,20 @@ struct Frame {
 ///
 /// ### `(declare-fun f (Bool, Bool) Bool)`
 /// ```
-/// # use plat_smt::intern::{BOOL_SORT, EQ_SYM, FALSE_SYM, NOT_SYM, TRUE_SYM};
+/// # use plat_smt::euf::Euf;
+/// use plat_smt::intern::{BOOL_SORT, EQ_SYM, FALSE_SYM, NOT_SYM, TRUE_SYM};
 /// # use plat_smt::outer_solver::{StartExpCtx::*, OuterSolver, Bound, FnSort};
-/// # let mut solver = OuterSolver::default();
+/// # let mut solver = OuterSolver::<Euf>::default();
 /// let f_sym = solver.intern_mut().symbols.intern("f");
 /// solver.define(f_sym, Bound::Fn(FnSort::new([BOOL_SORT, BOOL_SORT].into_iter().collect(), BOOL_SORT))).ok().unwrap();
 /// ```
 ///
 /// ### `(assert (not (let ((x (f true false))) (f x x))))`
 /// ```
-/// # use plat_smt::intern::{BOOL_SORT, EQ_SYM, FALSE_SYM, NOT_SYM, TRUE_SYM};
+/// # use plat_smt::euf::Euf;
+/// use plat_smt::intern::{BOOL_SORT, EQ_SYM, FALSE_SYM, NOT_SYM, TRUE_SYM};
 /// # use plat_smt::outer_solver::{StartExpCtx::*, OuterSolver, Bound, FnSort};
-/// # let mut solver = OuterSolver::default();
+/// # let mut solver = OuterSolver::<Euf>::default();
 /// # let f_sym = solver.intern_mut().symbols.intern("f");
 /// # solver.define(f_sym, Bound::Fn(FnSort::new([BOOL_SORT, BOOL_SORT].into_iter().collect(), BOOL_SORT))).ok().unwrap();
 /// let x_sym = solver.intern_mut().symbols.intern("x");
@@ -145,9 +148,10 @@ struct Frame {
 ///
 /// ### `(assert (not (f (! (f true false) :named x) x)))`
 /// ```
-/// # use plat_smt::intern::{BOOL_SORT, EQ_SYM, FALSE_SYM, NOT_SYM, TRUE_SYM};
+/// # use plat_smt::euf::Euf;
+/// use plat_smt::intern::{BOOL_SORT, EQ_SYM, FALSE_SYM, NOT_SYM, TRUE_SYM};
 /// # use plat_smt::outer_solver::{StartExpCtx::*, OuterSolver, Bound, FnSort};
-/// # let mut solver = OuterSolver::default();
+/// # let mut solver = OuterSolver::<Euf>::default();
 /// # let f_sym = solver.intern_mut().symbols.intern("f");
 /// # solver.define(f_sym, Bound::Fn(FnSort::new([BOOL_SORT, BOOL_SORT].into_iter().collect(), BOOL_SORT))).ok().unwrap();
 /// let x_sym = solver.intern_mut().symbols.intern("x");
@@ -168,15 +172,14 @@ struct Frame {
 /// solver.end_exp().unwrap(); // (f (f true false) x)
 /// solver.end_exp_take().unwrap(); // (not (f (f true false) x))
 /// ```
-pub struct OuterSolver {
-    inner: Solver,
-    bound: HashMap<Symbol, Bound, DefaultHashBuilder>,
-    id_buf: Vec<Id>,
+pub struct OuterSolver<Euf: EufT> {
+    inner: Solver<Euf>,
+    bound: HashMap<Symbol, Bound<Euf::UExp>, DefaultHashBuilder>,
     stack: Vec<Frame>,
-    exp_stack: Vec<Exp>,
+    exp_stack: Vec<Exp<Euf::UExp>>,
 }
 
-impl Default for OuterSolver {
+impl<Euf: EufT> Default for OuterSolver<Euf> {
     fn default() -> Self {
         let mut bound = HashMap::default();
         bound.insert(TRUE_SYM, Bound::Const(BoolExp::TRUE.into()));
@@ -184,21 +187,23 @@ impl Default for OuterSolver {
         OuterSolver {
             inner: Solver::default(),
             bound,
-            id_buf: Default::default(),
             stack: Default::default(),
             exp_stack: Default::default(),
         }
     }
 }
 
-impl OuterSolver {
-    fn optimize_binding(&mut self, name: Symbol, b: Bound) -> Bound {
-        match b {
+impl<Euf: EufT> OuterSolver<Euf> {
+    fn optimize_binding(&mut self, name: Symbol, b: Bound<Euf::UExp>) -> Bound<Euf::UExp> {
+        match &b {
             Bound::Fn(FnSort { args, ret }) if args.is_empty() => {
-                let exp = if ret == BOOL_SORT {
+                let exp = if *ret == BOOL_SORT {
                     self.inner.fresh_bool().into()
                 } else {
-                    self.inner.sorted_fn(name, Children::new(), ret)
+                    match self.inner.sorted_fn(name, [], *ret) {
+                        Ok(x) => x,
+                        Err(_) => return b,
+                    }
                 };
                 debug!(
                     "{} is bound to {}",
@@ -217,7 +222,11 @@ impl OuterSolver {
     /// ## Waring
     /// Defining a symbol as an uninterpreted function and later redefining it as a different
     /// uninterpreted function may lead to unexpected behaviour
-    pub fn raw_define(&mut self, symbol: Symbol, bound: Option<Bound>) -> Option<Bound> {
+    pub fn raw_define(
+        &mut self,
+        symbol: Symbol,
+        bound: Option<Bound<Euf::UExp>>,
+    ) -> Option<Bound<Euf::UExp>> {
         if let Some(bound) = bound {
             self.bound.insert(symbol, bound)
         } else {
@@ -227,7 +236,11 @@ impl OuterSolver {
 
     /// Defines `symbol` to be `bound`,
     /// if it is already defined the old definition kept and Err(`bound`)
-    pub fn define(&mut self, symbol: Symbol, bound: Bound) -> Result<(), Bound> {
+    pub fn define(
+        &mut self,
+        symbol: Symbol,
+        bound: Bound<Euf::UExp>,
+    ) -> Result<(), Bound<Euf::UExp>> {
         let bound = self.optimize_binding(symbol, bound);
         let entry = self.bound.entry(symbol);
         match entry {
@@ -244,7 +257,7 @@ impl OuterSolver {
     pub fn with_defined<O>(
         &mut self,
         symbol: Symbol,
-        value: Exp,
+        value: Exp<Euf::UExp>,
         f: impl FnOnce(&mut Self) -> O,
     ) -> O {
         let old = self.raw_define(symbol, Some(Bound::Const(value)));
@@ -260,7 +273,7 @@ impl OuterSolver {
             .filter(|&k| k != TRUE_SYM && k != FALSE_SYM)
     }
 
-    pub fn definition(&self, sym: Symbol) -> Option<&Bound> {
+    pub fn definition(&self, sym: Symbol) -> Option<&Bound<Euf::UExp>> {
         self.bound.get(&sym)
     }
 
@@ -308,19 +321,20 @@ impl OuterSolver {
         ctx: ExprContext,
         expected: Option<Sort>,
         stack_len: u32,
-    ) -> Result<Exp, AddSexpError> {
-        let mut base_children = self.exp_stack[stack_len as usize..]
+    ) -> Result<Exp<Euf::UExp>, AddSexpError> {
+        let children_slice = &mut self.exp_stack[stack_len as usize..];
+        let mut base_children = children_slice
             .iter()
             .copied()
             .enumerate()
-            .map(IndexExp);
+            .map(IndexExp::<Euf::UExp>);
         let children = &mut base_children;
-        let res: Exp = match f {
+        let res: Exp<Euf::UExp> = match f {
             AND_SYM => {
                 if matches!(ctx, ExprContext::Assert { negate: false }) {
                     children.try_for_each(|x| {
                         self.inner.assert(x.as_bool()?);
-                        Ok(())
+                        Ok::<_, AddSexpError>(())
                     })?;
                     BoolExp::TRUE.into()
                 } else {
@@ -333,7 +347,7 @@ impl OuterSolver {
                 if matches!(ctx, ExprContext::Assert { negate: true }) {
                     children.try_for_each(|x| {
                         self.inner.assert(!x.as_bool()?);
-                        Ok(())
+                        Ok::<_, AddSexpError>(())
                     })?;
                     BoolExp::FALSE.into()
                 } else {
@@ -350,7 +364,8 @@ impl OuterSolver {
                 let mut d: Disjunction = self.inner.new_junction();
                 let [arg] = mandatory_args(children)?;
                 let mut last = arg.as_bool()?;
-                let other = children.map(|x| Ok(!mem::replace(&mut last, x.as_bool()?)));
+                let other =
+                    children.map(|x| Ok::<_, AddSexpError>(!mem::replace(&mut last, x.as_bool()?)));
                 extend_result(&mut d, other)?;
                 d.push(last);
                 self.inner.collapse_bool_approx(d, ctx.to_approx()).into()
@@ -360,53 +375,50 @@ impl OuterSolver {
                 children
                     .map(|x| (x.as_bool(), x.0 .0 + 1 == child_len))
                     .try_fold(BoolExp::FALSE, |b1, (b2, last)| {
-                        let approx = if last { ctx.to_approx() } else { None };
-                        Ok(self.inner.xor_approx(b1, b2?, approx))
+                        let approx = if last { ctx.to_approx() } else { Approx::Exact };
+                        Ok::<_, AddSexpError>(self.inner.xor_approx(b1, b2?, approx))
                     })?
                     .into()
             }
             EQ_SYM => {
                 let mut c: Conjunction = self.inner.new_junction();
                 let [exp1] = mandatory_args(children)?;
-                let id1 = self.inner.id(exp1.exp());
-                let sort = exp1.exp().sort();
+                let exp1 = exp1.exp();
                 extend_result(
                     &mut c,
-                    children.map(|x| {
-                        let id2 = self.inner.id(x.expect_sort(sort)?);
-                        match ctx {
+                    children.map(|exp2| {
+                        exp2.map(|exp2| match ctx {
                             ExprContext::Assert { negate: false } => {
-                                self.inner.assert_raw_eq(id1, id2);
-                                Ok(BoolExp::TRUE)
+                                self.inner.assert_eq(exp1, exp2).map(|()| BoolExp::TRUE)
                             }
-                            _ => Ok(self.inner.raw_eq(id1, id2)),
-                        }
+                            _ => self.inner.eq(exp1, exp2),
+                        })
                     }),
                 )?;
                 self.inner.collapse_bool(c).into()
             }
             DISTINCT_SYM => {
-                let [exp1] = mandatory_args(children)?;
-                let sort = exp1.exp().sort();
-                let children =
-                    iter::once(Ok(exp1.exp())).chain(children.map(|x| x.expect_sort(sort)));
-                let mut ids = mem::take(&mut self.id_buf);
-                ids.clear();
-                extend_result(&mut ids, children.map(|child| Ok(self.inner.id(child?))))?;
                 let res = match ctx {
                     ExprContext::Assert { negate: false } => {
-                        self.inner.assert_distinct(ids.iter().copied());
+                        self.inner.assert_distinct(children.map(|x| x.exp()))?;
                         BoolExp::TRUE.into()
                     }
                     _ => {
+                        if let Some(x) = children.next() {
+                            let sort = x.exp().sort();
+                            children.try_for_each(|x| {
+                                x.expect_sort(sort)?;
+                                Ok::<_, AddSexpError>(())
+                            })?;
+                        }
                         let mut c: Conjunction = self.inner.new_junction();
                         c.extend(
-                            pairwise_sym(&ids).map(|(id1, id2)| !self.inner.raw_eq(*id1, *id2)),
+                            pairwise_sym(&children_slice)
+                                .map(|(id1, id2)| !self.inner.eq(*id1, *id2).unwrap()),
                         );
                         self.inner.collapse_bool(c).into()
                     }
                 };
-                self.id_buf = ids;
                 res
             }
             ITE_SYM | IF_SYM => {
@@ -414,11 +426,7 @@ impl OuterSolver {
 
                 self.inner
                     .ite(i.as_bool()?, t.exp(), e.exp())
-                    .map_err(|(expected, actual)| SortMismatch {
-                        actual,
-                        expected,
-                        arg_n: 2,
-                    })?
+                    .map_err(|err| (err, 2))?
             }
             sym => match self.bound.get(&sym) {
                 None => return Err(Unbound),
@@ -431,21 +439,23 @@ impl OuterSolver {
                     }
                 }
                 Some(Bound::Fn(f)) => {
-                    let children: Children = children
-                        .zip(&f.args)
-                        .map(|(arg, sort)| Ok(self.inner.id(arg.expect_sort(*sort)?)))
-                        .collect::<Result<_, AddSexpError>>()?;
-                    if children.len() < f.args.len() {
+                    children.zip(&f.args).try_for_each(|(arg, sort)| {
+                        arg.expect_sort(*sort)?;
+                        Ok::<_, AddSexpError>(())
+                    })?;
+                    if children_slice.len() < f.args.len() {
                         return Err(MissingArgument {
-                            actual: children.len(),
+                            actual: children_slice.len(),
                             expected: f.args.len(),
                         });
                     }
                     if let (ExprContext::Assert { negate }, BOOL_SORT) = (ctx, f.ret) {
-                        self.inner.assert_bool_fn(sym, children, negate);
+                        self.inner
+                            .assert_bool_fn(sym, children_slice.iter().copied(), negate)?;
                         BoolExp::from_bool(!negate).into()
                     } else {
-                        self.inner.sorted_fn(sym, children, f.ret)
+                        self.inner
+                            .sorted_fn(sym, children_slice.iter().copied(), f.ret)?
                     }
                 }
             },
@@ -465,7 +475,7 @@ impl OuterSolver {
     /// Ends an expression
     ///
     /// see [`OuterSolver`] documentation for more details
-    pub fn end_exp_take(&mut self) -> Result<Exp, (Symbol, AddSexpError)> {
+    pub fn end_exp_take(&mut self) -> Result<Exp<Euf::UExp>, (Symbol, AddSexpError)> {
         let Frame {
             ctx,
             f,
@@ -492,7 +502,7 @@ impl OuterSolver {
     }
 
     /// Adds a child to the current expression
-    pub fn inject_exp(&mut self, exp: Exp) {
+    pub fn inject_exp(&mut self, exp: Exp<Euf::UExp>) {
         debug_assert!(!self.stack.is_empty());
         self.exp_stack.push(exp)
     }
@@ -511,7 +521,12 @@ impl OuterSolver {
         &mut self,
     ) -> (
         &InternInfo,
-        impl Iterator<Item = (Symbol, BoundDefinition<FunctionAssignment!['_]>)>,
+        impl Iterator<
+            Item = (
+                Symbol,
+                BoundDefinition<Euf::FunctionInfo<'_>, Exp<Euf::UExp>>,
+            ),
+        >,
     ) {
         let mut syms: Vec<_> = self.defined_symbols().collect();
         syms.sort_unstable_by_key(|sym| self.intern().symbols.resolve(*sym));
@@ -521,7 +536,7 @@ impl OuterSolver {
             let val = bound.get(&sym).unwrap();
             match val {
                 Bound::Const(exp) => (sym, BoundDefinition::Const(inner.canonize(*exp))),
-                Bound::Fn(f) => (sym, BoundDefinition::Fn(f, function_info.get(sym))),
+                Bound::Fn(f) => (sym, BoundDefinition::Fn(f, function_info(sym))),
             }
         });
         (inner.intern(), iter)
@@ -538,11 +553,11 @@ impl OuterSolver {
             .insert(FALSE_SYM, Bound::Const(BoolExp::FALSE.into()));
     }
 
-    pub fn solver(&self) -> &Solver {
+    pub fn solver(&self) -> &Solver<Euf> {
         &self.inner
     }
 
-    pub fn solver_mut(&mut self) -> &mut Solver {
+    pub fn solver_mut(&mut self) -> &mut Solver<Euf> {
         &mut self.inner
     }
 
@@ -555,51 +570,68 @@ impl OuterSolver {
     }
 }
 
-pub enum BoundDefinition<'a, F> {
-    Const(Exp),
+pub enum BoundDefinition<'a, F, UExp> {
+    Const(UExp),
     Fn(&'a FnSort, F),
 }
 
 #[derive(Debug)]
 pub enum AddSexpError {
-    SortMismatch {
-        arg_n: usize,
-        actual: Sort,
-        expected: Sort,
-    },
-    AsSortMismatch {
-        actual: Sort,
-        expected: Sort,
-    },
-    MissingArgument {
-        actual: usize,
-        expected: usize,
-    },
-    ExtraArgument {
-        expected: usize,
-    },
+    ArgError { arg_n: usize, local: LocalError },
+    AsSortMismatch { actual: Sort, expected: Sort },
+    MissingArgument { actual: usize, expected: usize },
+    ExtraArgument { expected: usize },
     Unbound,
 }
-use crate::euf::FunctionAssignment;
+
+impl From<(LocalError, usize)> for AddSexpError {
+    fn from(value: (LocalError, usize)) -> Self {
+        ArgError {
+            arg_n: value.1,
+            local: value.0,
+        }
+    }
+}
+
+impl From<LocalError> for AddSexpError {
+    fn from(local: LocalError) -> Self {
+        ArgError { arg_n: 0, local }
+    }
+}
+
+use crate::euf::EufT;
+use crate::local_error::LocalError;
 use AddSexpError::*;
 
 #[derive(Copy, Clone)]
-pub(crate) struct IndexExp(pub(crate) (usize, Exp));
+pub(crate) struct IndexExp<Euf>(pub(crate) (usize, Exp<Euf>));
 
-impl IndexExp {
-    pub(crate) fn exp(self) -> Exp {
+impl<UExp: HasSort + Copy> IndexExp<UExp> {
+    pub(crate) fn exp(self) -> Exp<UExp> {
         self.0 .1
     }
 
-    pub(crate) fn sort_mismatch(self, expected: Sort) -> AddSexpError {
-        SortMismatch {
+    pub(crate) fn map<U>(
+        self,
+        f: impl FnOnce(Exp<UExp>) -> local_error::Result<U>,
+    ) -> Result<U, AddSexpError> {
+        f(self.exp()).map_err(|local| ArgError {
             arg_n: self.0 .0,
-            actual: self.exp().sort(),
-            expected,
+            local,
+        })
+    }
+
+    pub(crate) fn sort_mismatch(self, expected: Sort) -> AddSexpError {
+        ArgError {
+            arg_n: self.0 .0,
+            local: LocalError::SortMismatch {
+                actual: self.exp().sort(),
+                expected,
+            },
         }
     }
 
-    pub(crate) fn expect_sort(self, expected: Sort) -> Result<Exp, AddSexpError> {
+    pub(crate) fn expect_sort(self, expected: Sort) -> Result<Exp<UExp>, AddSexpError> {
         if self.exp().sort() != expected {
             Err(self.sort_mismatch(expected))
         } else {
@@ -612,9 +644,9 @@ impl IndexExp {
     }
 }
 
-pub(crate) fn mandatory_args<const N: usize>(
-    iter: &mut impl Iterator<Item = IndexExp>,
-) -> Result<[IndexExp; N], AddSexpError> {
+pub(crate) fn mandatory_args<const N: usize, UExp>(
+    iter: &mut impl Iterator<Item = IndexExp<UExp>>,
+) -> Result<[IndexExp<UExp>; N], AddSexpError> {
     let mut res = Ok(());
 
     let arr = core::array::from_fn(|i| match iter.next() {
@@ -631,7 +663,9 @@ pub(crate) fn mandatory_args<const N: usize>(
     Ok(arr)
 }
 
-pub(crate) fn finish_iter(mut iter: impl Iterator<Item = IndexExp>) -> Result<(), AddSexpError> {
+pub(crate) fn finish_iter<UExp>(
+    mut iter: impl Iterator<Item = IndexExp<UExp>>,
+) -> Result<(), AddSexpError> {
     match iter.next() {
         Some(x) => Err(ExtraArgument { expected: x.0 .0 }),
         None => Ok(()),

@@ -9,7 +9,7 @@ use std::hash::BuildHasher;
 #[derive(Copy, Clone, Ord, PartialOrd, Eq, PartialEq, Hash, Debug)]
 pub struct Symbol(pub(crate) NonZeroU32);
 
-#[derive(Copy, Clone, Eq, PartialEq, Debug, Hash)]
+#[derive(Copy, Clone, Eq, PartialEq, Hash, Ord, PartialOrd, Debug)]
 pub struct Sort(NonZeroU32);
 
 const BASE_SYMBOLS: &[&str] = &[
@@ -231,7 +231,7 @@ impl Default for SortInfo {
         };
         for (i, &(name, args)) in BASE_SORTS.iter().enumerate() {
             let s = res.intern(name, args);
-            assert_eq!(s, Sort(NonZeroU32::new(i as u32 + 1).unwrap()));
+            assert_eq!(s.0.get(), i as u32 + 1);
         }
         res
     }
