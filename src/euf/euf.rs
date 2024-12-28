@@ -274,7 +274,7 @@ impl<'a> Theory<TheoryArg<'a, PushInfo>, ExplainTheoryArg<'a, PushInfo>> for Euf
             self.requests_handled += 1;
             if self.find(id0) != self.find(id1) {
                 let lit = self.eq_ids.get_or_insert([id0, id1], || {
-                    Lit::new(acts.new_var(lbool::FALSE, true), true)
+                    Lit::new(acts.new_var(lbool::UNDEF, false), true)
                 });
                 let (id, res) = self.add_uncanonical(EQ_OP, children![id0, id1], lit, acts);
                 self.lit.add_id_to_lit(id, lit);
