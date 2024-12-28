@@ -239,6 +239,9 @@ impl<Euf: EufT> Solver<Euf> {
         mut j: Junction<IS_AND>,
         approx: Approx,
     ) -> BoolExp {
+        if !self.is_ok() {
+            return BoolExp::TRUE;
+        }
         debug!("{j:?} (approx: {approx:?}) was collapsed to ...");
         let res = match j.absorbing {
             true => BoolExp::from_bool(!IS_AND),
@@ -265,6 +268,9 @@ impl<Euf: EufT> Solver<Euf> {
     }
 
     pub fn xor_approx(&mut self, b1: BoolExp, b2: BoolExp, approx: Approx) -> BoolExp {
+        if !self.is_ok() {
+            return BoolExp::TRUE;
+        }
         let b1 = self.canonize(b1);
         let b2 = self.canonize(b2);
         let res = match (b1.to_lit(), b2.to_lit()) {
@@ -444,6 +450,9 @@ impl<Euf: EufT> Solver<Euf> {
 
     /// Assert that `b` is true
     pub fn assert(&mut self, b: BoolExp) {
+        if !self.is_ok() {
+            return;
+        }
         debug!("assert {b}");
         match self.canonize(b).to_lit() {
             Err(true) => {}
