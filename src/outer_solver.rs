@@ -345,28 +345,22 @@ impl<Euf: EufT> OuterSolver<Euf> {
         let children = &mut base_children;
         let res: Exp<Euf::UExp> = match f {
             AND_SYM => {
-                if matches!(ctx, ExprContext::AssertEq(Exp::Bool(BoolExp::TRUE), _)) {
-                    children.try_for_each(|x| {
-                        self.inner.assert(x.as_bool()?);
-                        Ok::<_, AddSexpError>(())
-                    })?;
-                    BoolExp::TRUE.into()
+                let mut c: Conjunction = self.inner.new_junction();
+                extend_result(&mut c, children.map(|x| x.as_bool()))?;
+                if let ExprContext::AssertEq(Exp::Bool(b), _) = ctx {
+                    self.inner.assert_junction_eq(c, b);
+                    b.into()
                 } else {
-                    let mut c: Conjunction = self.inner.new_junction();
-                    extend_result(&mut c, children.map(|x| x.as_bool()))?;
                     self.inner.collapse_bool_approx(c, ctx.to_approx()).into()
                 }
             }
             OR_SYM => {
-                if matches!(ctx, ExprContext::AssertEq(Exp::Bool(BoolExp::FALSE), _)) {
-                    children.try_for_each(|x| {
-                        self.inner.assert(!x.as_bool()?);
-                        Ok::<_, AddSexpError>(())
-                    })?;
-                    BoolExp::FALSE.into()
+                let mut d: Disjunction = self.inner.new_junction();
+                extend_result(&mut d, children.map(|x| x.as_bool()))?;
+                if let ExprContext::AssertEq(Exp::Bool(b), _) = ctx {
+                    self.inner.assert_junction_eq(d, b);
+                    b.into()
                 } else {
-                    let mut d: Disjunction = self.inner.new_junction();
-                    extend_result(&mut d, children.map(|x| x.as_bool()))?;
                     self.inner.collapse_bool_approx(d, ctx.to_approx()).into()
                 }
             }

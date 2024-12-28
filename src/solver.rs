@@ -159,45 +159,99 @@ impl<Euf: EufT> Solver<Euf> {
         BoolExp::unknown(Lit::new(self.fresh(), true))
     }
 
-    #[inline]
-    fn andor_reuse(&mut self, exps: &mut Vec<BLit>, is_and: bool, approx: Approx) -> BoolExp {
-        exps.sort_unstable();
+    fn optimize_junction(&mut self, lits: &mut Vec<BLit>, is_and: bool) -> bool {
+        lits.sort_unstable();
 
         let mut last_lit = Lit::UNDEF;
         let mut j = 0;
         // remove duplicates, true literals, etc.
-        for i in 0..exps.len() {
-            let lit_i = exps[i];
+        for i in 0..lits.len() {
+            let lit_i = lits[i];
             let value = self.sat.raw_value_lit(lit_i);
             if (value == lbool::TRUE ^ is_and) || lit_i == !last_lit {
-                return BoolExp::from_bool(!is_and);
+                return true;
             } else if !(value ^ is_and == lbool::FALSE) && lit_i != last_lit {
                 // not a duplicate
                 last_lit = lit_i;
-                exps[j] = lit_i;
+                lits[j] = lit_i;
                 j += 1;
             }
         }
-        exps.truncate(j);
+        lits.truncate(j);
+        false
+    }
 
-        if let [exp] = &**exps {
-            return BoolExp::unknown(*exp);
-        }
-        let fresh = self.fresh();
-        let res = Lit::new(fresh, true);
-        for lit in &mut *exps {
+    fn bind_junction(&mut self, lits: &mut Vec<BLit>, is_and: bool, approx: Approx, target: BLit) {
+        for lit in &mut *lits {
             if approx != Approx::Approx(is_and) {
-                self.sat.add_clause_unchecked(
-                    [*lit ^ !is_and, Lit::new(fresh, !is_and)].iter().copied(),
-                );
+                self.sat
+                    .add_clause_unchecked([*lit ^ !is_and, target ^ is_and].iter().copied());
             }
             *lit ^= is_and;
         }
         if approx != Approx::Approx(!is_and) {
-            exps.push(Lit::new(fresh, is_and));
-            self.sat.add_clause_unchecked(exps.iter().copied());
+            lits.push(target ^ !is_and);
+            self.sat.add_clause_unchecked(lits.iter().copied());
         }
+    }
+
+    #[inline]
+    fn andor_reuse(&mut self, lits: &mut Vec<BLit>, is_and: bool, approx: Approx) -> BoolExp {
+        if self.optimize_junction(lits, is_and) {
+            return BoolExp::from_bool(!is_and);
+        }
+
+        if let [lit] = &**lits {
+            return BoolExp::unknown(*lit);
+        }
+        let fresh = self.fresh();
+        let res = Lit::new(fresh, true);
+        self.bind_junction(lits, is_and, approx, res);
         BoolExp::unknown(res)
+    }
+
+    fn assert_junction_eq_inner(&mut self, lits: &mut Vec<BLit>, is_and: bool, target: BoolExp) {
+        if self.optimize_junction(lits, is_and) {
+            self.assert(target ^ is_and);
+            return;
+        }
+
+        if lits.is_empty() {
+            self.assert(target ^ !is_and);
+        }
+
+        match self.canonize(target).to_lit() {
+            Ok(target) => {
+                let mut approx = Approx::Exact;
+                if let Ok(idx) = lits.binary_search_by(|lit| lit.var().cmp(&target.var())) {
+                    let found = lits[idx];
+                    lits.remove(idx);
+                    if found == target {
+                        approx = Approx::Approx(!is_and);
+                    } else {
+                        self.sat.add_clause_unchecked([target ^ is_and]);
+                        if is_and {
+                            lits.iter_mut().for_each(|l| *l = !*l);
+                        }
+                        self.sat.add_clause_unchecked(lits.iter().copied());
+                        return;
+                    }
+                }
+                self.bind_junction(lits, is_and, approx, target)
+            }
+            Err(target) => {
+                if !target {
+                    lits.iter_mut().for_each(|l| *l = !*l);
+                }
+                if is_and ^ target {
+                    self.sat.add_clause_unchecked(lits.iter().copied());
+                } else {
+                    lits.iter().for_each(|l| {
+                        self.sat.add_clause_unchecked([*l]);
+                    });
+                }
+            }
+        }
     }
 
     /// Collapse a [`Conjunction`] or [`Disjunction`] into a [`BoolExp`]
@@ -245,11 +299,26 @@ impl<Euf: EufT> Solver<Euf> {
         debug!("{j:?} (approx: {approx:?}) was collapsed to ...");
         let res = match j.absorbing {
             true => BoolExp::from_bool(!IS_AND),
-            false if j.lits.is_empty() => BoolExp::from_bool(IS_AND),
             false => self.andor_reuse(&mut j.lits, IS_AND, approx),
         };
         self.junction_buf = j.lits;
         debug!("... {res}");
+        res
+    }
+
+    pub fn assert_junction_eq<const IS_AND: bool>(
+        &mut self,
+        mut j: Junction<IS_AND>,
+        target: BoolExp,
+    ) {
+        if !self.is_ok() {
+            return;
+        }
+        let res = match j.absorbing {
+            true => self.assert(target ^ IS_AND),
+            false => self.assert_junction_eq_inner(&mut j.lits, IS_AND, target),
+        };
+        self.junction_buf = j.lits;
         res
     }
 

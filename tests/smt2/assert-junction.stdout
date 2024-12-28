@@ -1,0 +1,32 @@
+sat
+(
+ (define-fun a () Bool false)
+ (define-fun b () Bool false)
+ (define-fun c () Bool false)
+ (define-fun d () Bool true)
+)
+sat
+(
+ (define-fun a () Bool false)
+ (define-fun b () Bool false)
+ (define-fun c () Bool false)
+ (define-fun d () Bool false)
+)
+unsat
+sat
+(
+ (define-fun a () Bool false)
+ (define-fun b () Bool false)
+ (define-fun c () Bool false)
+ (define-fun d () Bool true)
+)
+unsat
+unsat
+sat
+(
+ (define-fun a () Bool true)
+ (define-fun b () Bool true)
+ (define-fun c () Bool true)
+ (define-fun d () Bool false)
+)
+unsat
