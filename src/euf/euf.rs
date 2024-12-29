@@ -196,7 +196,6 @@ impl Incremental for Euf {
     type LevelMarker = PushInfo;
 
     fn create_level(&self) -> PushInfo {
-        debug!("Push");
         PushInfo {
             egraph: self.egraph.push(),
             lit_log_len: self.lit.log.len() as u32,

@@ -50,7 +50,7 @@ enum ExprContext<UExp> {
     /// the `Exp` must be equivalent to the s-expression
     #[default]
     Exact,
-    AssertEq(Exp<UExp>),
+    AssertEq(Exp<UExp>, bool),
     Approx(bool),
 }
 
@@ -58,8 +58,8 @@ impl<UExp> ExprContext<UExp> {
     fn to_approx(self) -> Approx {
         match self {
             ExprContext::Approx(a) => Approx::Approx(a),
-            ExprContext::AssertEq(Exp::Bool(BoolExp::TRUE)) => Approx::Approx(false),
-            ExprContext::AssertEq(Exp::Bool(BoolExp::FALSE)) => Approx::Approx(true),
+            ExprContext::AssertEq(Exp::Bool(BoolExp::TRUE), _) => Approx::Approx(false),
+            ExprContext::AssertEq(Exp::Bool(BoolExp::FALSE), _) => Approx::Approx(true),
             _ => Approx::Exact,
         }
     }
@@ -281,14 +281,18 @@ impl<Euf: EufT> OuterSolver<Euf> {
         let parent = frame.ctx;
         let f = frame.f;
         match (parent, f) {
-            (AssertEq(Exp::Bool(b)), NOT_SYM) => AssertEq(Exp::Bool(!b)),
+            (AssertEq(Exp::Bool(b), negated), NOT_SYM) => AssertEq(Exp::Bool(!b), !negated),
             (Approx(a), NOT_SYM) => Approx(!a),
-            (AssertEq(Exp::Bool(BoolExp::TRUE)), AND_SYM) => AssertEq(Exp::Bool(BoolExp::TRUE)),
-            (AssertEq(Exp::Bool(BoolExp::FALSE)), OR_SYM) => AssertEq(Exp::Bool(BoolExp::FALSE)),
-            (AssertEq(Exp::Bool(BoolExp::TRUE)), EQ_SYM) => {
+            (AssertEq(Exp::Bool(BoolExp::TRUE), _), AND_SYM) => {
+                AssertEq(Exp::Bool(BoolExp::TRUE), false)
+            }
+            (AssertEq(Exp::Bool(BoolExp::FALSE), _), OR_SYM) => {
+                AssertEq(Exp::Bool(BoolExp::FALSE), false)
+            }
+            (AssertEq(Exp::Bool(BoolExp::TRUE), _), EQ_SYM) => {
                 match self.exp_stack.get(frame.stack_len as usize) {
                     None => Exact,
-                    Some(in_eq) => AssertEq(self.inner.canonize(*in_eq)),
+                    Some(in_eq) => AssertEq(self.inner.canonize(*in_eq), false),
                 }
             }
             (parent, AND_SYM | OR_SYM) => match parent.to_approx() {
@@ -309,7 +313,7 @@ impl<Euf: EufT> OuterSolver<Euf> {
     /// see [`OuterSolver`] documentation for more details
     pub fn start_exp(&mut self, f: Symbol, expected: Option<Sort>, ctx: StartExpCtx) {
         let ctx = match (ctx, self.stack.last()) {
-            (StartExpCtx::Assert, None) => ExprContext::AssertEq(Exp::Bool(BoolExp::TRUE)),
+            (StartExpCtx::Assert, None) => ExprContext::AssertEq(Exp::Bool(BoolExp::TRUE), false),
             (StartExpCtx::Exact, _) => ExprContext::Exact,
             (StartExpCtx::Opt, Some(x)) => self.child_context(x),
             (ctx, last) => {
@@ -341,7 +345,7 @@ impl<Euf: EufT> OuterSolver<Euf> {
         let children = &mut base_children;
         let res: Exp<Euf::UExp> = match f {
             AND_SYM => {
-                if matches!(ctx, ExprContext::AssertEq(Exp::Bool(BoolExp::TRUE))) {
+                if matches!(ctx, ExprContext::AssertEq(Exp::Bool(BoolExp::TRUE), _)) {
                     children.try_for_each(|x| {
                         self.inner.assert(x.as_bool()?);
                         Ok::<_, AddSexpError>(())
@@ -354,7 +358,7 @@ impl<Euf: EufT> OuterSolver<Euf> {
                 }
             }
             OR_SYM => {
-                if matches!(ctx, ExprContext::AssertEq(Exp::Bool(BoolExp::FALSE))) {
+                if matches!(ctx, ExprContext::AssertEq(Exp::Bool(BoolExp::FALSE), _)) {
                     children.try_for_each(|x| {
                         self.inner.assert(!x.as_bool()?);
                         Ok::<_, AddSexpError>(())
@@ -398,7 +402,7 @@ impl<Euf: EufT> OuterSolver<Euf> {
                     &mut c,
                     children.map(|exp2| {
                         exp2.map(|exp2| match ctx {
-                            ExprContext::AssertEq(Exp::Bool(BoolExp::TRUE)) => {
+                            ExprContext::AssertEq(Exp::Bool(BoolExp::TRUE), _) => {
                                 self.inner.assert_eq(exp1, exp2).map(|()| BoolExp::TRUE)
                             }
                             _ => self.inner.eq(exp1, exp2),
@@ -409,7 +413,7 @@ impl<Euf: EufT> OuterSolver<Euf> {
             }
             DISTINCT_SYM => {
                 let res = match ctx {
-                    ExprContext::AssertEq(Exp::Bool(BoolExp::TRUE)) => {
+                    ExprContext::AssertEq(Exp::Bool(BoolExp::TRUE), _) => {
                         self.inner.assert_distinct(children.map(|x| x.exp()))?;
                         BoolExp::TRUE.into()
                     }
@@ -441,9 +445,16 @@ impl<Euf: EufT> OuterSolver<Euf> {
             sym => match self.bound.get(&sym) {
                 None => return Err(Unbound),
                 Some(Bound::Const(c)) => {
-                    if let ExprContext::AssertEq(exp) = ctx {
+                    if let ExprContext::AssertEq(mut exp, negate) = ctx {
+                        let mut cur = *c;
+                        if let (true, Some(exp_b), Some(cur_b)) =
+                            (negate, exp.as_bool(), cur.as_bool())
+                        {
+                            exp = (!exp_b).into();
+                            cur = (!cur_b).into();
+                        }
                         // ignore error since we will type check at a higher level
-                        let _ = self.inner.assert_eq(exp, *c);
+                        let _ = self.inner.assert_eq(exp, cur);
                     }
                     *c
                 }
@@ -458,13 +469,17 @@ impl<Euf: EufT> OuterSolver<Euf> {
                             expected: f.args.len(),
                         });
                     }
-                    if let (ExprContext::AssertEq(e), BOOL_SORT) = (ctx, f.ret) {
-                        self.inner
-                            .assert_fn_eq(sym, children_slice.iter().copied(), e)?;
-                        e
-                    } else {
-                        self.inner
-                            .sorted_fn(sym, children_slice.iter().copied(), f.ret)?
+                    match (ctx, f.ret) {
+                        (ExprContext::AssertEq(e @ Exp::Bool(b), negate), BOOL_SORT)
+                            if !negate || b.to_lit().is_err() =>
+                        {
+                            self.inner
+                                .assert_fn_eq(sym, children_slice.iter().copied(), e)?;
+                            e
+                        }
+                        _ => self
+                            .inner
+                            .sorted_fn(sym, children_slice.iter().copied(), f.ret)?,
                     }
                 }
             },
