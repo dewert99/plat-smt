@@ -200,6 +200,9 @@ impl<Euf: EufT> Solver<Euf> {
         if self.optimize_junction(lits, is_and) {
             return BoolExp::from_bool(!is_and);
         }
+        if lits.is_empty() {
+            return BoolExp::from_bool(is_and);
+        }
 
         if let [lit] = &**lits {
             return BoolExp::unknown(*lit);
