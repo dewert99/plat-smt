@@ -431,10 +431,15 @@ impl<Euf: EufT> OuterSolver<Euf> {
             }
             ITE_SYM | IF_SYM => {
                 let [i, t, e] = mandatory_args(children)?;
+                let (i, t, e) = (i.as_bool()?, t.exp(), e.expect_sort(t.exp().sort())?);
 
-                self.inner
-                    .ite(i.as_bool()?, t.exp(), e.exp())
-                    .map_err(|err| (err, 2))?
+                match ctx {
+                    ExprContext::AssertEq(target, _) if t.sort() == target.sort() => {
+                        self.inner.assert_ite_eq(i, t, e, target)?;
+                        target
+                    }
+                    _ => self.inner.ite(i, t, e)?,
+                }
             }
             sym => match self.bound.get(&sym) {
                 None => return Err(Unbound),

@@ -70,13 +70,30 @@ pub trait EufT:
     /// Produce an expression representing that is equivalent to `t` if `i` is true or `e` otherwise
     ///
     /// If `t` and `e` have different sorts returns an error containing both sorts
-    fn ite(
+    fn ite_approx(
         &mut self,
         i: BoolExp,
         t: Exp<Self::UExp>,
         e: Exp<Self::UExp>,
+        approx: Approx,
         acts: &mut TheoryArg<Self::LevelMarker>,
     ) -> Result<Exp<Self::UExp>>;
+
+    /// Requires `t` and `e` have the same sort
+    /// Produce an expression representing that is equivalent to `t` if `i` is true or `e` otherwise
+    ///
+    /// If `t` and `e` have different sorts returns an error containing both sorts
+    fn assert_ite_eq(
+        &mut self,
+        i: BoolExp,
+        t: Exp<Self::UExp>,
+        e: Exp<Self::UExp>,
+        target: Exp<Self::UExp>,
+        acts: &mut TheoryArg<Self::LevelMarker>,
+    ) -> Result<()> {
+        let ite = self.ite_approx(i, t, e, Approx::Exact, acts)?;
+        self.assert_eq(ite, target, acts)
+    }
 
     /// Return an arbitrary placeholder [`UExp`](EufT::UExp) that must have sort `sort`
     fn placeholder_uexp_from_sort(sort: Sort) -> Self::UExp;

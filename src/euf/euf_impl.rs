@@ -233,28 +233,61 @@ impl EufT for Euf {
         let _ = self.union(acts, id, exp_id, Justification::NOOP);
         Ok(())
     }
-
-    fn ite(
+    fn ite_approx(
         &mut self,
         i: BoolExp,
         t: Exp<UExp>,
         e: Exp<UExp>,
+        _: Approx,
         acts: &mut TheoryArg<PushInfo>,
     ) -> Result<Exp<UExp>> {
         let res = match i.to_lit() {
             Err(true) => t,
             Err(false) => e,
-            Ok(u) => {
-                let tid = self.id_for_exp(t, acts);
-                let eid = self.id_for_exp(e, acts);
+            Ok(ilit) => {
                 if t == e {
                     t
                 } else {
-                    self.raw_ite(u, tid, eid, t.sort(), acts)
+                    let tid = self.id_for_exp(t, acts);
+                    let eid = self.id_for_exp(e, acts);
+                    self.raw_ite(ilit, tid, eid, t.sort(), acts)
                 }
             }
         };
         Ok(res)
+    }
+
+    fn assert_ite_eq(
+        &mut self,
+        i: BoolExp,
+        t: Exp<UExp>,
+        e: Exp<UExp>,
+        target: Exp<UExp>,
+        acts: &mut TheoryArg<PushInfo>,
+    ) -> Result<()> {
+        match i.to_lit() {
+            Err(true) => self.assert_eq(t, target, acts),
+            Err(false) => self.assert_eq(e, target, acts),
+            Ok(ilit) => {
+                if t == e {
+                    self.assert_eq(t, target, acts)
+                } else {
+                    if t.sort() != target.sort() {
+                        return Err(SortMismatch {
+                            actual: t.sort(),
+                            expected: target.sort(),
+                        });
+                    }
+                    let tid = self.id_for_exp(t, acts);
+                    let eid = self.id_for_exp(e, acts);
+                    let target_id = self.id_for_exp(target, acts);
+                    let existing_id = self.ifs.get_or_insert((ilit, tid, eid), || target_id);
+                    let _ = self.union(acts, target_id, existing_id, Justification::NOOP);
+                    self.bind_ite(ilit, tid, eid, target_id, acts);
+                    Ok(())
+                }
+            }
+        }
     }
 
     fn placeholder_uexp_from_sort(sort: Sort) -> Self::UExp {
@@ -273,6 +306,20 @@ impl EufT for Euf {
 }
 
 impl Euf {
+    fn bind_ite(&mut self, i: Lit, t: Id, e: Id, target: Id, acts: &mut TheoryArg<PushInfo>) {
+        let eqt = self.add_eq_node(target, t, acts);
+        match eqt.to_lit() {
+            Ok(l) => acts.add_theory_lemma(&[!i, l]),
+            Err(true) => {}
+            Err(false) => acts.add_theory_lemma(&[!i]),
+        }
+        let eqe = self.add_eq_node(target, e, acts);
+        match eqe.to_lit() {
+            Ok(l) => acts.add_theory_lemma(&[i, l]),
+            Err(true) => {}
+            Err(false) => acts.add_theory_lemma(&[i]),
+        }
+    }
     fn raw_ite(
         &mut self,
         i: Lit,
@@ -289,16 +336,7 @@ impl Euf {
                 .gen_sym(&format_args2!("if|{i:?}|id{t}|id{e}"));
             let fresh = self.sorted_fn(sym, [].into_iter(), s, acts).unwrap();
             let fresh_id = self.id_for_exp(fresh, acts);
-            let eqt = self.add_eq_node(fresh_id, t, acts);
-            let Ok(eqt) = eqt.to_lit() else {
-                unreachable!()
-            };
-            let eqe = self.add_eq_node(fresh_id, e, acts);
-            let Ok(eqe) = eqe.to_lit() else {
-                unreachable!()
-            };
-            acts.add_theory_lemma(&[!i, eqt]);
-            acts.add_theory_lemma(&[i, eqe]);
+            self.bind_ite(i, t, e, fresh_id, acts);
             fresh_id
         });
         self.ifs = ifs;

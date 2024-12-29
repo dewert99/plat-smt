@@ -469,11 +469,12 @@ impl<Euf: EufT> Solver<Euf> {
     /// Produce an expression representing that is equivalent to `t` if `i` is true or `e` otherwise
     ///
     /// If `t` and `e` have different sorts returns an error containing both sorts
-    pub fn ite(
+    pub fn ite_approx(
         &mut self,
         i: BoolExp,
         t: Exp<Euf::UExp>,
         e: Exp<Euf::UExp>,
+        approx: Approx,
     ) -> Result<Exp<Euf::UExp>> {
         if t.sort() != e.sort() {
             return Err(SortMismatch {
@@ -483,9 +484,31 @@ impl<Euf: EufT> Solver<Euf> {
         }
         let i = self.canonize(i);
         self.open(
-            |euf, acts| euf.ite(i, t, e, acts),
+            |euf, acts| euf.ite_approx(i, t, e, approx, acts),
             Ok(Euf::placeholder_exp_from_sort(t.sort())),
         )
+    }
+
+    /// Produce an expression representing that is equivalent to `t` if `i` is true or `e` otherwise
+    ///
+    /// If `t` and `e` have different sorts returns an error containing both sorts
+    pub fn ite(
+        &mut self,
+        i: BoolExp,
+        t: Exp<Euf::UExp>,
+        e: Exp<Euf::UExp>,
+    ) -> Result<Exp<Euf::UExp>> {
+        self.ite_approx(i, t, e, Approx::Exact)
+    }
+
+    pub fn assert_ite_eq(
+        &mut self,
+        i: BoolExp,
+        t: Exp<Euf::UExp>,
+        e: Exp<Euf::UExp>,
+        target: Exp<Euf::UExp>,
+    ) -> Result<()> {
+        self.open(|euf, acts| euf.assert_ite_eq(i, t, e, target, acts), Ok(()))
     }
 
     /// Creates a function call expression with a given name and children and return sort
