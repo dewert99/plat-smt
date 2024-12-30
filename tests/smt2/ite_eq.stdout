@@ -1,0 +1,14 @@
+sat
+(
+ (define-fun e () I (as @v6 I))
+ (define-fun i () Bool false)
+ (define-fun r () I (as @v6 I))
+ (define-fun t () I (as @v4 I))
+)
+sat
+(
+ (define-fun e () I (as @v6 I))
+ (define-fun i () Bool false)
+ (define-fun r () I (as @v3 I))
+ (define-fun t () I (as @v4 I))
+)

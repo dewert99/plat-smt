@@ -319,8 +319,7 @@ impl Euf {
                 EClass::Uninterpreted(exp.sort())
             }
         });
-        let exp_id = self.id_for_exp(exp, acts);
-        let _ = self.union(acts, id, exp_id, Justification::NOOP);
+        self.union_exp(exp, id, acts);
         Ok(id)
     }
 
@@ -384,8 +383,7 @@ impl Euf {
         });
         self.ifs = ifs;
         if !added {
-            let exp_id = self.id_for_exp(target, acts);
-            let _ = self.union(acts, id, exp_id, Justification::NOOP);
+            self.union_exp(target, id, acts)
         }
         self.id_to_exp(id)
     }

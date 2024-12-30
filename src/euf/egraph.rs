@@ -1,5 +1,6 @@
 use crate::Symbol;
 use core::num::NonZeroU32;
+use core::ops::IndexMut;
 use no_std_compat::prelude::v1::*;
 use plat_egg::raw::reflect_const::PathCompress;
 pub use plat_egg::raw::semi_persistent1::PushInfo;
@@ -339,5 +340,11 @@ impl<D> Index<Id> for EGraph<D> {
 
     fn index(&self, id: Id) -> &Self::Output {
         self.inner.get_class(id)
+    }
+}
+
+impl<D> IndexMut<Id> for EGraph<D> {
+    fn index_mut(&mut self, id: Id) -> &mut Self::Output {
+        self.inner.get_class_mut(id).0
     }
 }

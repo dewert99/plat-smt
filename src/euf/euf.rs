@@ -468,7 +468,7 @@ impl Euf {
             })
     }
 
-    pub fn id_for_lit(&mut self, lit: Lit, acts: &mut Arg) -> Id {
+    pub(super) fn id_for_lit(&mut self, lit: Lit, acts: &mut Arg) -> Id {
         let val = acts.value(lit.var()) ^ !lit.sign();
         if val == lbool::TRUE {
             id_for_bool(true)
@@ -491,11 +491,11 @@ impl Euf {
             }
         }
     }
-    pub fn id_for_bool(&self, b: bool) -> Id {
+    pub(super) fn id_for_bool(&self, b: bool) -> Id {
         id_for_bool(b)
     }
 
-    pub fn id_for_exp(&mut self, exp: Exp<UExp>, acts: &mut Arg) -> Id {
+    pub(super) fn id_for_exp(&mut self, exp: Exp<UExp>, acts: &mut Arg) -> Id {
         match exp {
             Exp::Bool(b) => match b.to_lit() {
                 Err(b) => id_for_bool(b),
@@ -505,7 +505,43 @@ impl Euf {
         }
     }
 
-    pub fn resolve_children(
+    pub(super) fn union_exp(&mut self, exp: Exp<UExp>, id: Id, acts: &mut Arg) {
+        let exp_id = match exp {
+            Exp::Bool(b) => match b.to_lit() {
+                Err(b) => id_for_bool(b),
+                Ok(lit) => {
+                    let val = acts.value(lit.var()) ^ !lit.sign();
+                    if val == lbool::TRUE {
+                        id_for_bool(true)
+                    } else if val == lbool::FALSE {
+                        id_for_bool(false)
+                    } else if let Some(id) = self.lit.ids[lit].expand() {
+                        id
+                    } else {
+                        self.lit.ids[lit] = OpId::some(id);
+                        let mut conf = None;
+                        let ctx = MergeContext {
+                            acts,
+                            history: &mut self.bool_class_history,
+                            conflict: &mut conf,
+                        };
+                        ctx.merge_fn(id, Id::MAX)(
+                            &mut *self.egraph[id],
+                            EClass::Bool(BoolClass::Unknown(litvec![lit])),
+                        );
+                        if conf.is_some() {
+                            acts.raise_conflict(&[], false)
+                        }
+                        return;
+                    }
+                }
+            },
+            Exp::Other(u) => u.id(),
+        };
+        let _ = self.union(acts, id, exp_id, Justification::NOOP);
+    }
+
+    pub(super) fn resolve_children(
         &mut self,
         children: impl Iterator<Item = Exp<UExp>>,
         acts: &mut Arg,
@@ -513,7 +549,7 @@ impl Euf {
         children.map(|x| self.id_for_exp(x, acts)).collect()
     }
 
-    pub fn init_function_info(&mut self) {
+    pub(super) fn init_function_info(&mut self) {
         let buf = &mut self.function_info;
         buf.clear();
         for (id, node) in self.egraph.uncanonical_nodes() {
@@ -538,7 +574,7 @@ impl Euf {
         }
     }
 
-    pub fn get_function_info(&self, s: Symbol) -> FunctionInfoIter {
+    pub(super) fn get_function_info(&self, s: Symbol) -> FunctionInfoIter {
         let iter = self.function_info.get(s).iter();
         FunctionInfoIter {
             pairs: iter,
@@ -546,7 +582,7 @@ impl Euf {
         }
     }
 
-    pub fn id_to_exp(&self, id: Id) -> Exp<UExp> {
+    pub(super) fn id_to_exp(&self, id: Id) -> Exp<UExp> {
         self.egraph[id].to_exp(id)
     }
 
@@ -561,16 +597,6 @@ impl Euf {
             EClass::Bool(BoolClass::Unknown(_)) => f.write_str("(as _ Bool)"),
             EClass::Singleton => f.write_str("Singleton"),
         })
-    }
-
-    pub fn has_parents(&self, id: Id) -> bool {
-        self.egraph[id].parents().len() > 0
-    }
-
-    /// Returns an `Id` one past the last `Id`, such that an `Id` `id` is valid iff
-    /// `id < self.len_id()`
-    pub fn len_id(&self) -> Id {
-        Id::from(self.egraph.number_of_uncanonical_nodes())
     }
 
     pub(super) fn add_uncanonical(
@@ -682,18 +708,18 @@ impl Euf {
 }
 
 #[perfect_derive(Default, Debug)]
-pub struct FunctionInfo {
+struct FunctionInfo {
     indices: HashMap<Symbol, Range<usize>, DefaultHashBuilder>,
     data: Vec<(SymbolLang, Id)>,
 }
 
 impl FunctionInfo {
-    pub fn clear(&mut self) {
+    fn clear(&mut self) {
         self.indices.clear();
         self.data.clear();
     }
 
-    pub fn get(&self, s: Symbol) -> &[(SymbolLang, Id)] {
+    fn get(&self, s: Symbol) -> &[(SymbolLang, Id)] {
         self.indices.get(&s).map_or(&[], |r| &self.data[r.clone()])
     }
 }
