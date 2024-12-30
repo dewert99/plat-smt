@@ -190,28 +190,7 @@ impl EufT for Euf {
         target_sort: Sort,
         acts: &mut TheoryArg<PushInfo>,
     ) -> Result<Exp<UExp>> {
-        let children = self.resolve_children(children, acts);
-        let id = self.egraph.add(f.into(), children, |id| {
-            if target_sort == BOOL_SORT {
-                let l = Lit::new(acts.new_var_default(), true);
-                self.lit.add_id_to_lit(id, l);
-                EClass::Bool(BoolClass::Unknown(litvec![l]))
-            } else {
-                EClass::Uninterpreted(target_sort)
-            }
-        });
-        let intern = acts.intern();
-        let exp = self.id_to_exp(id);
-        if exp.sort() != target_sort {
-            panic!(
-                "trying to create function {}{:?} with sort {}, but it already has sort {}",
-                f.with_intern(intern),
-                self.egraph.id_to_node(id).children(),
-                target_sort.with_intern(intern),
-                exp.sort().with_intern(intern)
-            )
-        };
-        Ok(exp)
+        Ok(self.sorted_fn_id(f, children, target_sort, acts)?.1)
     }
 
     fn assert_fn_eq(
@@ -221,16 +200,7 @@ impl EufT for Euf {
         exp: Exp<UExp>,
         acts: &mut TheoryArg<PushInfo>,
     ) -> Result<()> {
-        let children = self.resolve_children(children, acts);
-        let id = self.egraph.add(f.into(), children, |_| {
-            if exp.sort() == BOOL_SORT {
-                EClass::Bool(BoolClass::Unknown(litvec![]))
-            } else {
-                EClass::Uninterpreted(exp.sort())
-            }
-        });
-        let exp_id = self.id_for_exp(exp, acts);
-        let _ = self.union(acts, id, exp_id, Justification::NOOP);
+        self.assert_fn_eq_id(f, children, exp, acts)?;
         Ok(())
     }
     fn ite_approx(
@@ -280,10 +250,7 @@ impl EufT for Euf {
                     }
                     let tid = self.id_for_exp(t, acts);
                     let eid = self.id_for_exp(e, acts);
-                    let target_id = self.id_for_exp(target, acts);
-                    let existing_id = self.ifs.get_or_insert((ilit, tid, eid), || target_id);
-                    let _ = self.union(acts, target_id, existing_id, Justification::NOOP);
-                    self.bind_ite(ilit, tid, eid, target_id, acts);
+                    self.raw_ite_eq(ilit, tid, eid, target, acts);
                     Ok(())
                 }
             }
@@ -306,6 +273,57 @@ impl EufT for Euf {
 }
 
 impl Euf {
+    fn sorted_fn_id(
+        &mut self,
+        f: Symbol,
+        children: impl Iterator<Item = Exp<UExp>>,
+        target_sort: Sort,
+        acts: &mut TheoryArg<PushInfo>,
+    ) -> Result<(Id, Exp<UExp>)> {
+        let children = self.resolve_children(children, acts);
+        let id = self.egraph.add(f.into(), children, |id| {
+            if target_sort == BOOL_SORT {
+                let l = Lit::new(acts.new_var_default(), true);
+                self.lit.add_id_to_lit(id, l);
+                EClass::Bool(BoolClass::Unknown(litvec![l]))
+            } else {
+                EClass::Uninterpreted(target_sort)
+            }
+        });
+        let intern = acts.intern();
+        let exp = self.id_to_exp(id);
+        if exp.sort() != target_sort {
+            panic!(
+                "trying to create function {}{:?} with sort {}, but it already has sort {}",
+                f.with_intern(intern),
+                self.egraph.id_to_node(id).children(),
+                target_sort.with_intern(intern),
+                exp.sort().with_intern(intern)
+            )
+        };
+        Ok((id, exp))
+    }
+
+    fn assert_fn_eq_id(
+        &mut self,
+        f: Symbol,
+        children: impl Iterator<Item = Exp<UExp>>,
+        exp: Exp<UExp>,
+        acts: &mut TheoryArg<PushInfo>,
+    ) -> Result<Id> {
+        let children = self.resolve_children(children, acts);
+        let id = self.egraph.add(f.into(), children, |_| {
+            if exp.sort() == BOOL_SORT {
+                EClass::Bool(BoolClass::Unknown(litvec![]))
+            } else {
+                EClass::Uninterpreted(exp.sort())
+            }
+        });
+        let exp_id = self.id_for_exp(exp, acts);
+        let _ = self.union(acts, id, exp_id, Justification::NOOP);
+        Ok(id)
+    }
+
     fn bind_ite(&mut self, i: Lit, t: Id, e: Id, target: Id, acts: &mut TheoryArg<PushInfo>) {
         let eqt = self.add_eq_node(target, t, acts);
         match eqt.to_lit() {
@@ -334,12 +352,41 @@ impl Euf {
                 .intern_mut()
                 .symbols
                 .gen_sym(&format_args2!("if|{i:?}|id{t}|id{e}"));
-            let fresh = self.sorted_fn(sym, [].into_iter(), s, acts).unwrap();
-            let fresh_id = self.id_for_exp(fresh, acts);
+            let (fresh_id, _) = self.sorted_fn_id(sym, [].into_iter(), s, acts).unwrap();
             self.bind_ite(i, t, e, fresh_id, acts);
             fresh_id
         });
         self.ifs = ifs;
+        self.id_to_exp(id)
+    }
+
+    fn raw_ite_eq(
+        &mut self,
+        i: Lit,
+        t: Id,
+        e: Id,
+        target: Exp<UExp>,
+        acts: &mut TheoryArg<PushInfo>,
+    ) -> Exp<UExp> {
+        let mut added = false;
+        let mut ifs = mem::take(&mut self.ifs);
+        let id = ifs.get_or_insert((i, t, e), || {
+            added = true;
+            let sym = acts
+                .intern_mut()
+                .symbols
+                .gen_sym(&format_args2!("if|{i:?}|id{t}|id{e}"));
+            let fresh_id = self
+                .assert_fn_eq_id(sym, [].into_iter(), target, acts)
+                .unwrap();
+            self.bind_ite(i, t, e, fresh_id, acts);
+            fresh_id
+        });
+        self.ifs = ifs;
+        if !added {
+            let exp_id = self.id_for_exp(target, acts);
+            let _ = self.union(acts, id, exp_id, Justification::NOOP);
+        }
         self.id_to_exp(id)
     }
 }
