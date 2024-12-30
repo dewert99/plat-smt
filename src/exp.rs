@@ -75,6 +75,14 @@ impl BoolExp {
             Ok(self.0)
         }
     }
+
+    pub(crate) fn var(self) -> Var {
+        self.0.var()
+    }
+
+    pub(crate) fn sign(self) -> bool {
+        self.0.sign()
+    }
 }
 
 impl HasSort for BoolExp {

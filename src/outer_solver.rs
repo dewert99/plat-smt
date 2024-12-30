@@ -380,13 +380,31 @@ impl<Euf: EufT> OuterSolver<Euf> {
             }
             XOR_SYM => {
                 let child_len = children.len();
-                children
-                    .map(|x| (x.as_bool(), x.0 .0 + 1 == child_len))
-                    .try_fold(BoolExp::FALSE, |b1, (b2, last)| {
-                        let approx = if last { ctx.to_approx() } else { Approx::Exact };
-                        Ok::<_, AddSexpError>(self.inner.xor_approx(b1, b2?, approx))
+                let first_res = if child_len == 0 {
+                    BoolExp::FALSE
+                } else {
+                    let mut first_children = children.by_ref().take(child_len - 1);
+                    first_children.try_fold(BoolExp::FALSE, |b1, b2| {
+                        Ok::<_, AddSexpError>(self.inner.xor_approx(
+                            b1,
+                            b2.as_bool()?,
+                            Approx::Exact,
+                        ))
                     })?
-                    .into()
+                };
+                let last_child = if let Some(last_child) = children.next() {
+                    last_child.as_bool()?
+                } else {
+                    BoolExp::FALSE
+                };
+                if let ExprContext::AssertEq(Exp::Bool(target), ..) = ctx {
+                    self.inner.assert_xor_eq(first_res, last_child, target);
+                    target.into()
+                } else {
+                    self.inner
+                        .xor_approx(first_res, last_child, ctx.to_approx())
+                        .into()
+                }
             }
             EQ_SYM => {
                 let mut c: Conjunction = self.inner.new_junction();

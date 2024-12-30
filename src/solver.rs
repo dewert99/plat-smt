@@ -376,6 +376,43 @@ impl<Euf: EufT> Solver<Euf> {
         res
     }
 
+    pub fn assert_xor_eq(&mut self, b1: BoolExp, b2: BoolExp, target: BoolExp) {
+        if !self.is_ok() {
+            return;
+        }
+        let mut arr = [b1, b2, target];
+        arr.sort_unstable();
+        if arr[0].var() == arr[1].var() {
+            arr[0] = BoolExp::from_bool(arr[0].sign());
+            arr[1] = BoolExp::from_bool(arr[1].sign());
+        }
+        if arr[1].var() == arr[2].var() {
+            arr[1] = BoolExp::from_bool(arr[1].sign());
+            arr[2] = BoolExp::from_bool(arr[2].sign());
+        }
+        match arr.map(BoolExp::to_lit) {
+            [Err(b1), Err(b2), Err(b3)] => {
+                if b1 ^ b2 != b3 {
+                    self.sat.add_clause_unchecked([]);
+                }
+            }
+            [Ok(l), Err(b1), Err(b2)] | [Err(b1), Ok(l), Err(b2)] | [Err(b1), Err(b2), Ok(l)] => {
+                self.sat.add_clause_unchecked([l ^ b1 ^ !b2]);
+            }
+            [Err(b), Ok(l1), Ok(l2)] | [Ok(l1), Err(b), Ok(l2)] | [Ok(l1), Ok(l2), Err(b)] => {
+                self.sat.add_clause_unchecked([l1 ^ b, !l2].iter().copied());
+                self.sat.add_clause_unchecked([!l1 ^ b, l2].iter().copied());
+            }
+            [Ok(l1), Ok(l2), Ok(l3)] => {
+                self.sat.add_clause_unchecked([l1, l2, !l3].iter().copied());
+                self.sat
+                    .add_clause_unchecked([!l1, !l2, !l3].iter().copied());
+                self.sat.add_clause_unchecked([!l1, l2, l3].iter().copied());
+                self.sat.add_clause_unchecked([l1, !l2, l3].iter().copied());
+            }
+        }
+    }
+
     fn open<U>(
         &mut self,
         f: impl FnOnce(&mut Euf, &mut TheoryArg<Euf::LevelMarker>) -> U,
