@@ -1,8 +1,9 @@
 use crate::intern::{Symbol, BOOL_SORT};
-use crate::local_error::*;
 use crate::solver::ExpLike;
 use crate::theory::{ExplainTheoryArg, Incremental, Theory, TheoryArg};
 use crate::{Approx, BoolExp, Exp, HasSort, Sort};
+use alloc::borrow::Cow;
+use core::fmt::Debug;
 
 pub trait EufT:
     Incremental
@@ -10,33 +11,40 @@ pub trait EufT:
 {
     type UExp: ExpLike<Self>;
 
+    type Unsupported: Debug + Into<Cow<'static, str>>;
+
     /// Create a [`BoolExp`] that represents the equality of `e1` and `e2`
+    ///
+    /// Requires `e1` and `e2` have the same sort
     fn eq_approx(
         &mut self,
         e1: Exp<Self::UExp>,
         e2: Exp<Self::UExp>,
         approx: Approx,
         acts: &mut TheoryArg<Self::LevelMarker>,
-    ) -> Result<BoolExp>;
+    ) -> BoolExp;
 
     /// Assert that `e1` and `e2` are equal
+    ///
+    /// Requires `e1` and `e2` have the same sort
     fn assert_eq(
         &mut self,
         e1: Exp<Self::UExp>,
         e2: Exp<Self::UExp>,
         acts: &mut TheoryArg<Self::LevelMarker>,
-    ) -> Result<()> {
-        let eq = self.eq_approx(e1, e2, Approx::Exact, acts)?;
+    ) {
+        let eq = self.eq_approx(e1, e2, Approx::Exact, acts);
         acts.assert_bool(eq);
-        Ok(())
     }
 
     /// Assert that all the expressions in `exps` are distinct
+    ///
+    /// Requires all the expressions have the same sort
     fn assert_distinct(
         &mut self,
         exps: impl Iterator<Item = Exp<Self::UExp>>,
         acts: &mut TheoryArg<Self::LevelMarker>,
-    ) -> IResult<()>;
+    );
 
     /// Creates a function call expression with a given name and children and return sort
     ///
@@ -51,7 +59,7 @@ pub trait EufT:
         children: impl Iterator<Item = Exp<Self::UExp>>,
         target_sort: Sort,
         acts: &mut TheoryArg<Self::LevelMarker>,
-    ) -> Result<Exp<Self::UExp>>;
+    ) -> Result<Exp<Self::UExp>, Self::Unsupported>;
 
     /// Assert `self.sorted_fn(f, children, target_exp.sort(), acts)` is equal to target_exp
     fn assert_fn_eq(
@@ -60,16 +68,15 @@ pub trait EufT:
         children: impl Iterator<Item = Exp<Self::UExp>>,
         target_exp: Exp<Self::UExp>,
         acts: &mut TheoryArg<Self::LevelMarker>,
-    ) -> Result<()> {
+    ) -> Result<(), Self::Unsupported> {
         let f = self.sorted_fn(f, children, target_exp.sort(), acts)?;
-        self.assert_eq(f, target_exp, acts)?;
+        self.assert_eq(f, target_exp, acts);
         Ok(())
     }
 
-    /// Requires `t` and `e` have the same sort
     /// Produce an expression representing that is equivalent to `t` if `i` is true or `e` otherwise
     ///
-    /// If `t` and `e` have different sorts returns an error containing both sorts
+    /// Requires `t` and `e` have the same sort
     fn ite_approx(
         &mut self,
         i: BoolExp,
@@ -77,7 +84,7 @@ pub trait EufT:
         e: Exp<Self::UExp>,
         approx: Approx,
         acts: &mut TheoryArg<Self::LevelMarker>,
-    ) -> Result<Exp<Self::UExp>>;
+    ) -> Result<Exp<Self::UExp>, Self::Unsupported>;
 
     /// Requires `t` and `e` have the same sort
     /// Produce an expression representing that is equivalent to `t` if `i` is true or `e` otherwise
@@ -90,9 +97,10 @@ pub trait EufT:
         e: Exp<Self::UExp>,
         target: Exp<Self::UExp>,
         acts: &mut TheoryArg<Self::LevelMarker>,
-    ) -> Result<()> {
+    ) -> Result<(), Self::Unsupported> {
         let ite = self.ite_approx(i, t, e, Approx::Exact, acts)?;
-        self.assert_eq(ite, target, acts)
+        self.assert_eq(ite, target, acts);
+        Ok(())
     }
 
     /// Return an arbitrary placeholder [`UExp`](EufT::UExp) that must have sort `sort`

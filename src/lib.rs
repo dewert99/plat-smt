@@ -10,7 +10,6 @@ mod exp;
 mod full_buf_read;
 pub mod intern;
 pub mod junction;
-mod local_error;
 pub mod outer_solver;
 mod parser;
 pub mod parser_core;
