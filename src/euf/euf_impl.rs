@@ -3,12 +3,11 @@ use super::euf::{litvec, BoolClass, EClass, Euf, FunctionInfoIter, PushInfo};
 use super::euf_trait::{assert_distinct, EufT};
 use super::explain::Justification;
 use crate::intern::{DisplayInterned, InternInfo, Symbol, BOOL_SORT};
-use crate::local_error::LocalError::SortMismatch;
-use crate::local_error::*;
 use crate::solver::ExpLike;
 use crate::theory::TheoryArg;
 use crate::util::format_args2;
 use crate::{Approx, BoolExp, Exp, HasSort, Solver, Sort};
+use alloc::borrow::Cow;
 use core::fmt::Formatter;
 use plat_egg::raw::Language;
 use plat_egg::Id;
@@ -55,8 +54,20 @@ impl From<UExp> for Exp<UExp> {
         Exp::Other(value)
     }
 }
+
+#[derive(Debug)]
+pub enum Never {}
+
+impl Into<Cow<'static, str>> for Never {
+    fn into(self) -> Cow<'static, str> {
+        match self {}
+    }
+}
+type Result<T> = core::result::Result<T, Never>;
+
 impl EufT for Euf {
     type UExp = UExp;
+    type Unsupported = Never;
 
     fn eq_approx(
         &mut self,
@@ -64,63 +75,33 @@ impl EufT for Euf {
         e2: Exp<UExp>,
         _: Approx,
         acts: &mut TheoryArg<PushInfo>,
-    ) -> Result<BoolExp> {
-        if e1.sort() != e2.sort() {
-            Err(SortMismatch {
-                actual: e2.sort(),
-                expected: e1.sort(),
-            })
-        } else {
-            let id1 = self.id_for_exp(e1, acts);
-            let id2 = self.id_for_exp(e2, acts);
-            Ok(self.add_eq_node(id1, id2, acts))
-        }
+    ) -> BoolExp {
+        let id1 = self.id_for_exp(e1, acts);
+        let id2 = self.id_for_exp(e2, acts);
+        self.add_eq_node(id1, id2, acts)
     }
 
-    fn assert_eq(
-        &mut self,
-        e1: Exp<UExp>,
-        e2: Exp<UExp>,
-        acts: &mut TheoryArg<PushInfo>,
-    ) -> Result<()> {
+    fn assert_eq(&mut self, e1: Exp<UExp>, e2: Exp<UExp>, acts: &mut TheoryArg<PushInfo>) -> () {
         match (e1, e2) {
             (Exp::Bool(b1), Exp::Bool(b2)) => match (b1.to_lit(), b2.to_lit()) {
                 (Err(pol), Ok(l)) | (Ok(l), Err(pol)) => {
                     acts.propagate(l ^ !pol);
-                    Ok(())
                 }
                 (Err(b1), Err(b2)) => {
                     if b1 != b2 {
                         acts.raise_conflict(&[], false);
                     }
-                    Ok(())
                 }
                 (Ok(b1), Ok(b2)) => {
                     let id1 = self.id_for_lit(b1, acts);
                     let id2 = self.id_for_lit(b2, acts);
                     let _ = self.union(acts, id1, id2, Justification::NOOP);
-                    Ok(())
                 }
             },
             (Exp::Other(u1), Exp::Other(u2)) => {
-                if u2.sort != u1.sort {
-                    Err(SortMismatch {
-                        actual: u2.sort,
-                        expected: u1.sort,
-                    })
-                } else {
-                    let _ = self.union(acts, u1.id, u2.id, Justification::NOOP);
-                    Ok(())
-                }
+                let _ = self.union(acts, u1.id, u2.id, Justification::NOOP);
             }
-            (Exp::Bool(_), Exp::Other(u2)) => Err(SortMismatch {
-                actual: u2.sort,
-                expected: BOOL_SORT,
-            }),
-            (Exp::Other(u1), Exp::Bool(_)) => Err(SortMismatch {
-                actual: BOOL_SORT,
-                expected: u1.sort,
-            }),
+            _ => unreachable!(),
         }
     }
 
@@ -128,46 +109,26 @@ impl EufT for Euf {
         &mut self,
         mut exps: impl Iterator<Item = Exp<UExp>>,
         acts: &mut TheoryArg<PushInfo>,
-    ) -> IResult<()> {
-        let Some(e0) = exps.next() else { return Ok(()) };
+    ) {
+        let Some(e0) = exps.next() else { return };
 
-        let Exp::Other(u0) = e0 else {
+        let Exp::Other(_) = e0 else {
             let b0 = e0.as_bool().unwrap();
-            let mut bools = exps.zip(1..).map(|(exp, i)| {
-                exp.as_bool().ok_or((
-                    SortMismatch {
-                        actual: exp.sort(),
-                        expected: BOOL_SORT,
-                    },
-                    i,
-                ))
-            });
+            let mut bools = exps.map(|exp| exp.as_bool().unwrap());
             let Some(b1) = bools.next() else {
-                return Ok(());
+                return;
             };
-            let b1 = b1?;
-            if let Some(b2) = bools.next() {
-                b2?;
-                bools.try_for_each(|x| x.map(|_| ()))?;
+            if let Some(_) = bools.next() {
                 acts.raise_conflict(&[], false);
             } else {
                 assert_distinct(b0, b1, acts);
             }
-            return Ok(());
+            return;
         };
 
         let distinct_sym = acts.intern_mut().symbols.gen_sym("distinct");
         self.distinct_gensym += 1;
-        for (idx, exp) in iter::once(e0).chain(exps).enumerate() {
-            if exp.sort() != u0.sort {
-                return Err((
-                    SortMismatch {
-                        actual: exp.sort(),
-                        expected: u0.sort,
-                    },
-                    idx,
-                ));
-            }
+        for exp in iter::once(e0).chain(exps) {
             let id = self.id_for_exp(exp, acts);
             let mut added = false;
             self.egraph
@@ -177,10 +138,9 @@ impl EufT for Euf {
                 });
             if !added {
                 acts.raise_conflict(&[], false);
-                return Ok(());
+                return;
             }
         }
-        Ok(())
     }
 
     fn sorted_fn(
@@ -242,19 +202,13 @@ impl EufT for Euf {
                 if t == e {
                     self.assert_eq(t, target, acts)
                 } else {
-                    if t.sort() != target.sort() {
-                        return Err(SortMismatch {
-                            actual: t.sort(),
-                            expected: target.sort(),
-                        });
-                    }
                     let tid = self.id_for_exp(t, acts);
                     let eid = self.id_for_exp(e, acts);
                     self.raw_ite_eq(ilit, tid, eid, target, acts);
-                    Ok(())
                 }
             }
         }
+        Ok(())
     }
 
     fn placeholder_uexp_from_sort(sort: Sort) -> Self::UExp {

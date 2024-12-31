@@ -2,8 +2,6 @@ use crate::euf::EufT;
 use crate::exp::*;
 use crate::intern::*;
 use crate::junction::*;
-use crate::local_error::LocalError::SortMismatch;
-use crate::local_error::{IResult, Result};
 use crate::theory::{IncrementalWrapper, TheoryArg};
 use crate::util::{display_debug, DefaultHashBuilder, Either};
 use crate::Symbol;
@@ -429,7 +427,7 @@ impl<Euf: EufT> Solver<Euf> {
     /// Produce a boolean expression representing the equality of the two expressions
     ///
     /// If the two expressions have different sorts returns an error containing both sorts
-    pub fn eq(&mut self, exp1: Exp<Euf::UExp>, exp2: Exp<Euf::UExp>) -> Result<BoolExp> {
+    pub fn eq(&mut self, exp1: Exp<Euf::UExp>, exp2: Exp<Euf::UExp>) -> BoolExp {
         self.eq_approx(exp1, exp2, Approx::Exact)
     }
 
@@ -438,34 +436,28 @@ impl<Euf: EufT> Solver<Euf> {
         exp1: Exp<Euf::UExp>,
         exp2: Exp<Euf::UExp>,
         approx: Approx,
-    ) -> Result<BoolExp> {
+    ) -> BoolExp {
         self.open(
             |euf, acts| euf.eq_approx(exp1, exp2, approx, acts),
-            Ok(BoolExp::TRUE),
+            BoolExp::TRUE,
         )
     }
 
     /// Equivalent to `self.`[`assert`](Self::assert)`(self.`[`eq`](Self::eq)`(exp1, exp2)?)` but
     /// more efficient
-    pub fn assert_eq(&mut self, exp1: Exp<Euf::UExp>, exp2: Exp<Euf::UExp>) -> Result<()> {
+    pub fn assert_eq(&mut self, exp1: Exp<Euf::UExp>, exp2: Exp<Euf::UExp>) {
         let c1 = self.canonize(exp1);
         let c2 = self.canonize(exp2);
-        self.open(|euf, acts| euf.assert_eq(c1, c2, acts), Ok(()))?;
+        self.open(|euf, acts| euf.assert_eq(c1, c2, acts), ());
         self.simplify();
-        Ok(())
     }
 
-    /// Assert that no pair of `Id`s from `ids` are equal to each other
-    pub fn assert_distinct(
-        &mut self,
-        exps: impl IntoIterator<Item = Exp<Euf::UExp>>,
-    ) -> IResult<()> {
-        self.open(
-            |euf, acts| euf.assert_distinct(exps.into_iter(), acts),
-            Ok(()),
-        )?;
-        self.simplify();
-        Ok(())
+    /// Assert that no pair of expressions in `exps` are equal to each other
+    ///
+    /// Requires all expressions in `exps` have the same sort
+    pub fn assert_distinct(&mut self, exps: impl IntoIterator<Item = Exp<Euf::UExp>>) {
+        self.open(|euf, acts| euf.assert_distinct(exps.into_iter(), acts), ());
+        self.simplify()
     }
 
     pub fn intern(&self) -> &InternInfo {
@@ -483,7 +475,7 @@ impl<Euf: EufT> Solver<Euf> {
         f: Symbol,
         children: impl IntoIterator<Item = Exp<Euf::UExp>>,
         exp: Exp<Euf::UExp>,
-    ) -> Result<()> {
+    ) -> Result<(), Euf::Unsupported> {
         self.open(
             |euf, acts| euf.assert_fn_eq(f, children.into_iter(), exp, acts),
             Ok(()),
@@ -499,26 +491,20 @@ impl<Euf: EufT> Solver<Euf> {
         f: Symbol,
         children: impl IntoIterator<Item = Exp<Euf::UExp>>,
         negate: bool,
-    ) -> Result<()> {
+    ) -> Result<(), Euf::Unsupported> {
         self.assert_fn_eq(f, children, BoolExp::from_bool(!negate).into())
     }
 
     /// Produce an expression representing that is equivalent to `t` if `i` is true or `e` otherwise
     ///
-    /// If `t` and `e` have different sorts returns an error containing both sorts
+    /// Requires `t` and `e` have the same sorts
     pub fn ite_approx(
         &mut self,
         i: BoolExp,
         t: Exp<Euf::UExp>,
         e: Exp<Euf::UExp>,
         approx: Approx,
-    ) -> Result<Exp<Euf::UExp>> {
-        if t.sort() != e.sort() {
-            return Err(SortMismatch {
-                actual: e.sort(),
-                expected: t.sort(),
-            });
-        }
+    ) -> Result<Exp<Euf::UExp>, Euf::Unsupported> {
         let i = self.canonize(i);
         self.open(
             |euf, acts| euf.ite_approx(i, t, e, approx, acts),
@@ -528,23 +514,25 @@ impl<Euf: EufT> Solver<Euf> {
 
     /// Produce an expression representing that is equivalent to `t` if `i` is true or `e` otherwise
     ///
-    /// If `t` and `e` have different sorts returns an error containing both sorts
+    /// Requires `t` and `e` have the same sorts
     pub fn ite(
         &mut self,
         i: BoolExp,
         t: Exp<Euf::UExp>,
         e: Exp<Euf::UExp>,
-    ) -> Result<Exp<Euf::UExp>> {
+    ) -> Result<Exp<Euf::UExp>, Euf::Unsupported> {
         self.ite_approx(i, t, e, Approx::Exact)
     }
 
+    /// Equivalent to `self.`[`assert_eq`](Self::assert_eq)`(self.`[`ite`](Self::ite)`(i, t, e)?, target)`
+    /// but possibly more efficient
     pub fn assert_ite_eq(
         &mut self,
         i: BoolExp,
         t: Exp<Euf::UExp>,
         e: Exp<Euf::UExp>,
         target: Exp<Euf::UExp>,
-    ) -> Result<()> {
+    ) -> Result<(), Euf::Unsupported> {
         self.open(|euf, acts| euf.assert_ite_eq(i, t, e, target, acts), Ok(()))
     }
 
@@ -560,7 +548,7 @@ impl<Euf: EufT> Solver<Euf> {
         fn_name: Symbol,
         children: impl IntoIterator<Item = Exp<Euf::UExp>>,
         sort: Sort,
-    ) -> Result<Exp<Euf::UExp>> {
+    ) -> Result<Exp<Euf::UExp>, Euf::Unsupported> {
         self.open(
             |euf, acts| euf.sorted_fn(fn_name, children.into_iter(), sort, acts),
             Ok(Euf::placeholder_exp_from_sort(sort)),
@@ -573,7 +561,7 @@ impl<Euf: EufT> Solver<Euf> {
         &mut self,
         fn_name: Symbol,
         children: impl IntoIterator<Item = Exp<Euf::UExp>>,
-    ) -> Result<BoolExp> {
+    ) -> Result<BoolExp, Euf::Unsupported> {
         Ok(self
             .sorted_fn(fn_name, children, BOOL_SORT)?
             .as_bool()

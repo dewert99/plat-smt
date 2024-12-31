@@ -1,8 +1,7 @@
 use crate::intern::*;
 use crate::util::{extend_result, pairwise_sym, DefaultHashBuilder};
-use crate::{
-    local_error, util, Approx, BoolExp, Conjunction, Disjunction, Exp, HasSort, Solver, Sort,
-};
+use crate::{util, Approx, BoolExp, Conjunction, Disjunction, Exp, HasSort, Solver, Sort};
+use alloc::borrow::Cow;
 use alloc::vec::Vec;
 use hashbrown::hash_map::{Entry, HashMap};
 use log::{debug, info};
@@ -412,36 +411,36 @@ impl<Euf: EufT> OuterSolver<Euf> {
                 let exp1 = exp1.exp();
                 extend_result(
                     &mut c,
-                    children.map(|exp2| {
-                        exp2.map(|exp2| match ctx {
-                            ExprContext::AssertEq(Exp::Bool(BoolExp::TRUE), _) => {
-                                self.inner.assert_eq(exp1, exp2).map(|()| BoolExp::TRUE)
-                            }
-                            _ => self.inner.eq(exp1, exp2),
-                        })
+                    children.map(|exp2| match ctx {
+                        ExprContext::AssertEq(Exp::Bool(BoolExp::TRUE), _) => {
+                            self.inner.assert_eq(exp1, exp2.expect_sort(exp1.sort())?);
+                            Ok(BoolExp::TRUE)
+                        }
+                        _ => Ok(self.inner.eq(exp1, exp2.expect_sort(exp1.sort())?)),
                     }),
                 )?;
                 self.inner.collapse_bool(c).into()
             }
             DISTINCT_SYM => {
+                if let Some(x) = children.next() {
+                    let sort = x.exp().sort();
+                    children.try_for_each(|x| {
+                        x.expect_sort(sort)?;
+                        Ok::<_, AddSexpError>(())
+                    })?;
+                }
                 let res = match ctx {
                     ExprContext::AssertEq(Exp::Bool(BoolExp::TRUE), _) => {
-                        self.inner.assert_distinct(children.map(|x| x.exp()))?;
+                        self.inner.assert_distinct(children_slice.iter().copied());
                         BoolExp::TRUE.into()
                     }
                     _ => {
-                        if let Some(x) = children.next() {
-                            let sort = x.exp().sort();
-                            children.try_for_each(|x| {
-                                x.expect_sort(sort)?;
-                                Ok::<_, AddSexpError>(())
-                            })?;
-                        }
                         let mut c: Conjunction = self.inner.new_junction();
-                        c.extend(
+                        extend_result(
+                            &mut c,
                             pairwise_sym(&children_slice)
-                                .map(|(id1, id2)| !self.inner.eq(*id1, *id2).unwrap()),
-                        );
+                                .map(|(id1, id2)| Ok(!self.inner.eq(*id1, *id2))),
+                        )?;
                         self.inner.collapse_bool(c).into()
                     }
                 };
@@ -453,25 +452,29 @@ impl<Euf: EufT> OuterSolver<Euf> {
 
                 match ctx {
                     ExprContext::AssertEq(target, _) if t.sort() == target.sort() => {
-                        self.inner.assert_ite_eq(i, t, e, target)?;
+                        self.inner
+                            .assert_ite_eq(i, t, e, target)
+                            .map_err(unsupported)?;
                         target
                     }
-                    _ => self.inner.ite(i, t, e)?,
+                    _ => self.inner.ite(i, t, e).map_err(unsupported)?,
                 }
             }
             sym => match self.bound.get(&sym) {
                 None => return Err(Unbound),
                 Some(Bound::Const(c)) => {
                     if let ExprContext::AssertEq(mut exp, negate) = ctx {
-                        let mut cur = *c;
-                        if let (true, Some(exp_b), Some(cur_b)) =
-                            (negate, exp.as_bool(), cur.as_bool())
-                        {
-                            exp = (!exp_b).into();
-                            cur = (!cur_b).into();
+                        if exp.sort() == c.sort() {
+                            let mut cur = *c;
+                            if let (true, Some(exp_b), Some(cur_b)) =
+                                (negate, exp.as_bool(), cur.as_bool())
+                            {
+                                exp = (!exp_b).into();
+                                cur = (!cur_b).into();
+                            }
+                            // ignore error since we will type check at a higher level
+                            let _ = self.inner.assert_eq(exp, cur);
                         }
-                        // ignore error since we will type check at a higher level
-                        let _ = self.inner.assert_eq(exp, cur);
                     }
                     *c
                 }
@@ -491,12 +494,14 @@ impl<Euf: EufT> OuterSolver<Euf> {
                             if !negate || b.to_lit().is_err() =>
                         {
                             self.inner
-                                .assert_fn_eq(sym, children_slice.iter().copied(), e)?;
+                                .assert_fn_eq(sym, children_slice.iter().copied(), e)
+                                .map_err(unsupported)?;
                             e
                         }
                         _ => self
                             .inner
-                            .sorted_fn(sym, children_slice.iter().copied(), f.ret)?,
+                            .sorted_fn(sym, children_slice.iter().copied(), f.ret)
+                            .map_err(unsupported)?,
                     }
                 }
             },
@@ -618,30 +623,27 @@ pub enum BoundDefinition<'a, F, UExp> {
 
 #[derive(Debug)]
 pub enum AddSexpError {
-    ArgError { arg_n: usize, local: LocalError },
-    AsSortMismatch { actual: Sort, expected: Sort },
-    MissingArgument { actual: usize, expected: usize },
-    ExtraArgument { expected: usize },
+    SortMismatch {
+        arg_n: usize,
+        actual: Sort,
+        expected: Sort,
+    },
+    AsSortMismatch {
+        actual: Sort,
+        expected: Sort,
+    },
+    MissingArgument {
+        actual: usize,
+        expected: usize,
+    },
+    ExtraArgument {
+        expected: usize,
+    },
     Unbound,
-}
-
-impl From<(LocalError, usize)> for AddSexpError {
-    fn from(value: (LocalError, usize)) -> Self {
-        ArgError {
-            arg_n: value.1,
-            local: value.0,
-        }
-    }
-}
-
-impl From<LocalError> for AddSexpError {
-    fn from(local: LocalError) -> Self {
-        ArgError { arg_n: 0, local }
-    }
+    Unsupported(Cow<'static, str>),
 }
 
 use crate::euf::EufT;
-use crate::local_error::LocalError;
 use AddSexpError::*;
 
 #[derive(Copy, Clone)]
@@ -652,23 +654,11 @@ impl<UExp: HasSort + Copy> IndexExp<UExp> {
         self.0 .1
     }
 
-    pub(crate) fn map<U>(
-        self,
-        f: impl FnOnce(Exp<UExp>) -> local_error::Result<U>,
-    ) -> Result<U, AddSexpError> {
-        f(self.exp()).map_err(|local| ArgError {
-            arg_n: self.0 .0,
-            local,
-        })
-    }
-
     pub(crate) fn sort_mismatch(self, expected: Sort) -> AddSexpError {
-        ArgError {
+        SortMismatch {
             arg_n: self.0 .0,
-            local: LocalError::SortMismatch {
-                actual: self.exp().sort(),
-                expected,
-            },
+            actual: self.exp().sort(),
+            expected,
         }
     }
 
@@ -711,4 +701,8 @@ pub(crate) fn finish_iter<UExp>(
         Some(x) => Err(ExtraArgument { expected: x.0 .0 }),
         None => Ok(()),
     }
+}
+
+fn unsupported<U: Into<Cow<'static, str>>>(u: U) -> AddSexpError {
+    Unsupported(u.into())
 }

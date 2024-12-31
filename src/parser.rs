@@ -1,7 +1,6 @@
 use crate::euf::{Euf, EufT};
 use crate::full_buf_read::FullBufRead;
 use crate::intern::*;
-use crate::local_error::LocalError;
 use crate::outer_solver::AddSexpError::*;
 use crate::outer_solver::{AddSexpError, Bound, BoundDefinition, FnSort, OuterSolver, StartExpCtx};
 use crate::parser::Error::*;
@@ -89,22 +88,19 @@ enum Error {
     NoModel,
     ProduceModelFalse,
     NonInit,
-    Unsupported(&'static str),
+    UnsupportedP(&'static str),
     Parser(ParseError),
 }
 
 impl DisplayInterned for Error {
     fn fmt(&self, i: &InternInfo, fmt: &mut Formatter<'_>) -> std::fmt::Result {
         match self {
-            AddSexp(f, ArgError {
+            AddSexp(f, SortMismatch {
                 arg_n,
-                local: LocalError::SortMismatch{ actual,
-                expected,}
+                actual,
+                expected,
             }) => write!(fmt, "the {arg_n}th argument of the function {} has sort {} but should have sort {}", f.with_intern(i), actual.with_intern(i), expected.with_intern(i)),
-            AddSexp(f, ArgError {
-                arg_n,
-                local: LocalError::Unsupported(s)
-            }) => write!(fmt, "unsupported feature {s} at the {arg_n}th argument of the function {} ", f.with_intern(i)),
+            AddSexp(f, Unsupported(u)) => write!(fmt, "unsupported feature {u} in the function {} ", f.with_intern(i)),
             AddSexp(f, AsSortMismatch {
                 actual,
                 expected
@@ -143,7 +139,7 @@ impl DisplayInterned for Error {
             NoModel => write!(fmt, "The last command was not `check-sat-assuming` that returned `sat`"),
             ProduceModelFalse => write!(fmt, "The option `:produce-models` must be set to true"),
             NonInit => write!(fmt, "The option cannot be set after assertions, declarations, or definitions"),
-            Unsupported(s) => write!(fmt, "unsupported {s}"),
+            UnsupportedP(s) => write!(fmt, "unsupported {s}"),
             Parser(err) => write!(fmt, "{err}"),
         }
     }
@@ -477,10 +473,10 @@ impl<'a, W: Write, Euf: EufT> ExpVisitor<'a, W, Euf> {
                     .end_exp_take()
                     .map_err(|(s, e)| AddSexp(s.into(), e))
             }
-            SexpTerminal::String(_) => Err(Unsupported("strings")),
-            SexpTerminal::Number(_) => Err(Unsupported("arithmetic")),
-            SexpTerminal::Decimal(_, _) => Err(Unsupported("decimal")),
-            SexpTerminal::BitVec { .. } => Err(Unsupported("bitvec")),
+            SexpTerminal::String(_) => Err(UnsupportedP("strings")),
+            SexpTerminal::Number(_) => Err(UnsupportedP("arithmetic")),
+            SexpTerminal::Decimal(_, _) => Err(UnsupportedP("decimal")),
+            SexpTerminal::BitVec { .. } => Err(UnsupportedP("bitvec")),
             SexpTerminal::Keyword(_) => Err(InvalidExp),
         }
     }
@@ -960,7 +956,7 @@ impl<W: Write, Euf: EufT> Parser<W, Euf> {
                 match rest.next()? {
                     SexpToken::Terminal(SexpTerminal::Symbol("QF_UF")) => {}
                     SexpToken::Terminal(SexpTerminal::Symbol(_)) => {
-                        return Err(Unsupported("logic"))
+                        return Err(UnsupportedP("logic"))
                     }
                     _ => return Err(InvalidCommand),
                 }
