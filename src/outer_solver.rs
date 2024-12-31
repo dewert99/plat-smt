@@ -1,5 +1,5 @@
 use crate::intern::*;
-use crate::util::{extend_result, pairwise_sym, DefaultHashBuilder};
+use crate::util::{extend_result, DefaultHashBuilder};
 use crate::{util, Approx, BoolExp, Conjunction, Disjunction, Exp, HasSort, Solver, Sort};
 use alloc::borrow::Cow;
 use alloc::vec::Vec;
@@ -429,22 +429,16 @@ impl<Euf: EufT> OuterSolver<Euf> {
                         Ok::<_, AddSexpError>(())
                     })?;
                 }
-                let res = match ctx {
-                    ExprContext::AssertEq(Exp::Bool(BoolExp::TRUE), _) => {
-                        self.inner.assert_distinct(children_slice.iter().copied());
-                        BoolExp::TRUE.into()
+                match ctx {
+                    ExprContext::AssertEq(Exp::Bool(b), _) => {
+                        self.inner.assert_distinct_eq(children_slice, b);
+                        b.into()
                     }
-                    _ => {
-                        let mut c: Conjunction = self.inner.new_junction();
-                        extend_result(
-                            &mut c,
-                            pairwise_sym(&children_slice)
-                                .map(|(id1, id2)| Ok(!self.inner.eq(*id1, *id2))),
-                        )?;
-                        self.inner.collapse_bool(c).into()
-                    }
-                };
-                res
+                    _ => self
+                        .inner
+                        .distinct_approx(children_slice, ctx.to_approx())
+                        .into(),
+                }
             }
             ITE_SYM | IF_SYM => {
                 let [i, t, e] = mandatory_args(children)?;

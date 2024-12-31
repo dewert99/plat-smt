@@ -49,9 +49,9 @@ impl Debug for BoolExp {
             Err(c) => Debug::fmt(&c, f),
             Ok(l) => {
                 if l.sign() {
-                    write!(f, "(as b{:?} Bool)", l.var())
+                    write!(f, "(as @b{:?} Bool)", l.var())
                 } else {
-                    write!(f, "(as (not b{:?}) Bool)", l.var())
+                    write!(f, "(as (not @b{:?}) Bool)", l.var())
                 }
             }
         }
@@ -261,9 +261,19 @@ impl<Euf: EufT> Solver<Euf> {
     /// Assert that no pair of expressions in `exps` are equal to each other
     ///
     /// Requires all expressions in `exps` have the same sort
-    pub fn assert_distinct(&mut self, exps: impl IntoIterator<Item = Exp<Euf::UExp>>) {
-        self.open(|euf, acts| euf.assert_distinct(exps.into_iter(), acts), ());
+    pub fn assert_distinct_eq(&mut self, exps: &[Exp<Euf::UExp>], target: BoolExp) {
+        self.open(|euf, acts| euf.assert_distinct_eq(exps, target, acts), ());
         self.simplify()
+    }
+
+    /// Create a [`BoolExp`] representing that all in `exps` are equal to each other
+    ///
+    /// Requires all expressions in `exps` have the same sort
+    pub fn distinct_approx(&mut self, exps: &[Exp<Euf::UExp>], approx: Approx) -> BoolExp {
+        self.open(
+            |euf, acts| euf.distinct_approx(exps, approx, acts),
+            BoolExp::TRUE,
+        )
     }
 
     pub fn intern(&self) -> &InternInfo {
