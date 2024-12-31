@@ -1,5 +1,4 @@
 use crate::intern::InternInfo;
-use crate::BoolExp;
 use core::fmt::{Debug, Formatter};
 use log::debug;
 use no_std_compat::prelude::v1::*;
@@ -42,18 +41,19 @@ struct PushInfo<X> {
 }
 
 #[perfect_derive(Default, Debug)]
-pub struct IncrementalWrapper<Th: Incremental> {
+pub struct TheoryWrapper<Th: Incremental> {
     th: Th,
     prev_len: u32,
     // whether we've handled prop_log since the last push or pop
     done_prop_log: bool,
-    arg: IncrementalArgData<Th::LevelMarker>,
+    pub(crate) arg: IncrementalArgData<Th::LevelMarker>,
 }
 
 #[perfect_derive(Default)]
 pub struct IncrementalArgData<M> {
     decision_level: u32,
     push_log: Vec<PushInfo<M>>,
+    pub(crate) junction_buf: Vec<Lit>,
     intern: InternInfo,
 }
 
@@ -149,17 +149,6 @@ impl<'a, M> TheoryArg<'a, M> {
             incr: self.incr.reborrow(),
         }
     }
-
-    pub fn assert_bool(&mut self, b: BoolExp) -> bool {
-        match b.to_lit() {
-            Ok(l) => self.propagate(l),
-            Err(true) => true,
-            Err(false) => {
-                self.raise_conflict(&[], false);
-                false
-            }
-        }
-    }
 }
 
 /// Theory that parametrizes the solver and can react on events.
@@ -196,7 +185,7 @@ pub trait Theory<Arg, ExplainArg> {
 impl<
         Th: Incremental
             + for<'a> Theory<TheoryArg<'a, Th::LevelMarker>, ExplainTheoryArg<'a, Th::LevelMarker>>,
-    > IncrementalWrapper<Th>
+    > TheoryWrapper<Th>
 {
     pub fn clear(&mut self) {
         self.th.clear();
@@ -247,7 +236,7 @@ impl<
 impl<
         Th: Incremental
             + for<'a> Theory<TheoryArg<'a, Th::LevelMarker>, ExplainTheoryArg<'a, Th::LevelMarker>>,
-    > SatTheory for IncrementalWrapper<Th>
+    > SatTheory for TheoryWrapper<Th>
 {
     fn final_check(&mut self, _: &mut SatTheoryArg) {}
 
@@ -333,7 +322,7 @@ impl<
     }
 }
 
-impl<Th: Incremental> Deref for IncrementalWrapper<Th> {
+impl<Th: Incremental> Deref for TheoryWrapper<Th> {
     type Target = Th;
 
     fn deref(&self) -> &Self::Target {
@@ -341,7 +330,7 @@ impl<Th: Incremental> Deref for IncrementalWrapper<Th> {
     }
 }
 
-impl<Th: Incremental> DerefMut for IncrementalWrapper<Th> {
+impl<Th: Incremental> DerefMut for TheoryWrapper<Th> {
     fn deref_mut(&mut self) -> &mut Self::Target {
         &mut self.th
     }

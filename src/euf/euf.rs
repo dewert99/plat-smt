@@ -469,7 +469,7 @@ impl Euf {
     }
 
     pub(super) fn id_for_lit(&mut self, lit: Lit, acts: &mut Arg) -> Id {
-        let val = acts.value(lit.var()) ^ !lit.sign();
+        let val = acts.value_lit(lit);
         if val == lbool::TRUE {
             id_for_bool(true)
         } else if val == lbool::FALSE {
@@ -510,7 +510,7 @@ impl Euf {
             Exp::Bool(b) => match b.to_lit() {
                 Err(b) => id_for_bool(b),
                 Ok(lit) => {
-                    let val = acts.value(lit.var()) ^ !lit.sign();
+                    let val = acts.value_lit(lit);
                     if val == lbool::TRUE {
                         id_for_bool(true)
                     } else if val == lbool::FALSE {

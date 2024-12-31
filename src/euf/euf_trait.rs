@@ -34,7 +34,7 @@ pub trait EufT:
         acts: &mut TheoryArg<Self::LevelMarker>,
     ) {
         let eq = self.eq_approx(e1, e2, Approx::Exact, acts);
-        acts.assert_bool(eq);
+        acts.assert(eq);
     }
 
     /// Assert that all the expressions in `exps` are distinct

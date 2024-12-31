@@ -17,6 +17,7 @@ mod reborrow;
 mod solver;
 mod sp_insert_map;
 mod theory;
+mod tseitin;
 mod util;
 
 use intern::Symbol;
