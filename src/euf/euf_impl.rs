@@ -1,18 +1,18 @@
 use super::egraph::Children;
 use super::euf::{litvec, BoolClass, EClass, Euf, FunctionInfoIter, PushInfo};
-use super::euf_trait::{assert_distinct, EufT};
+use super::euf_trait::EufT;
 use super::explain::Justification;
 use crate::intern::{DisplayInterned, InternInfo, Symbol, BOOL_SORT};
 use crate::solver::ExpLike;
 use crate::theory::TheoryArg;
-use crate::util::format_args2;
-use crate::{Approx, BoolExp, Exp, HasSort, Solver, Sort};
+use crate::util::{format_args2, pairwise_sym};
+use crate::{Approx, BoolExp, Conjunction, Exp, HasSort, Solver, Sort};
 use alloc::borrow::Cow;
 use core::fmt::Formatter;
 use plat_egg::raw::Language;
 use plat_egg::Id;
 use platsat::Lit;
-use std::{iter, mem};
+use std::mem;
 
 #[derive(Copy, Clone, Eq, PartialEq, Hash, Ord, PartialOrd, Debug)]
 pub struct UExp {
@@ -105,36 +105,95 @@ impl EufT for Euf {
         }
     }
 
-    fn assert_distinct(
+    fn distinct_approx(
         &mut self,
-        mut exps: impl Iterator<Item = Exp<UExp>>,
-        acts: &mut TheoryArg<PushInfo>,
-    ) {
-        let Some(e0) = exps.next() else { return };
+        exps: &[Exp<Self::UExp>],
+        approx: Approx,
+        acts: &mut TheoryArg<Self::LevelMarker>,
+    ) -> BoolExp {
+        if approx != Approx::Approx(false) {
+            let mut c: Conjunction = acts.new_junction();
+            c.extend(
+                pairwise_sym(exps).map(|(e1, e2)| !self.eq_approx(*e1, *e2, Approx::Exact, acts)),
+            );
+            return acts.collapse_bool_approx(c, approx);
+        }
+
+        let Some(e0) = exps.first() else {
+            return BoolExp::TRUE;
+        };
 
         let Exp::Other(_) = e0 else {
             let b0 = e0.as_bool().unwrap();
-            let mut bools = exps.map(|exp| exp.as_bool().unwrap());
+            let mut bools = exps[1..].iter().map(|exp| exp.as_bool().unwrap());
+            let Some(b1) = bools.next() else {
+                return BoolExp::TRUE;
+            };
+            return if let Some(_) = bools.next() {
+                BoolExp::FALSE
+            } else {
+                acts.xor_approx(b0, b1, approx)
+            };
+        };
+
+        let distinct_sym = acts.intern_mut().symbols.gen_sym("distinct");
+        self.distinct_gensym += 1;
+        let b = BoolExp::unknown(Lit::new(acts.new_var_default(), true));
+        for exp in exps {
+            let id = self.id_for_exp(*exp, acts);
+            let mut added = false;
+            self.egraph
+                .add(distinct_sym.into(), Children::from_slice(&[id]), |_| {
+                    added = true;
+                    EClass::Singleton(!b)
+                });
+            if !added {
+                return BoolExp::FALSE;
+            }
+        }
+        b
+    }
+
+    fn assert_distinct_eq(
+        &mut self,
+        exps: &[Exp<UExp>],
+        target: BoolExp,
+        acts: &mut TheoryArg<PushInfo>,
+    ) {
+        if target != BoolExp::TRUE {
+            let mut c: Conjunction = acts.new_junction();
+            c.extend(
+                pairwise_sym(exps).map(|(e1, e2)| !self.eq_approx(*e1, *e2, Approx::Exact, acts)),
+            );
+            acts.assert_junction_eq(c, target);
+            return;
+        }
+
+        let Some(e0) = exps.first() else { return };
+
+        let Exp::Other(_) = e0 else {
+            let b0 = e0.as_bool().unwrap();
+            let mut bools = exps[1..].iter().map(|exp| exp.as_bool().unwrap());
             let Some(b1) = bools.next() else {
                 return;
             };
             if let Some(_) = bools.next() {
-                acts.raise_conflict(&[], false);
+                acts.add_clause_unchecked([]);
             } else {
-                assert_distinct(b0, b1, acts);
+                acts.assert_xor_eq(b0, b1, BoolExp::TRUE);
             }
             return;
         };
 
         let distinct_sym = acts.intern_mut().symbols.gen_sym("distinct");
         self.distinct_gensym += 1;
-        for exp in iter::once(e0).chain(exps) {
-            let id = self.id_for_exp(exp, acts);
+        for exp in exps {
+            let id = self.id_for_exp(*exp, acts);
             let mut added = false;
             self.egraph
                 .add(distinct_sym.into(), Children::from_slice(&[id]), |_| {
                     added = true;
-                    EClass::Singleton
+                    EClass::Singleton(BoolExp::FALSE)
                 });
             if !added {
                 acts.raise_conflict(&[], false);

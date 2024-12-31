@@ -40,11 +40,22 @@ pub trait EufT:
     /// Assert that all the expressions in `exps` are distinct
     ///
     /// Requires all the expressions have the same sort
-    fn assert_distinct(
+    fn assert_distinct_eq(
         &mut self,
-        exps: impl Iterator<Item = Exp<Self::UExp>>,
+        exps: &[Exp<Self::UExp>],
+        target: BoolExp,
         acts: &mut TheoryArg<Self::LevelMarker>,
     );
+
+    /// Create an expression representing that all expressions in `exps` are distinct
+    ///
+    /// Requires all the expressions have the same sort
+    fn distinct_approx(
+        &mut self,
+        exps: &[Exp<Self::UExp>],
+        approx: Approx,
+        acts: &mut TheoryArg<Self::LevelMarker>,
+    ) -> BoolExp;
 
     /// Creates a function call expression with a given name and children and return sort
     ///
@@ -138,21 +149,4 @@ impl<UExp, H: Iterator<Item = Exp<UExp>>, I: Iterator<Item = (H, Exp<UExp>)>>
     FunctionAssignmentT<UExp> for I
 {
     type H = H;
-}
-
-pub fn assert_distinct<M>(b1: BoolExp, b2: BoolExp, acts: &mut TheoryArg<M>) {
-    match (b1.to_lit(), b2.to_lit()) {
-        (Ok(l), Err(pol)) | (Err(pol), Ok(l)) => {
-            acts.propagate(l ^ pol);
-        }
-        (Err(b1), Err(b2)) => {
-            if b1 == b2 {
-                acts.raise_conflict(&[], false);
-            }
-        }
-        (Ok(l1), Ok(l2)) => {
-            acts.add_theory_lemma(&[l1, l2]);
-            acts.add_theory_lemma(&[!l1, !l2]);
-        }
-    }
 }

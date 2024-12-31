@@ -1,7 +1,7 @@
 use super::egraph::{children, Children, EGraph, Op, PushInfo as EGPushInfo, SymbolLang, EQ_OP};
 use super::explain::{EqIds, Justification};
 use crate::exp::{BoolExp, Exp};
-use crate::intern::{DisplayInterned, Sort, FALSE_SYM, TRUE_SYM};
+use crate::intern::{DisplayInterned, InternInfo, Sort, FALSE_SYM, TRUE_SYM};
 use crate::theory::{ExplainTheoryArg, Incremental, Theory, TheoryArg};
 use crate::util::{format_args2, minmax, Bind, DebugIter, DefaultHashBuilder, DisplayFn};
 use crate::Symbol;
@@ -80,9 +80,9 @@ impl BoolClass {
 pub(super) enum EClass {
     Uninterpreted(Sort),
     Bool(BoolClass),
-    /// EClass that creates a conflict whenever it is merged
+    /// EClass that propagate whenever it is merged
     /// Not used for top level expressions, but used to implement `distinct`
-    Singleton,
+    Singleton(BoolExp),
 }
 
 impl EClass {
@@ -90,8 +90,20 @@ impl EClass {
         match self {
             EClass::Bool(b) => b.to_exp().into(),
             EClass::Uninterpreted(s) => UExp::new(id, *s).into(),
-            EClass::Singleton => unreachable!(),
+            EClass::Singleton(_) => unreachable!(),
         }
+    }
+
+    fn to_display_exp<'a>(&'a self, id: Id, intern: &'a InternInfo) -> impl Display + 'a {
+        DisplayFn(move |f| match self {
+            &EClass::Uninterpreted(sort) => DisplayInterned::fmt(&UExp { id, sort }, intern, f),
+            EClass::Bool(BoolClass::Const(b)) => Display::fmt(b, f),
+            EClass::Bool(BoolClass::Unknown(l)) if l.len() > 0 => {
+                Display::fmt(&BoolExp::unknown(l[0]), f)
+            }
+            EClass::Bool(BoolClass::Unknown(_)) => f.write_str("(as _ Bool)"),
+            EClass::Singleton(b) => write!(f, "(Singleton {b:?})"),
+        })
     }
 }
 
@@ -144,7 +156,7 @@ impl LitInfo {
     pub(super) fn add_id_to_lit(&mut self, id: Id, l: Lit) {
         self.ids[l] = OpId::some(id);
         self.log.push(l);
-        debug!("(as v{id:?} Bool) is defined as {:?}", BoolExp::unknown(l),);
+        debug!("(as @v{id:?} Bool) is defined as {:?}", BoolExp::unknown(l),);
     }
 }
 
@@ -241,7 +253,7 @@ impl Incremental for Euf {
             EClass::Bool(class) => {
                 EClass::Bool(class.split(self.bool_class_history.pop().unwrap()))
             }
-            EClass::Singleton => EClass::Singleton,
+            EClass::Singleton(x) => EClass::Singleton(*x),
         });
         trace!("\n{:?}", self.egraph.dump_uncanonical());
         trace!("\n{:?}", self.egraph.dump_classes())
@@ -298,6 +310,10 @@ impl<'a> Theory<TheoryArg<'a, PushInfo>, ExplainTheoryArg<'a, PushInfo>> for Euf
         let just = Justification::from_lit(lit);
         let tlit = lit.apply_sign(true);
         if let Some(id) = self.lit.ids[tlit].expand() {
+            if !matches!(&*self.egraph[id], EClass::Bool(_)) {
+                // this is just a reminder of how to explain why a distinct node is false
+                return Ok(());
+            }
             // Note it is important to union the children of an equality before union-ing the lit
             // with true because of an optimization in the explanation
             let node = self.egraph.id_to_node(id);
@@ -327,7 +343,7 @@ impl<'a> Theory<TheoryArg<'a, PushInfo>, ExplainTheoryArg<'a, PushInfo>> for Euf
                 let explanation = acts.clause_builder();
                 if explanation.last() != Some(&!p) {
                     debug_assert!(!explanation.contains(&!p), "{explanation:?}, {p:?}");
-                    debug!("EUF explains {p:?} with clause {explanation:?}");
+                    debug!("EUF explains {p:?} (= {p:?} true) with clause {explanation:?}");
                     return;
                 } else {
                     trace!("Skipping incorrect explanation {p:?} with clause {explanation:?}");
@@ -337,8 +353,23 @@ impl<'a> Theory<TheoryArg<'a, PushInfo>, ExplainTheoryArg<'a, PushInfo>> for Euf
         }
         if let Some(id) = self.lit.ids[!p].expand() {
             let const_bool = self.id_for_bool(false);
-            self.explain(id, const_bool, is_final, acts);
-            debug!("EUF explains {p:?} with clause {:?}", acts.clause_builder());
+            if self.egraph.find(id) == self.egraph.find(const_bool) {
+                self.explain(id, const_bool, is_final, acts);
+                debug!(
+                    "EUF explains {p:?} (= {:?} false) with clause {:?}",
+                    !p,
+                    acts.clause_builder()
+                );
+                return;
+            }
+        }
+        if let (Some(id1), Some(id2)) = (self.lit.ids[p].expand(), self.lit.ids[!p].expand()) {
+            // Explanation of lack of distinctness
+            self.explain(id1, id2, is_final, acts);
+            debug!(
+                "EUF explains {p:?} (distinct check) with clause {:?}",
+                acts.clause_builder()
+            );
             return;
         }
         unreachable!("EUF couldn't explain {p:?}")
@@ -347,6 +378,7 @@ impl<'a> Theory<TheoryArg<'a, PushInfo>, ExplainTheoryArg<'a, PushInfo>> for Euf
 struct MergeContext<'a, 'b> {
     acts: &'a mut Arg<'b>,
     history: &'a mut Vec<MergeInfo>,
+    lit: &'a mut LitInfo,
     conflict: &'a mut Option<[Id; 2]>,
 }
 
@@ -388,11 +420,25 @@ impl<'a, 'b> MergeContext<'a, 'b> {
         move |lclass, rclass| match (lclass, rclass) {
             (EClass::Uninterpreted(sort), EClass::Uninterpreted(sort2)) if *sort == sort2 => {}
             (EClass::Bool(lbool), EClass::Bool(rbool)) => self.merge_bools(lbool, rbool),
-            (EClass::Singleton, EClass::Singleton) => *self.conflict = Some([id1, id2]),
+            (EClass::Singleton(b1), EClass::Singleton(b2)) => {
+                debug_assert_eq!(*b1, b2);
+                match b1.to_lit() {
+                    Err(false) => *self.conflict = Some([id1, id2]),
+                    Err(true) => {}
+                    Ok(l) => {
+                        if self.acts.value_lit(l) != lbool::TRUE {
+                            self.acts.propagate(l);
+                            // hack only used for
+                            self.lit.add_id_to_lit(id1, l);
+                            self.lit.add_id_to_lit(id2, !l);
+                        }
+                    }
+                }
+            }
             (l, r) => unreachable!(
                 "merging eclasses with different sorts {} {}",
-                l.to_exp(id1).with_intern(&self.acts.intern()),
-                r.to_exp(id2).with_intern(&self.acts.intern())
+                l.to_display_exp(id1, self.acts.intern()),
+                r.to_display_exp(id2, self.acts.intern())
             ),
         }
     }
@@ -523,6 +569,7 @@ impl Euf {
                         let ctx = MergeContext {
                             acts,
                             history: &mut self.bool_class_history,
+                            lit: &mut self.lit,
                             conflict: &mut conf,
                         };
                         ctx.merge_fn(id, Id::MAX)(
@@ -587,16 +634,7 @@ impl Euf {
     }
 
     fn id_to_display_exp<'a>(&'a self, id: Id, acts: &'a Arg) -> impl Display + 'a {
-        let intern = acts.intern();
-        DisplayFn(move |f| match &*self.egraph[id] {
-            &EClass::Uninterpreted(sort) => DisplayInterned::fmt(&UExp { id, sort }, intern, f),
-            EClass::Bool(BoolClass::Const(b)) => Display::fmt(b, f),
-            EClass::Bool(BoolClass::Unknown(l)) if l.len() > 0 => {
-                Display::fmt(&BoolExp::unknown(l[0]), f)
-            }
-            EClass::Bool(BoolClass::Unknown(_)) => f.write_str("(as _ Bool)"),
-            EClass::Singleton => f.write_str("Singleton"),
-        })
+        self.egraph[id].to_display_exp(id, acts.intern())
     }
 
     pub(super) fn add_uncanonical(
@@ -610,6 +648,7 @@ impl Euf {
         let ctx = MergeContext {
             acts,
             history: &mut self.bool_class_history,
+            lit: &mut self.lit,
             conflict: &mut conflict,
         };
         // this won't be used since the new class won't be EClass::Singleton
@@ -692,6 +731,7 @@ impl Euf {
         let ctx = MergeContext {
             acts,
             history: &mut self.bool_class_history,
+            lit: &mut self.lit,
             conflict: &mut conflict,
         };
         self.egraph.union(id1, id2, just, ctx.merge_fn(id1, id2));
