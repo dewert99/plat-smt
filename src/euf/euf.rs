@@ -1,13 +1,12 @@
 use super::egraph::{children, Children, EGraph, Op, PushInfo as EGPushInfo, SymbolLang, EQ_OP};
 use super::explain::{EqIds, Justification};
-use crate::exp::{BoolExp, Exp};
+use crate::exp::{BoolExp, EitherExp};
 use crate::intern::{DisplayInterned, InternInfo, Sort, FALSE_SYM, TRUE_SYM};
 use crate::theory::{ExplainTheoryArg, Incremental, Theory, TheoryArg};
-use crate::util::{format_args2, minmax, Bind, DebugIter, DefaultHashBuilder, DisplayFn};
-use crate::Symbol;
+use crate::util::{format_args2, minmax, Bind, DebugIter, DisplayFn, HashMap};
+use crate::{SubExp, Symbol};
 use core::fmt::Display;
 use default_vec2::ConstDefault;
-use hashbrown::HashMap;
 use log::{debug, trace};
 use no_std_compat::prelude::v1::*;
 use perfect_derive::perfect_derive;
@@ -17,6 +16,8 @@ use platsat::{lbool, LMap, Lit};
 use std::fmt::{Debug, Formatter};
 use std::mem;
 use std::ops::Range;
+
+pub type Exp = EitherExp<BoolExp, UExp>;
 
 type Arg<'a> = TheoryArg<'a, PushInfo>;
 type ExplainArg<'a> = ExplainTheoryArg<'a, PushInfo>;
@@ -86,10 +87,10 @@ pub(super) enum EClass {
 }
 
 impl EClass {
-    fn to_exp(&self, id: Id) -> Exp<UExp> {
+    fn to_exp(&self, id: Id) -> Exp {
         match self {
-            EClass::Bool(b) => b.to_exp().into(),
-            EClass::Uninterpreted(s) => UExp::new(id, *s).into(),
+            EClass::Bool(b) => b.to_exp().upcast(),
+            EClass::Uninterpreted(s) => UExp::new(id, *s).upcast(),
             EClass::Singleton(_) => unreachable!(),
         }
     }
@@ -463,39 +464,17 @@ impl Euf {
     pub(super) fn find(&self, id: Id) -> Id {
         self.egraph.find(id)
     }
-    pub(super) fn add_eq_node(&mut self, id1: Id, id2: Id, acts: &mut Arg) -> BoolExp {
-        let cid1 = self.find(id1);
-        let cid2 = self.find(id2);
-        if cid1 == cid2 {
-            return BoolExp::TRUE;
-        }
-        let mut added = None;
-        let eq_id = self
-            .egraph
-            .add(EQ_OP, Children::from_slice(&[cid1, cid2]), |_| {
-                let lit = Lit::new(acts.new_var_default(), true);
-                added = Some(lit);
-                EClass::Bool(BoolClass::Unknown(litvec![lit]))
-            });
-        if let Some(l) = added {
-            let res = BoolExp::unknown(l);
-            debug!(
-                "{} is defined as (= {} {})",
-                res,
-                self.id_to_display_exp(id1, acts),
-                self.id_to_display_exp(id2, acts)
-            );
-            self.lit.add_id_to_lit(eq_id, l);
-            let ids = minmax(cid1, cid2);
-            self.eq_id_log.push(ids);
-            self.eq_ids.insert(ids, l);
-
-            self.make_equality_true(cid1, cid2);
-
-            res
-        } else {
-            self.id_to_exp(eq_id).as_bool().unwrap()
-        }
+    pub(super) fn finish_eq_node(&mut self, l: Lit, cid1: Id, cid2: Id, acts: &mut Arg) {
+        debug!(
+            "{} is defined as (= {} {})",
+            BoolExp::unknown(l),
+            self.id_to_display_exp(cid1, acts),
+            self.id_to_display_exp(cid2, acts)
+        );
+        let ids = minmax(cid1, cid2);
+        self.eq_id_log.push(ids);
+        self.eq_ids.insert(ids, l);
+        self.make_equality_true(cid1, cid2);
     }
 
     // union one of (= alt_id alt_id) or (= id id) with true
@@ -541,19 +520,19 @@ impl Euf {
         id_for_bool(b)
     }
 
-    pub(super) fn id_for_exp(&mut self, exp: Exp<UExp>, acts: &mut Arg) -> Id {
+    pub(super) fn id_for_exp(&mut self, exp: Exp, acts: &mut Arg) -> Id {
         match exp {
-            Exp::Bool(b) => match b.to_lit() {
+            Exp::Left(b) => match b.to_lit() {
                 Err(b) => id_for_bool(b),
                 Ok(lit) => self.id_for_lit(lit, acts),
             },
-            Exp::Other(u) => u.id(),
+            Exp::Right(u) => u.id(),
         }
     }
 
-    pub(super) fn union_exp(&mut self, exp: Exp<UExp>, id: Id, acts: &mut Arg) {
+    pub(super) fn union_exp(&mut self, exp: Exp, id: Id, acts: &mut Arg) {
         let exp_id = match exp {
-            Exp::Bool(b) => match b.to_lit() {
+            Exp::Left(b) => match b.to_lit() {
                 Err(b) => id_for_bool(b),
                 Ok(lit) => {
                     let val = acts.value_lit(lit);
@@ -583,14 +562,14 @@ impl Euf {
                     }
                 }
             },
-            Exp::Other(u) => u.id(),
+            Exp::Right(u) => u.id(),
         };
         let _ = self.union(acts, id, exp_id, Justification::NOOP);
     }
 
     pub(super) fn resolve_children(
         &mut self,
-        children: impl Iterator<Item = Exp<UExp>>,
+        children: impl Iterator<Item = Exp>,
         acts: &mut Arg,
     ) -> Children {
         children.map(|x| self.id_for_exp(x, acts)).collect()
@@ -629,7 +608,7 @@ impl Euf {
         }
     }
 
-    pub(super) fn id_to_exp(&self, id: Id) -> Exp<UExp> {
+    pub(super) fn id_to_exp(&self, id: Id) -> Exp {
         self.egraph[id].to_exp(id)
     }
 
@@ -749,7 +728,7 @@ impl Euf {
 
 #[perfect_derive(Default, Debug)]
 struct FunctionInfo {
-    indices: HashMap<Symbol, Range<usize>, DefaultHashBuilder>,
+    indices: HashMap<Symbol, Range<usize>>,
     data: Vec<(SymbolLang, Id)>,
 }
 
@@ -770,7 +749,7 @@ pub struct ExpIter<'a> {
 }
 
 impl<'a> Iterator for ExpIter<'a> {
-    type Item = Exp<UExp>;
+    type Item = Exp;
 
     fn next(&mut self) -> Option<Self::Item> {
         Some(self.euf.id_to_exp(*self.ids.next()?))
@@ -791,7 +770,7 @@ pub struct FunctionInfoIter<'a> {
 }
 
 impl<'a> Iterator for FunctionInfoIter<'a> {
-    type Item = (ExpIter<'a>, Exp<UExp>);
+    type Item = (ExpIter<'a>, Exp);
 
     fn next(&mut self) -> Option<Self::Item> {
         let (node, cid) = self.pairs.next()?;

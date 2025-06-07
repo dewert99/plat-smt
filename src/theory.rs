@@ -43,7 +43,7 @@ struct PushInfo<X> {
 #[perfect_derive(Default, Debug)]
 pub struct TheoryWrapper<Th: Incremental> {
     th: Th,
-    prev_len: u32,
+    prev_model_len: u32,
     // whether we've handled prop_log since the last push or pop
     done_prop_log: bool,
     pub(crate) arg: IncrementalArgData<Th::LevelMarker>,
@@ -51,7 +51,7 @@ pub struct TheoryWrapper<Th: Incremental> {
 
 #[perfect_derive(Default)]
 pub struct IncrementalArgData<M> {
-    decision_level: u32,
+    total_level: u32,
     push_log: Vec<PushInfo<M>>,
     pub(crate) junction_buf: Vec<Lit>,
     intern: InternInfo,
@@ -60,7 +60,7 @@ pub struct IncrementalArgData<M> {
 impl<M: Debug> Debug for IncrementalArgData<M> {
     fn fmt(&self, f: &mut Formatter<'_>) -> core::fmt::Result {
         f.debug_struct("IncrementalArg")
-            .field("decision_level", &self.decision_level)
+            .field("decision_level", &self.total_level)
             .field("push_log", &self.push_log)
             .finish()
     }
@@ -191,12 +191,12 @@ impl<
         self.th.clear();
         self.arg.push_log.clear();
         self.done_prop_log = false;
-        self.arg.decision_level = 0;
-        self.prev_len = 0;
+        self.arg.total_level = 0;
+        self.prev_model_len = 0;
     }
 
     pub(crate) fn restore_trail_len(&mut self, len: u32) {
-        self.prev_len = len;
+        self.prev_model_len = len;
     }
 
     pub fn open<'a, S: Reborrow>(
@@ -245,24 +245,24 @@ impl<
         let old_len = self.arg.push_log.len();
         let info = PushInfo {
             th: self.th.create_level(),
-            model_len: self.prev_len,
+            model_len: self.prev_model_len,
         };
         self.arg.push_log.push(info);
         debug!(
             "Push ({} -> {}), internal_level ({old_len} -> {})",
-            self.arg.decision_level,
-            self.arg.decision_level + 1,
+            self.arg.total_level,
+            self.arg.total_level + 1,
             self.arg.push_log.len()
         );
-        self.arg.decision_level += 1;
+        self.arg.total_level += 1;
     }
 
     fn pop_levels(&mut self, n: usize) {
         let old_len = self.arg.push_log.len();
         self.done_prop_log = false;
-        let target_sat_level = self.n_levels() - n;
-        self.arg.decision_level = target_sat_level as u32;
-        self.prev_len = self.arg.push_log[target_sat_level].model_len;
+        let target_sat_level = self.arg.total_level as usize - n;
+        self.arg.total_level = target_sat_level as u32;
+        self.prev_model_len = self.arg.push_log[target_sat_level].model_len;
         let target_level = target_sat_level;
         if target_level < self.arg.push_log.len() {
             self.th
@@ -277,7 +277,7 @@ impl<
     }
 
     fn n_levels(&self) -> usize {
-        self.arg.decision_level as usize
+        self.arg.total_level as usize
     }
 
     fn partial_check(&mut self, acts: &mut SatTheoryArg) {
@@ -289,10 +289,10 @@ impl<
         };
         let _ = (|| {
             self.th.initial_check(&mut acts)?;
-            while (self.prev_len as usize) < acts.model().len() {
+            while (self.prev_model_len as usize) < acts.model().len() {
                 self.th
-                    .learn(acts.model()[self.prev_len as usize], &mut acts)?;
-                self.prev_len += 1;
+                    .learn(acts.model()[self.prev_model_len as usize], &mut acts)?;
+                self.prev_model_len += 1;
             }
             if acts.model().len() == init_len {
                 self.th.pre_decision_check(&mut acts)

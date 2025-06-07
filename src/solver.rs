@@ -1,19 +1,19 @@
-use crate::euf::EufT;
+use crate::collapse::{Collapse, CollapseOut, ExprContext};
+use crate::core_ops::Eq;
 use crate::exp::*;
+use crate::full_theory::{FullTheory, TopLevelCollapse};
 use crate::intern::*;
 use crate::junction::*;
 use crate::theory::{TheoryArg, TheoryWrapper};
-use crate::util::{display_debug, DefaultHashBuilder, Either};
+use crate::util::{DefaultHashBuilder, Either};
 use crate::Symbol;
-use core::hash::Hash;
-use core::ops::Deref;
 use hashbrown::HashMap;
 use internal_iterator::{InternalIterator, IteratorExt};
 use log::{debug, trace};
 use no_std_compat::prelude::v1::*;
 use perfect_derive::perfect_derive;
 use platsat::{lbool, Callbacks, Lit, SolverInterface, SolverOpts};
-use std::fmt::{Debug, Formatter};
+use std::fmt::Debug;
 
 /// [`Solver`] methods that return [`BoolExp`]s often have an `approx` variant that take an
 /// [`Approx`] when allows for optimizations when the result doesn't have to match exactly
@@ -38,77 +38,9 @@ type BatSolver = platsat::Solver<NoCb>;
 ///
 /// It allows constructing and asserting expressions [`Exp`] within the solver
 #[perfect_derive(Default)]
-pub struct Solver<Euf: EufT> {
-    euf: TheoryWrapper<Euf>,
+pub struct Solver<Euf: FullTheory> {
+    pub(crate) euf: TheoryWrapper<Euf>,
     sat: BatSolver,
-}
-
-impl Debug for BoolExp {
-    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
-        match self.to_lit() {
-            Err(c) => Debug::fmt(&c, f),
-            Ok(l) => {
-                if l.sign() {
-                    write!(f, "(as @b{:?} Bool)", l.var())
-                } else {
-                    write!(f, "(as (not @b{:?}) Bool)", l.var())
-                }
-            }
-        }
-    }
-}
-
-display_debug!(BoolExp);
-
-impl<UExp: Debug> Debug for Exp<UExp> {
-    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Exp::Bool(b) => Debug::fmt(&b, f),
-            Exp::Other(u) => Debug::fmt(&u, f),
-        }
-    }
-}
-
-impl<UExp: DisplayInterned> DisplayInterned for Exp<UExp> {
-    fn fmt(&self, i: &InternInfo, f: &mut Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Exp::Bool(b) => DisplayInterned::fmt(b, i, f),
-            Exp::Other(u) => DisplayInterned::fmt(u, i, f),
-        }
-    }
-}
-
-pub trait ExpLike<Euf: EufT>:
-    Into<Exp<Euf::UExp>> + Copy + Debug + DisplayInterned + HasSort + Eq + Hash + Ord
-{
-    fn canonize(self, solver: &Solver<Euf>) -> Self;
-}
-
-impl<Euf: EufT> ExpLike<Euf> for BoolExp {
-    fn canonize(self, solver: &Solver<Euf>) -> Self {
-        match self.to_lit() {
-            Ok(x) => {
-                let val = solver.sat.raw_value_lit(x);
-                if val == lbool::TRUE {
-                    BoolExp::TRUE
-                } else if val == lbool::FALSE {
-                    BoolExp::FALSE
-                } else {
-                    self
-                }
-            }
-            _ => self,
-        }
-    }
-}
-
-impl<Euf: EufT> ExpLike<Euf> for Exp<Euf::UExp> {
-    fn canonize(self, solver: &Solver<Euf>) -> Self {
-        match self {
-            Exp::Bool(b) => b.canonize(solver).into(),
-            Exp::Other(u) => u.canonize(solver).into(),
-        }
-    }
 }
 
 pub type BLit = Lit;
@@ -140,7 +72,74 @@ impl SolveResult {
     }
 }
 
-impl<Euf: EufT> Solver<Euf> {
+pub trait SolverCollapse<T: CollapseOut, M> {
+    /// Similar to [`collapse`](Collapse::collapse), but includes the `ctx` for passing additional
+    /// assumptions that may lead to optimizations.
+    ///
+    /// To assert two expressions are equal it is preferable to use [`assert_eq`](Solver::assert_eq)
+    /// which guarantees the expressions will be asserted as equal, as opposed to calling this
+    /// method with [`ExprContext::AssertEq`] which this allows the assertion to be made as an
+    /// optimization
+    fn collapse_in_ctx(&mut self, t: T, ctx: ExprContext<T::Out>) -> T::Out;
+
+    /// Collapse a type representing an expression into a copiable handle that can be used later by
+    /// the solver.
+    ///
+    /// Collapsing the result of a previous call to collapse will canonize the result
+    fn collapse(&mut self, t: T) -> T::Out {
+        self.collapse_in_ctx(t, ExprContext::Exact)
+    }
+}
+
+impl<Th: FullTheory, T: CollapseOut, M> SolverCollapse<T, M> for Solver<Th>
+where
+    Th: TopLevelCollapse<T, M>,
+{
+    fn collapse_in_ctx(&mut self, t: T, ctx: ExprContext<T::Out>) -> T::Out {
+        let p = Collapse::<T, TheoryArg<Th::LevelMarker>, M>::placeholder(&*self.euf, &t);
+        self.open(|th, acts| th.collapse(t, acts, ctx), p)
+    }
+}
+
+impl<'a, 'b, Th: FullTheory, T: CollapseOut, M> SolverCollapse<T, M>
+    for (&'a mut Th, &'a mut TheoryArg<'b, Th::LevelMarker>)
+where
+    Th: TopLevelCollapse<T, M>,
+{
+    fn collapse_in_ctx(&mut self, t: T, ctx: ExprContext<T::Out>) -> T::Out {
+        self.0.collapse(t, self.1, ctx)
+    }
+}
+
+#[derive(Default, Clone)]
+pub struct SolverWithBound<S, B> {
+    pub solver: S,
+    pub bound: B,
+}
+
+impl<T: CollapseOut, M, S: SolverCollapse<T, M>, B> SolverCollapse<T, M> for SolverWithBound<S, B> {
+    fn collapse_in_ctx(&mut self, t: T, ctx: ExprContext<T::Out>) -> T::Out {
+        self.solver.collapse_in_ctx(t, ctx)
+    }
+}
+
+pub trait ReuseMem<T> {
+    fn reuse_mem(&mut self) -> T;
+}
+
+impl<Th: FullTheory, const B: bool> ReuseMem<Junction<B>> for Solver<Th> {
+    fn reuse_mem(&mut self) -> Junction<B> {
+        self.euf.new_junction()
+    }
+}
+
+impl<T, S: ReuseMem<T>, B> ReuseMem<T> for SolverWithBound<S, B> {
+    fn reuse_mem(&mut self) -> T {
+        self.solver.reuse_mem()
+    }
+}
+
+impl<Euf: FullTheory> Solver<Euf> {
     pub fn is_ok(&self) -> bool {
         self.sat.is_ok()
     }
@@ -150,7 +149,7 @@ impl<Euf: EufT> Solver<Euf> {
         BoolExp::unknown(Lit::new(self.sat.new_var_default(), true))
     }
 
-    fn open<U>(
+    pub(crate) fn open<U>(
         &mut self,
         f: impl FnOnce(&mut Euf, &mut TheoryArg<Euf::LevelMarker>) -> U,
         default: U,
@@ -163,117 +162,30 @@ impl<Euf: EufT> Solver<Euf> {
         ret
     }
 
-    /// Collapse a [`Conjunction`] or [`Disjunction`] into a [`BoolExp`]
-    ///
-    /// To reuse memory you can pass mutable reference instead of an owned value
-    /// Doing this will leave `j` in an unspecified state, so it should be
-    /// [`clear`](Junction::clear)ed before it is used again
-    pub fn collapse_bool<const IS_AND: bool>(&mut self, j: Junction<IS_AND>) -> BoolExp {
-        self.collapse_bool_approx(j, Approx::Exact)
-    }
-
-    /// Similar to [`collapse_bool`](Self::collapse_bool), but returns a boolean that approximates `j`
-    ///
-    /// If `approx` is `None` the returned boolean exactly matches `j` (same behaviour as  [`collapse_bool`](Self::collapse_bool))
-    ///
-    /// If `approx` is `Some(false)` the returned boolean is assigned false whenever `j` is assigned to false,
-    /// and when `j` is assigned to true the returned boolean is either also true or unconstrained
-    ///
-    /// If `approx` is `Some(true)` the returned boolean is assigned true whenever `j` is assigned to true,
-    /// and when `j` is assigned to false the returned boolean is either also false or unconstrained
-    ///
-    /// ## Example
-    /// ```
-    /// use plat_smt::Approx;
-    /// use plat_smt::euf::Euf;
-    /// use plat_smt::Solver;
-    /// use plat_smt::SolveResult;
-    /// let mut s = Solver::<Euf>::default();
-    /// let a = s.fresh_bool();
-    /// let b = s.fresh_bool();
-    /// let ab = s.collapse_bool_approx(a | b, Approx::Approx(false));
-    /// s.assert(!a);
-    /// s.assert(!b);
-    /// s.assert(ab);
-    /// assert!(matches!(s.check_sat(), SolveResult::Unsat))
-    /// ```
-    pub fn collapse_bool_approx<const IS_AND: bool>(
-        &mut self,
-        j: Junction<IS_AND>,
-        approx: Approx,
-    ) -> BoolExp {
+    pub fn assert_eq<M, MEq, T>(&mut self, t: T, target: T::Out) -> Result<(), (Sort, Sort)>
+    where
+        T: CollapseOut,
+        Euf: TopLevelCollapse<T, M> + TopLevelCollapse<Eq<T::Out>, MEq>,
+    {
+        let p: T::Out = Collapse::<T, TheoryArg<Euf::LevelMarker>, M>::placeholder(&*self.euf, &t);
+        if p.sort() != target.sort() {
+            return Err((p.sort(), target.sort()));
+        }
         self.open(
-            |_, acts| acts.collapse_bool_approx(j, approx),
-            BoolExp::TRUE,
-        )
-    }
-
-    pub fn assert_junction_eq<const IS_AND: bool>(&mut self, j: Junction<IS_AND>, target: BoolExp) {
-        self.open(|_, acts| acts.assert_junction_eq(j, target), ())
-    }
-
-    /// Returns an empty [`Conjunction`] or [`Disjunction`]  which reuses memory from the last call
-    /// to [`collapse_bool`](Self::collapse_bool)
-    pub fn new_junction<const IS_AND: bool>(&mut self) -> Junction<IS_AND> {
-        self.euf.new_junction()
-    }
-
-    pub fn xor(&mut self, b1: BoolExp, b2: BoolExp) -> BoolExp {
-        self.xor_approx(b1, b2, Approx::Exact)
-    }
-
-    pub fn xor_approx(&mut self, b1: BoolExp, b2: BoolExp, approx: Approx) -> BoolExp {
-        self.open(|_, acts| acts.xor_approx(b1, b2, approx), BoolExp::TRUE)
-    }
-
-    pub fn assert_xor_eq(&mut self, b1: BoolExp, b2: BoolExp, target: BoolExp) {
-        self.open(|_, acts| acts.assert_xor_eq(b1, b2, target), ())
-    }
-
-    /// Produce a boolean expression representing the equality of the two expressions
-    ///
-    /// If the two expressions have different sorts returns an error containing both sorts
-    pub fn eq(&mut self, exp1: Exp<Euf::UExp>, exp2: Exp<Euf::UExp>) -> BoolExp {
-        self.eq_approx(exp1, exp2, Approx::Exact)
-    }
-
-    pub fn eq_approx(
-        &mut self,
-        exp1: Exp<Euf::UExp>,
-        exp2: Exp<Euf::UExp>,
-        approx: Approx,
-    ) -> BoolExp {
-        self.open(
-            |euf, acts| euf.eq_approx(exp1, exp2, approx, acts),
-            BoolExp::TRUE,
-        )
-    }
-
-    /// Equivalent to `self.`[`assert`](Self::assert)`(self.`[`eq`](Self::eq)`(exp1, exp2)?)` but
-    /// more efficient
-    pub fn assert_eq(&mut self, exp1: Exp<Euf::UExp>, exp2: Exp<Euf::UExp>) {
-        let c1 = self.canonize(exp1);
-        let c2 = self.canonize(exp2);
-        self.open(|euf, acts| euf.assert_eq(c1, c2, acts), ());
-        self.simplify();
-    }
-
-    /// Assert that no pair of expressions in `exps` are equal to each other
-    ///
-    /// Requires all expressions in `exps` have the same sort
-    pub fn assert_distinct_eq(&mut self, exps: &[Exp<Euf::UExp>], target: BoolExp) {
-        self.open(|euf, acts| euf.assert_distinct_eq(exps, target, acts), ());
-        self.simplify()
-    }
-
-    /// Create a [`BoolExp`] representing that all in `exps` are equal to each other
-    ///
-    /// Requires all expressions in `exps` have the same sort
-    pub fn distinct_approx(&mut self, exps: &[Exp<Euf::UExp>], approx: Approx) -> BoolExp {
-        self.open(
-            |euf, acts| euf.distinct_approx(exps, approx, acts),
-            BoolExp::TRUE,
-        )
+            |euf, acts| {
+                let res = euf.collapse(t, acts, ExprContext::AssertEq(target));
+                if res != target {
+                    let b = euf.collapse(
+                        Eq::new_unchecked(res, target),
+                        acts,
+                        ExprContext::AssertEq(BoolExp::TRUE),
+                    );
+                    acts.assert(b);
+                }
+            },
+            (),
+        );
+        Ok(())
     }
 
     pub fn intern(&self) -> &InternInfo {
@@ -284,117 +196,16 @@ impl<Euf: EufT> Solver<Euf> {
         self.euf.intern_mut()
     }
 
-    /// Equivalent to `self.`[`assert`](Self::assert_eq)`(self.`[`sorted_fn`](Self::sorted_fn)`(f, children, exp.sort()), exp)`
-    /// but more efficient
-    pub fn assert_fn_eq(
-        &mut self,
-        f: Symbol,
-        children: impl IntoIterator<Item = Exp<Euf::UExp>>,
-        exp: Exp<Euf::UExp>,
-    ) -> Result<(), Euf::Unsupported> {
-        self.open(
-            |euf, acts| euf.assert_fn_eq(f, children.into_iter(), exp, acts),
-            Ok(()),
-        )?;
-        self.simplify();
-        Ok(())
-    }
-
-    /// Equivalent to `self.`[`assert`](Self::assert)`(self.`[`bool_fn`](Self::bool_fn)`(f, children) ^ negate)`
-    /// but more efficient
-    pub fn assert_bool_fn(
-        &mut self,
-        f: Symbol,
-        children: impl IntoIterator<Item = Exp<Euf::UExp>>,
-        negate: bool,
-    ) -> Result<(), Euf::Unsupported> {
-        self.assert_fn_eq(f, children, BoolExp::from_bool(!negate).into())
-    }
-
-    /// Produce an expression representing that is equivalent to `t` if `i` is true or `e` otherwise
-    ///
-    /// Requires `t` and `e` have the same sorts
-    pub fn ite_approx(
-        &mut self,
-        i: BoolExp,
-        t: Exp<Euf::UExp>,
-        e: Exp<Euf::UExp>,
-        approx: Approx,
-    ) -> Result<Exp<Euf::UExp>, Euf::Unsupported> {
-        let i = self.canonize(i);
-        self.open(
-            |euf, acts| euf.ite_approx(i, t, e, approx, acts),
-            Ok(Euf::placeholder_exp_from_sort(t.sort())),
-        )
-    }
-
-    /// Produce an expression representing that is equivalent to `t` if `i` is true or `e` otherwise
-    ///
-    /// Requires `t` and `e` have the same sorts
-    pub fn ite(
-        &mut self,
-        i: BoolExp,
-        t: Exp<Euf::UExp>,
-        e: Exp<Euf::UExp>,
-    ) -> Result<Exp<Euf::UExp>, Euf::Unsupported> {
-        self.ite_approx(i, t, e, Approx::Exact)
-    }
-
-    /// Equivalent to `self.`[`assert_eq`](Self::assert_eq)`(self.`[`ite`](Self::ite)`(i, t, e)?, target)`
-    /// but possibly more efficient
-    pub fn assert_ite_eq(
-        &mut self,
-        i: BoolExp,
-        t: Exp<Euf::UExp>,
-        e: Exp<Euf::UExp>,
-        target: Exp<Euf::UExp>,
-    ) -> Result<(), Euf::Unsupported> {
-        self.open(|euf, acts| euf.assert_ite_eq(i, t, e, target, acts), Ok(()))
-    }
-
-    /// Creates a function call expression with a given name and children and return sort
-    ///
-    /// [`Id`]s for the children can be created with [`id`](Solver::id)
-    ///
-    /// This method does not check sorts of the children so callers need to ensure that functions
-    /// call expressions with the same name but different return sorts do not become congruently
-    /// equal (This would cause a panic when it happens)
-    pub fn sorted_fn(
-        &mut self,
-        fn_name: Symbol,
-        children: impl IntoIterator<Item = Exp<Euf::UExp>>,
-        sort: Sort,
-    ) -> Result<Exp<Euf::UExp>, Euf::Unsupported> {
-        self.open(
-            |euf, acts| euf.sorted_fn(fn_name, children.into_iter(), sort, acts),
-            Ok(Euf::placeholder_exp_from_sort(sort)),
-        )
-    }
-
-    /// Similar to calling [`sorted_fn`](Solver::sorted_fn) with the boolean sort, but returns
-    /// a [`BoolExp`] instead of an [`Exp`]
-    pub fn bool_fn(
-        &mut self,
-        fn_name: Symbol,
-        children: impl IntoIterator<Item = Exp<Euf::UExp>>,
-    ) -> Result<BoolExp, Euf::Unsupported> {
-        Ok(self
-            .sorted_fn(fn_name, children, BOOL_SORT)?
-            .as_bool()
-            .unwrap())
-    }
-
     /// Assert that `b` is true
     pub fn assert(&mut self, b: BoolExp) {
         if !self.is_ok() {
             return;
         }
         debug!("assert {b}");
-        match self.canonize(b).to_lit() {
+        match SolverCollapse::collapse(self, b).to_lit() {
             Err(true) => {}
             Ok(l) => {
                 self.sat.add_clause_unchecked([l]);
-                self.simplify();
             }
             Err(false) => {
                 self.sat.add_clause_unchecked([]);
@@ -470,19 +281,19 @@ impl<Euf: EufT> Solver<Euf> {
         BOOL_SORT
     }
 
-    /// Simplifies `t` based on the current assertions
-    pub fn canonize<T: ExpLike<Euf>>(&self, t: T) -> T {
-        if !self.is_ok() {
-            return t;
-        }
-        let res = t.canonize(self);
-        debug!(
-            "{} canonized to {}",
-            t.with_intern(self.intern()),
-            res.with_intern(self.intern())
-        );
-        res
-    }
+    // /// Simplifies `t` based on the current assertions
+    // pub fn canonize<T: ExpLike<Euf>>(&self, t: T) -> T {
+    //     if !self.is_ok() {
+    //         return t;
+    //     }
+    //     let res = t.canonize(self);
+    //     debug!(
+    //         "{} canonized to {}",
+    //         t.with_intern(self.intern()),
+    //         res.with_intern(self.intern())
+    //     );
+    //     res
+    // }
 
     pub(crate) fn last_unsat_core(&mut self) -> impl InternalIterator<Item = Lit> + '_ {
         self.sat.unsat_core(&mut self.euf)
@@ -506,25 +317,34 @@ impl<Euf: EufT> Solver<Euf> {
     }
 }
 
+/// Marker of the state of a [`Solver`] which can be created by [`Solver::create_level`] and later
+/// used by [`Solver::pop_to_level`]
 #[derive(Clone)]
 pub struct LevelMarker<M> {
     sat: platsat::core::CheckPoint,
     euf: Option<M>,
 }
 
-impl<Euf: EufT> Solver<Euf> {
-    pub fn create_level(&self) -> LevelMarker<Euf::LevelMarker> {
+impl<Euf: FullTheory> Solver<Euf> {
+    /// Creates a [`LevelMarker`] which can later be used with [`pop_to_level`](Self::pop_to_level)
+    /// to reset the solver to the state it has now
+    ///
+    /// This also calls [`simplify`](Self::simplify) to simplify the state of the solver
+    pub fn create_level(&mut self) -> LevelMarker<Euf::LevelMarker> {
+        self.simplify();
+        trace!("Push sat model: {:?}", self.sat.raw_model());
         LevelMarker {
             sat: self.sat.checkpoint(),
-            euf: self.is_ok().then(|| self.euf.deref().create_level()),
+            euf: self.is_ok().then(|| self.euf.create_level()),
         }
     }
 
-    pub fn pop_to_level(&mut self, maker: LevelMarker<Euf::LevelMarker>) {
-        self.euf.restore_trail_len(maker.sat.trail_len());
-        self.sat.restore_checkpoint(maker.sat);
-        trace!("Sat model: {:?}", self.sat.raw_model());
-        if let Some(x) = maker.euf {
+    /// Resets the solver to the state it had when `marker` was created by [`create_level`](Self::create_level)
+    pub fn pop_to_level(&mut self, marker: LevelMarker<Euf::LevelMarker>) {
+        self.euf.restore_trail_len(marker.sat.trail_len());
+        self.sat.restore_checkpoint(marker.sat);
+        trace!("Pop sat model: {:?}", self.sat.raw_model());
+        if let Some(x) = marker.euf {
             self.euf.pop_to_level(x, true);
         }
     }

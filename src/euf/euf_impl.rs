@@ -1,14 +1,20 @@
-use super::egraph::Children;
-use super::euf::{litvec, BoolClass, EClass, Euf, FunctionInfoIter, PushInfo};
-use super::euf_trait::EufT;
+use super::egraph::{children, Children, Op, EQ_OP};
+use super::euf::{litvec, BoolClass, EClass, Euf, Exp, FunctionInfoIter, PushInfo};
 use super::explain::Justification;
+use crate::collapse::{Collapse, CollapseOut, ExprContext};
+use crate::core_ops::{CoreOpsPf, Distinct, Eq, Ite};
+use crate::exp::Fresh;
+use crate::full_theory::FullTheory;
 use crate::intern::{DisplayInterned, InternInfo, Symbol, BOOL_SORT};
-use crate::solver::ExpLike;
+use crate::outer_solver::Bound;
+use crate::parser_fragment::{index_iter, ParserFragment, PfExprContext, PfResult};
+use crate::solver::{SolverCollapse, SolverWithBound};
 use crate::theory::TheoryArg;
-use crate::util::{format_args2, pairwise_sym};
-use crate::{Approx, BoolExp, Conjunction, Exp, HasSort, Solver, Sort};
+use crate::util::{format_args2, pairwise_sym, HashMap};
+use crate::{AddSexpError, BoolExp, Conjunction, HasSort, Solver, Sort, SubExp, SuperExp};
 use alloc::borrow::Cow;
 use core::fmt::Formatter;
+use log::debug;
 use plat_egg::raw::Language;
 use plat_egg::Id;
 use platsat::Lit;
@@ -18,6 +24,10 @@ use std::mem;
 pub struct UExp {
     pub(super) id: Id,
     pub(super) sort: Sort,
+}
+
+impl CollapseOut for UExp {
+    type Out = UExp;
 }
 
 impl UExp {
@@ -47,11 +57,8 @@ impl HasSort for UExp {
     fn sort(self) -> Sort {
         self.sort
     }
-}
-
-impl From<UExp> for Exp<UExp> {
-    fn from(value: UExp) -> Self {
-        Exp::Other(value)
+    fn can_have_sort(s: Sort) -> bool {
+        s != BOOL_SORT
     }
 }
 
@@ -63,27 +70,97 @@ impl Into<Cow<'static, str>> for Never {
         match self {}
     }
 }
-type Result<T> = core::result::Result<T, Never>;
 
-impl EufT for Euf {
-    type UExp = UExp;
-    type Unsupported = Never;
-
-    fn eq_approx(
-        &mut self,
-        e1: Exp<UExp>,
-        e2: Exp<UExp>,
-        _: Approx,
-        acts: &mut TheoryArg<PushInfo>,
-    ) -> BoolExp {
-        let id1 = self.id_for_exp(e1, acts);
-        let id2 = self.id_for_exp(e2, acts);
-        self.add_eq_node(id1, id2, acts)
+impl FullTheory for Euf {
+    type Exp = Exp;
+    fn init_function_info(&mut self) {
+        self.init_function_info()
     }
 
-    fn assert_eq(&mut self, e1: Exp<UExp>, e2: Exp<UExp>, acts: &mut TheoryArg<PushInfo>) -> () {
+    type FunctionInfo<'a>
+        = FunctionInfoIter<'a>
+    where
+        Self: 'a;
+
+    fn get_function_info(&self, f: Symbol) -> FunctionInfoIter<'_> {
+        self.get_function_info(f)
+    }
+}
+
+impl Euf {
+    fn sorted_fn_id(
+        &mut self,
+        f: Op,
+        children: Children,
+        target_sort: Sort,
+        ctx: ExprContext<Exp>,
+        acts: &mut TheoryArg<PushInfo>,
+    ) -> (Id, Exp, bool) {
+        let mut added = false;
+        let id = self.egraph.add(f.into(), children, |id| {
+            added = true;
+            debug!("adding for id {id} in {ctx:?}");
+            if target_sort == BOOL_SORT {
+                let lits = if let ExprContext::AssertEq(_) = ctx {
+                    litvec![]
+                } else {
+                    let l = Lit::new(acts.new_var_default(), true);
+                    self.lit.add_id_to_lit(id, l);
+                    litvec![l]
+                };
+
+                EClass::Bool(BoolClass::Unknown(lits))
+            } else {
+                EClass::Uninterpreted(target_sort)
+            }
+        });
+
+        if let ExprContext::AssertEq(exp) = ctx {
+            if exp.sort() == target_sort {
+                self.union_exp(exp, id, acts);
+                return (id, exp, added);
+            }
+        }
+        let intern = acts.intern();
+        let exp = self.id_to_exp(id);
+        if exp.sort() != target_sort {
+            panic!(
+                "trying to create function {}{:?} with sort {}, but it already has sort {}",
+                f.sym().with_intern(intern),
+                self.egraph.id_to_node(id).children(),
+                target_sort.with_intern(intern),
+                exp.sort().with_intern(intern)
+            )
+        };
+        (id, exp, added)
+    }
+
+    pub(super) fn add_eq_node(
+        &mut self,
+        id1: Id,
+        id2: Id,
+        ctx: ExprContext<BoolExp>,
+        acts: &mut TheoryArg<PushInfo>,
+    ) -> BoolExp {
+        let cid1 = self.find(id1);
+        let cid2 = self.find(id2);
+        if cid1 == cid2 {
+            return acts.collapse_const(true, ctx);
+        }
+        let (_, exp, added) =
+            self.sorted_fn_id(EQ_OP, children![cid1, cid2], BOOL_SORT, ctx.upcast(), acts);
+        let exp: BoolExp = exp.downcast().unwrap();
+        if added {
+            if let Ok(l) = exp.to_lit() {
+                self.finish_eq_node(l, cid1, cid2, acts);
+            }
+        }
+        exp
+    }
+
+    fn assert_eq(&mut self, e1: Exp, e2: Exp, acts: &mut TheoryArg<PushInfo>) -> () {
         match (e1, e2) {
-            (Exp::Bool(b1), Exp::Bool(b2)) => match (b1.to_lit(), b2.to_lit()) {
+            (Exp::Left(b1), Exp::Left(b2)) => match (b1.to_lit(), b2.to_lit()) {
                 (Err(pol), Ok(l)) | (Ok(l), Err(pol)) => {
                     acts.propagate(l ^ !pol);
                 }
@@ -98,252 +175,35 @@ impl EufT for Euf {
                     let _ = self.union(acts, id1, id2, Justification::NOOP);
                 }
             },
-            (Exp::Other(u1), Exp::Other(u2)) => {
+            (Exp::Right(u1), Exp::Right(u2)) => {
                 let _ = self.union(acts, u1.id, u2.id, Justification::NOOP);
             }
             _ => unreachable!(),
         }
     }
 
-    fn distinct_approx(
+    fn collapse_exp(
         &mut self,
-        exps: &[Exp<Self::UExp>],
-        approx: Approx,
-        acts: &mut TheoryArg<Self::LevelMarker>,
-    ) -> BoolExp {
-        if approx != Approx::Approx(false) {
-            let mut c: Conjunction = acts.new_junction();
-            c.extend(
-                pairwise_sym(exps).map(|(e1, e2)| !self.eq_approx(*e1, *e2, Approx::Exact, acts)),
-            );
-            return acts.collapse_bool_approx(c, approx);
+        e: Exp,
+        ctx: ExprContext<Exp>,
+        acts: &mut TheoryArg<PushInfo>,
+    ) -> Exp {
+        if let ExprContext::AssertEq(target) = ctx {
+            self.assert_eq(target, e, acts);
+            target
+        } else {
+            e
         }
-
-        let Some(e0) = exps.first() else {
-            return BoolExp::TRUE;
-        };
-
-        let Exp::Other(_) = e0 else {
-            let b0 = e0.as_bool().unwrap();
-            let mut bools = exps[1..].iter().map(|exp| exp.as_bool().unwrap());
-            let Some(b1) = bools.next() else {
-                return BoolExp::TRUE;
-            };
-            return if let Some(_) = bools.next() {
-                BoolExp::FALSE
-            } else {
-                acts.xor_approx(b0, b1, approx)
-            };
-        };
-
-        let distinct_sym = acts.intern_mut().symbols.gen_sym("distinct");
-        self.distinct_gensym += 1;
-        let b = BoolExp::unknown(Lit::new(acts.new_var_default(), true));
-        for exp in exps {
-            let id = self.id_for_exp(*exp, acts);
-            let mut added = false;
-            self.egraph
-                .add(distinct_sym.into(), Children::from_slice(&[id]), |_| {
-                    added = true;
-                    EClass::Singleton(!b)
-                });
-            if !added {
-                return BoolExp::FALSE;
-            }
-        }
-        b
-    }
-
-    fn assert_distinct_eq(
-        &mut self,
-        exps: &[Exp<UExp>],
-        target: BoolExp,
-        acts: &mut TheoryArg<PushInfo>,
-    ) {
-        if target != BoolExp::TRUE {
-            let mut c: Conjunction = acts.new_junction();
-            c.extend(
-                pairwise_sym(exps).map(|(e1, e2)| !self.eq_approx(*e1, *e2, Approx::Exact, acts)),
-            );
-            acts.assert_junction_eq(c, target);
-            return;
-        }
-
-        let Some(e0) = exps.first() else { return };
-
-        let Exp::Other(_) = e0 else {
-            let b0 = e0.as_bool().unwrap();
-            let mut bools = exps[1..].iter().map(|exp| exp.as_bool().unwrap());
-            let Some(b1) = bools.next() else {
-                return;
-            };
-            if let Some(_) = bools.next() {
-                acts.add_clause_unchecked([]);
-            } else {
-                acts.assert_xor_eq(b0, b1, BoolExp::TRUE);
-            }
-            return;
-        };
-
-        let distinct_sym = acts.intern_mut().symbols.gen_sym("distinct");
-        self.distinct_gensym += 1;
-        for exp in exps {
-            let id = self.id_for_exp(*exp, acts);
-            let mut added = false;
-            self.egraph
-                .add(distinct_sym.into(), Children::from_slice(&[id]), |_| {
-                    added = true;
-                    EClass::Singleton(BoolExp::FALSE)
-                });
-            if !added {
-                acts.raise_conflict(&[], false);
-                return;
-            }
-        }
-    }
-
-    fn sorted_fn(
-        &mut self,
-        f: Symbol,
-        children: impl Iterator<Item = Exp<UExp>>,
-        target_sort: Sort,
-        acts: &mut TheoryArg<PushInfo>,
-    ) -> Result<Exp<UExp>> {
-        Ok(self.sorted_fn_id(f, children, target_sort, acts)?.1)
-    }
-
-    fn assert_fn_eq(
-        &mut self,
-        f: Symbol,
-        children: impl Iterator<Item = Exp<UExp>>,
-        exp: Exp<UExp>,
-        acts: &mut TheoryArg<PushInfo>,
-    ) -> Result<()> {
-        self.assert_fn_eq_id(f, children, exp, acts)?;
-        Ok(())
-    }
-    fn ite_approx(
-        &mut self,
-        i: BoolExp,
-        t: Exp<UExp>,
-        e: Exp<UExp>,
-        _: Approx,
-        acts: &mut TheoryArg<PushInfo>,
-    ) -> Result<Exp<UExp>> {
-        let res = match i.to_lit() {
-            Err(true) => t,
-            Err(false) => e,
-            Ok(ilit) => {
-                if t == e {
-                    t
-                } else {
-                    let tid = self.id_for_exp(t, acts);
-                    let eid = self.id_for_exp(e, acts);
-                    self.raw_ite(ilit, tid, eid, t.sort(), acts)
-                }
-            }
-        };
-        Ok(res)
-    }
-
-    fn assert_ite_eq(
-        &mut self,
-        i: BoolExp,
-        t: Exp<UExp>,
-        e: Exp<UExp>,
-        target: Exp<UExp>,
-        acts: &mut TheoryArg<PushInfo>,
-    ) -> Result<()> {
-        match i.to_lit() {
-            Err(true) => self.assert_eq(t, target, acts),
-            Err(false) => self.assert_eq(e, target, acts),
-            Ok(ilit) => {
-                if t == e {
-                    self.assert_eq(t, target, acts)
-                } else {
-                    let tid = self.id_for_exp(t, acts);
-                    let eid = self.id_for_exp(e, acts);
-                    self.raw_ite_eq(ilit, tid, eid, target, acts);
-                }
-            }
-        }
-        Ok(())
-    }
-
-    fn placeholder_uexp_from_sort(sort: Sort) -> Self::UExp {
-        UExp { id: Id::MAX, sort }
-    }
-
-    fn init_function_info(&mut self) {
-        self.init_function_info()
-    }
-
-    type FunctionInfo<'a> = FunctionInfoIter<'a> where Self: 'a ;
-
-    fn get_function_info(&self, f: Symbol) -> FunctionInfoIter<'_> {
-        self.get_function_info(f)
-    }
-}
-
-impl Euf {
-    fn sorted_fn_id(
-        &mut self,
-        f: Symbol,
-        children: impl Iterator<Item = Exp<UExp>>,
-        target_sort: Sort,
-        acts: &mut TheoryArg<PushInfo>,
-    ) -> Result<(Id, Exp<UExp>)> {
-        let children = self.resolve_children(children, acts);
-        let id = self.egraph.add(f.into(), children, |id| {
-            if target_sort == BOOL_SORT {
-                let l = Lit::new(acts.new_var_default(), true);
-                self.lit.add_id_to_lit(id, l);
-                EClass::Bool(BoolClass::Unknown(litvec![l]))
-            } else {
-                EClass::Uninterpreted(target_sort)
-            }
-        });
-        let intern = acts.intern();
-        let exp = self.id_to_exp(id);
-        if exp.sort() != target_sort {
-            panic!(
-                "trying to create function {}{:?} with sort {}, but it already has sort {}",
-                f.with_intern(intern),
-                self.egraph.id_to_node(id).children(),
-                target_sort.with_intern(intern),
-                exp.sort().with_intern(intern)
-            )
-        };
-        Ok((id, exp))
-    }
-
-    fn assert_fn_eq_id(
-        &mut self,
-        f: Symbol,
-        children: impl Iterator<Item = Exp<UExp>>,
-        exp: Exp<UExp>,
-        acts: &mut TheoryArg<PushInfo>,
-    ) -> Result<Id> {
-        let children = self.resolve_children(children, acts);
-        let id = self.egraph.add(f.into(), children, |_| {
-            if exp.sort() == BOOL_SORT {
-                EClass::Bool(BoolClass::Unknown(litvec![]))
-            } else {
-                EClass::Uninterpreted(exp.sort())
-            }
-        });
-        self.union_exp(exp, id, acts);
-        Ok(id)
     }
 
     fn bind_ite(&mut self, i: Lit, t: Id, e: Id, target: Id, acts: &mut TheoryArg<PushInfo>) {
-        let eqt = self.add_eq_node(target, t, acts);
+        let eqt = self.add_eq_node(target, t, ExprContext::Exact, acts);
         match eqt.to_lit() {
             Ok(l) => acts.add_theory_lemma(&[!i, l]),
             Err(true) => {}
             Err(false) => acts.add_theory_lemma(&[!i]),
         }
-        let eqe = self.add_eq_node(target, e, acts);
+        let eqe = self.add_eq_node(target, e, ExprContext::Exact, acts);
         match eqe.to_lit() {
             Ok(l) => acts.add_theory_lemma(&[i, l]),
             Err(true) => {}
@@ -356,57 +216,262 @@ impl Euf {
         t: Id,
         e: Id,
         s: Sort,
+        ctx: ExprContext<Exp>,
         acts: &mut TheoryArg<PushInfo>,
-    ) -> Exp<UExp> {
+    ) -> Exp {
         let mut ifs = mem::take(&mut self.ifs);
-        let id = ifs.get_or_insert((i, t, e), || {
-            let sym = acts
-                .intern_mut()
-                .symbols
-                .gen_sym(&format_args2!("if|{i:?}|id{t}|id{e}"));
-            let (fresh_id, _) = self.sorted_fn_id(sym, [].into_iter(), s, acts).unwrap();
-            self.bind_ite(i, t, e, fresh_id, acts);
-            fresh_id
-        });
-        self.ifs = ifs;
-        self.id_to_exp(id)
-    }
-
-    fn raw_ite_eq(
-        &mut self,
-        i: Lit,
-        t: Id,
-        e: Id,
-        target: Exp<UExp>,
-        acts: &mut TheoryArg<PushInfo>,
-    ) -> Exp<UExp> {
         let mut added = false;
-        let mut ifs = mem::take(&mut self.ifs);
         let id = ifs.get_or_insert((i, t, e), || {
             added = true;
             let sym = acts
                 .intern_mut()
                 .symbols
                 .gen_sym(&format_args2!("if|{i:?}|id{t}|id{e}"));
-            let fresh_id = self
-                .assert_fn_eq_id(sym, [].into_iter(), target, acts)
-                .unwrap();
+            let (fresh_id, _, _) = self.sorted_fn_id(sym.into(), children![], s, ctx, acts);
             self.bind_ite(i, t, e, fresh_id, acts);
             fresh_id
         });
         self.ifs = ifs;
-        if !added {
-            self.union_exp(target, id, acts)
-        }
         self.id_to_exp(id)
     }
 }
 
-impl ExpLike<Euf> for UExp {
-    fn canonize(self, solver: &Solver<Euf>) -> Self {
-        UExp {
-            id: solver.theory().find(self.id),
-            sort: self.sort,
+pub struct EufMarker;
+
+impl<'a, Arg> Collapse<UExp, Arg, EufMarker> for Euf {
+    fn collapse(&mut self, t: UExp, _: &mut Arg, _: ExprContext<UExp>) -> UExp {
+        UExp::new(self.find(t.id), t.sort)
+    }
+
+    fn placeholder(&self, t: &UExp) -> UExp {
+        *t
+    }
+}
+
+impl<'a, Arg> Collapse<Fresh<UExp>, Arg, EufMarker> for Euf {
+    fn collapse(&mut self, fresh: Fresh<UExp>, _: &mut Arg, _: ExprContext<UExp>) -> UExp {
+        let id = self.egraph.add(fresh.name.into(), Children::new(), |_| {
+            EClass::Uninterpreted(fresh.sort)
+        });
+        UExp::new(id, fresh.sort)
+    }
+
+    fn placeholder(&self, fresh: &Fresh<UExp>) -> UExp {
+        UExp::new(Id::MAX, fresh.sort)
+    }
+}
+
+impl<'a, 'b> Collapse<Distinct<'b, Exp>, TheoryArg<'a, PushInfo>, EufMarker> for Euf {
+    fn collapse(
+        &mut self,
+        Distinct(exps): Distinct<Exp>,
+        acts: &mut TheoryArg<'a, PushInfo>,
+        ctx: ExprContext<BoolExp>,
+    ) -> BoolExp {
+        if ctx != ExprContext::Approx(false) && ctx != ExprContext::AssertEq(BoolExp::TRUE) {
+            let mut c: Conjunction = acts.new_junction();
+            c.extend(
+                pairwise_sym(exps)
+                    .map(|(e1, e2)| !self.collapse(Eq(*e1, *e2), acts, ExprContext::Exact)),
+            );
+            return acts.collapse_bool(c, ctx);
+        }
+
+        let Some(e0) = exps.first() else {
+            return acts.collapse_const(true, ctx);
+        };
+
+        let Exp::Right(_) = e0 else {
+            let b0 = e0.downcast().unwrap();
+            let mut bools = exps[1..].iter().map(|exp| exp.downcast().unwrap());
+            let Some(b1) = bools.next() else {
+                return acts.collapse_const(true, ctx);
+            };
+            return if let Some(_) = bools.next() {
+                return acts.collapse_const(false, ctx);
+            } else {
+                acts.xor(b0, b1, ctx)
+            };
+        };
+
+        let distinct_sym = acts.intern_mut().symbols.gen_sym("distinct");
+        self.distinct_gensym += 1;
+        let b = if ctx == ExprContext::AssertEq(BoolExp::TRUE) {
+            BoolExp::TRUE
+        } else {
+            BoolExp::unknown(Lit::new(acts.new_var_default(), true))
+        };
+        for exp in exps {
+            let id = self.id_for_exp(*exp, acts);
+            let mut added = false;
+            self.egraph
+                .add(distinct_sym.into(), Children::from_slice(&[id]), |_| {
+                    added = true;
+                    EClass::Singleton(!b)
+                });
+            if !added {
+                return acts.collapse_const(false, ctx);
+            }
+        }
+        b
+    }
+
+    fn placeholder(&self, _: &Distinct<Exp>) -> BoolExp {
+        BoolExp::TRUE
+    }
+}
+
+impl<'a> Collapse<Eq<Exp>, TheoryArg<'a, PushInfo>, EufMarker> for Euf {
+    fn collapse(
+        &mut self,
+        Eq(e1, e2): Eq<Exp>,
+        acts: &mut TheoryArg<'a, PushInfo>,
+        ctx: ExprContext<BoolExp>,
+    ) -> BoolExp {
+        if e1 == e2 {
+            BoolExp::TRUE
+        } else if e1
+            .downcast()
+            .is_some_and(|b1: BoolExp| e2.downcast() == Some(!b1))
+        {
+            BoolExp::FALSE
+        } else if ctx == ExprContext::AssertEq(BoolExp::TRUE) {
+            self.assert_eq(e1, e2, acts);
+            BoolExp::TRUE
+        } else {
+            let id1 = self.id_for_exp(e1, acts);
+            let id2 = self.id_for_exp(e2, acts);
+            self.add_eq_node(id1, id2, ctx, acts)
+        }
+    }
+
+    fn placeholder(&self, _: &Eq<Exp>) -> BoolExp {
+        BoolExp::TRUE
+    }
+}
+
+impl<'a> Collapse<Ite<Exp>, TheoryArg<'a, PushInfo>, EufMarker> for Euf {
+    fn collapse(
+        &mut self,
+        Ite(i, t, e): Ite<Exp>,
+        acts: &mut TheoryArg<'a, PushInfo>,
+        ctx: ExprContext<Exp>,
+    ) -> Exp {
+        // TODO CANONIZE t and e?
+        match acts.canonize(i).to_lit() {
+            Err(true) => self.collapse_exp(t, ctx, acts),
+            Err(false) => self.collapse_exp(e, ctx, acts),
+            Ok(ilit) => {
+                if t == e {
+                    self.collapse_exp(t, ctx, acts)
+                } else {
+                    let tid = self.id_for_exp(t, acts);
+                    let eid = self.id_for_exp(e, acts);
+                    self.raw_ite(ilit, tid, eid, t.sort(), ctx, acts)
+                }
+            }
+        }
+    }
+
+    fn placeholder(&self, &Ite(_, t, _): &Ite<Exp>) -> Exp {
+        t
+    }
+}
+
+pub struct UFn<I: Iterator>(Symbol, I, Sort);
+
+impl<'a, I: Iterator> UFn<I> {
+    pub fn new_unchecked(f: Symbol, children: I, sort: Sort) -> Self {
+        UFn(f, children, sort)
+    }
+}
+
+impl<I: Iterator<Item = Exp>> CollapseOut for UFn<I> {
+    type Out = Exp;
+}
+
+impl<'a, I: Iterator<Item = Exp>> Collapse<UFn<I>, TheoryArg<'a, PushInfo>, EufMarker> for Euf {
+    fn collapse(
+        &mut self,
+        UFn(f, children, sort): UFn<I>,
+        acts: &mut TheoryArg<'a, PushInfo>,
+        ctx: ExprContext<Exp>,
+    ) -> Exp {
+        let children = self.resolve_children(children, acts);
+        self.sorted_fn_id(f.into(), children, sort, ctx, acts).1
+    }
+
+    fn placeholder(&self, &UFn(_, _, sort): &UFn<I>) -> Exp {
+        if sort == BOOL_SORT {
+            BoolExp::TRUE.upcast()
+        } else {
+            Exp::Right(UExp { id: Id::MAX, sort })
         }
     }
 }
+
+#[derive(Default)]
+pub struct UFnPf;
+
+impl ParserFragment<Exp, SolverWithBound<Solver<Euf>, HashMap<Symbol, Bound<Exp>>>, EufMarker>
+    for UFnPf
+{
+    fn handle_non_terminal(
+        &self,
+        f: Symbol,
+        children: &mut [Exp],
+        solver: &mut SolverWithBound<Solver<Euf>, HashMap<Symbol, Bound<Exp>>>,
+        ctx: PfExprContext<Exp>,
+    ) -> PfResult<Exp> {
+        use AddSexpError::*;
+        true.then(|| {
+            match solver.bound.get(&f) {
+                None => Err(Unbound),
+                Some(Bound::Const(c)) => {
+                    if !children.is_empty() {
+                        return Err(ExtraArgument { expected: 0 });
+                    }
+                    if let PfExprContext(ExprContext::AssertEq(mut exp), negate) = ctx {
+                        if exp.sort() == c.sort() {
+                            let mut cur = *c;
+                            let exp_b: Option<BoolExp> = exp.downcast();
+                            let cur_b: Option<BoolExp> = cur.downcast();
+                            if let (true, Some(exp_b), Some(cur_b)) = (negate, exp_b, cur_b) {
+                                exp = (!exp_b).upcast();
+                                cur = (!cur_b).upcast();
+                            }
+                            // ignore error since we will type check at a higher level
+                            let _ = solver.solver.assert_eq(exp, cur);
+                        }
+                    }
+                    Ok(*c)
+                }
+                Some(Bound::Fn(def)) => {
+                    index_iter(children)
+                        .zip(def.args())
+                        .try_for_each(|(arg, sort)| {
+                            arg.expect_sort(*sort)?;
+                            Ok::<_, AddSexpError>(())
+                        })?;
+                    if children.len() < def.args().len() {
+                        return Err(MissingArgument {
+                            actual: children.len(),
+                            expected: def.args().len(),
+                        });
+                    } else if children.len() > def.args().len() {
+                        return Err(ExtraArgument {
+                            expected: def.args().len(),
+                        });
+                    }
+                    Ok(SolverCollapse::collapse_in_ctx(
+                        &mut solver.solver,
+                        UFn(f, children.iter().copied(), def.ret()),
+                        ctx.lower(),
+                    ))
+                }
+            }
+        })
+    }
+}
+
+pub type EufPf = (CoreOpsPf, UFnPf);

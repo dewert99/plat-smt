@@ -582,7 +582,7 @@ impl<'a, R: FullBufRead> Drop for SexpParser<'a, R> {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Copy, Clone)]
 pub enum SexpTerminal<'a> {
     Keyword(&'a str),
     Symbol(&'a str),
