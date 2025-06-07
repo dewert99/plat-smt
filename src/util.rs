@@ -132,6 +132,7 @@ impl<L: InternalIterator, R: InternalIterator<Item = L::Item>> InternalIterator 
 }
 
 pub type DefaultHashBuilder = std::hash::BuildHasherDefault<rustc_hash::FxHasher>;
+pub type HashMap<K, V> = hashbrown::HashMap<K, V, DefaultHashBuilder>;
 
 pub fn powi(mut f: f64, mut exp: u32) -> f64 {
     let mut res = 1.0;

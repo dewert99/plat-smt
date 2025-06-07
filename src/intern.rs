@@ -269,6 +269,12 @@ impl<'a, X: DisplayInterned> Display for WithIntern<'a, X> {
     }
 }
 
+impl<'a, X: DisplayInterned> Debug for WithIntern<'a, X> {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        self.0.fmt(self.1, f)
+    }
+}
+
 impl DisplayInterned for Symbol {
     fn fmt(&self, i: &InternInfo, f: &mut Formatter<'_>) -> std::fmt::Result {
         f.write_str(i.symbols.resolve(*self))

@@ -3,7 +3,7 @@ unsat
 sat
 ((a (as @v3 S1))
  (b (as @v3 S1))
- (x true)
+ (x false)
  ((f a) true)
  ((f b) true))
 (
@@ -12,7 +12,7 @@ sat
  (define-fun f ((x!0 S1)) Bool
   (ite (= x!0 (as @v3 S1)) true
    false))
- (define-fun x () Bool true)
+ (define-fun x () Bool false)
 )
 sat
 (
@@ -21,10 +21,10 @@ sat
  (define-fun f ((x!0 S1)) Bool
   (ite (= x!0 (as @v3 S1)) false
    false))
- (define-fun x () Bool true)
+ (define-fun x () Bool false)
 )
 ((a (as @v3 S1))
  (b (as @v3 S1))
- (x true)
+ (x false)
  ((f a) false)
  ((f b) false))

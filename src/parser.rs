@@ -1,13 +1,13 @@
-use crate::euf::{Euf, EufT};
 use crate::full_buf_read::FullBufRead;
+use crate::full_theory::FunctionAssignmentT;
 use crate::intern::*;
-use crate::outer_solver::AddSexpError::*;
-use crate::outer_solver::{AddSexpError, Bound, BoundDefinition, FnSort, OuterSolver, StartExpCtx};
+use crate::outer_solver::{Bound, BoundDefinition, FnSort, Logic, OuterSolver, StartExpCtx};
 use crate::parser::Error::*;
 use crate::parser_core::{ParseError, SexpParser, SexpTerminal, SexpToken, SexpVisitor, SpanRange};
-use crate::solver::{SolveResult, UnsatCoreConjunction};
+use crate::solver::{SolveResult, SolverCollapse, UnsatCoreConjunction};
 use crate::util::{format_args2, parenthesized, powi, DefaultHashBuilder};
-use crate::{solver, BoolExp, Exp, HasSort};
+use crate::AddSexpError::*;
+use crate::{euf, solver, AddSexpError, BoolExp, HasSort, SubExp, SuperExp};
 use core::fmt::Arguments;
 use hashbrown::HashMap;
 use internal_iterator::InternalIterator;
@@ -338,12 +338,12 @@ struct LevelMarker<M> {
     solver: solver::LevelMarker<M>,
 }
 
-struct Parser<W: Write, Euf: EufT> {
+struct Parser<W: Write, L: Logic> {
     /// List of global variables in the order defined
     /// Used to remove global variable during `(pop)`
     global_stack: Vec<Symbol>,
     /// List of let bound variable with the old value they are shadowing
-    let_bound_stack: Vec<(Symbol, Option<Bound<Euf::UExp>>)>,
+    let_bound_stack: Vec<(Symbol, Option<Bound<L::Exp>>)>,
     /// A symbol we are currently defining (it cannot be used with :named even though it's not bound
     /// yet
     currently_defining: Option<Symbol>,
@@ -357,11 +357,11 @@ struct Parser<W: Write, Euf: EufT> {
     named_assertions: UnsatCoreConjunction<SpanRange>,
     // see above
     old_named_assertions: u32,
-    push_info: Vec<LevelMarker<Euf::LevelMarker>>,
-    core: OuterSolver<Euf>,
+    push_info: Vec<LevelMarker<L::LevelMarker>>,
+    core: OuterSolver<L>,
     writer: PrintSuccessWriter<W>,
     state: State,
-    command_level_marker: Option<solver::LevelMarker<Euf::LevelMarker>>,
+    command_level_marker: Option<solver::LevelMarker<L::LevelMarker>>,
     options: Options,
     last_status_info: Option<SolveResult>,
 }
@@ -452,18 +452,10 @@ impl<'a, 'b, R: FullBufRead> CountingParser<'a, 'b, R> {
     }
 }
 
-struct ExpVisitor<'a, W: Write, Euf: EufT>(
-    &'a mut Parser<W, Euf>,
-    StartExpCtx,
-    Option<Exp<Euf::UExp>>,
-);
+struct ExpVisitor<'a, W: Write, L: Logic>(&'a mut Parser<W, L>, StartExpCtx, Option<L::Exp>);
 
-impl<'a, W: Write, Euf: EufT> ExpVisitor<'a, W, Euf> {
-    fn parse_exp_terminal(
-        &mut self,
-        terminal: SexpTerminal,
-        ctx: StartExpCtx,
-    ) -> Result<Exp<Euf::UExp>> {
+impl<'a, W: Write, L: Logic> ExpVisitor<'a, W, L> {
+    fn parse_exp_terminal(&mut self, terminal: SexpTerminal, ctx: StartExpCtx) -> Result<L::Exp> {
         match terminal {
             SexpTerminal::Symbol(s) => {
                 let s = self.0.core.intern_mut().symbols.intern(s);
@@ -569,13 +561,13 @@ impl<'a, W: Write, Euf: EufT> ExpVisitor<'a, W, Euf> {
                 let mut exp = self.0.parse_exp(rest.next()?, StartExpCtx::Exact)?;
                 let span = self.0.parse_annot_after_exp(exp, rest)?;
                 if matches!(ctx, StartExpCtx::Assert) {
-                    match exp.as_bool() {
+                    match exp.downcast() {
                         None => return Err(AssertBool(exp.sort())),
                         Some(b) => {
                             self.0.named_assertions.extend([(b, span)]);
                             self.0.old_named_assertions = self.0.named_assertions.push();
                             // don't return exp since we don't want it to be asserted
-                            exp = BoolExp::TRUE.into()
+                            exp = BoolExp::TRUE.upcast()
                         }
                     };
                 }
@@ -588,7 +580,7 @@ impl<'a, W: Write, Euf: EufT> ExpVisitor<'a, W, Euf> {
         Ok(())
     }
 
-    fn end_exp_list(&mut self) -> Result<Exp<Euf::UExp>> {
+    fn end_exp_list(&mut self) -> Result<L::Exp> {
         if let Some(x) = self.2.take() {
             Ok(x)
         } else {
@@ -600,11 +592,11 @@ impl<'a, W: Write, Euf: EufT> ExpVisitor<'a, W, Euf> {
     }
 }
 
-impl<'a, W: Write, Euf: EufT> SexpVisitor for ExpVisitor<'a, W, Euf> {
-    type T = Exp<Euf::UExp>;
+impl<'a, W: Write, L: Logic> SexpVisitor for ExpVisitor<'a, W, L> {
+    type T = L::Exp;
     type E = Error;
 
-    fn handle_outer_terminal(&mut self, s: SexpTerminal) -> Result<Exp<Euf::UExp>> {
+    fn handle_outer_terminal(&mut self, s: SexpTerminal) -> Result<L::Exp> {
         self.parse_exp_terminal(s, self.1)
     }
 
@@ -622,7 +614,7 @@ impl<'a, W: Write, Euf: EufT> SexpVisitor for ExpVisitor<'a, W, Euf> {
         self.start_exp_list(p, StartExpCtx::Opt)
     }
 
-    fn end_outer_list(&mut self) -> Result<Exp<Euf::UExp>> {
+    fn end_outer_list(&mut self) -> Result<L::Exp> {
         self.end_exp_list()
     }
 
@@ -633,7 +625,7 @@ impl<'a, W: Write, Euf: EufT> SexpVisitor for ExpVisitor<'a, W, Euf> {
     }
 }
 
-impl<W: Write, Euf: EufT> Parser<W, Euf> {
+impl<W: Write, L: Logic> Parser<W, L> {
     fn new(writer: W) -> Self {
         let mut res = Parser {
             global_stack: Default::default(),
@@ -670,14 +662,11 @@ impl<W: Write, Euf: EufT> Parser<W, Euf> {
         &mut self,
         token: SexpToken<R>,
         context: StartExpCtx,
-    ) -> Result<Exp<Euf::UExp>> {
+    ) -> Result<L::Exp> {
         ExpVisitor(self, context, None).visit(token)
     }
 
-    fn parse_binding<R: FullBufRead>(
-        &mut self,
-        token: SexpToken<R>,
-    ) -> Result<(Symbol, Exp<Euf::UExp>)> {
+    fn parse_binding<R: FullBufRead>(&mut self, token: SexpToken<R>) -> Result<(Symbol, L::Exp)> {
         match token {
             SexpToken::List(mut l) => {
                 let sym = match l.next().ok_or(InvalidBinding)?? {
@@ -695,7 +684,7 @@ impl<W: Write, Euf: EufT> Parser<W, Euf> {
 
     fn parse_annot_after_exp<R: FullBufRead>(
         &mut self,
-        exp: Exp<Euf::UExp>,
+        exp: L::Exp,
         mut rest: CountingParser<R>,
     ) -> Result<SpanRange> {
         let SexpToken::Terminal(SexpTerminal::Keyword(k)) = rest.next()? else {
@@ -777,7 +766,7 @@ impl<W: Write, Euf: EufT> Parser<W, Euf> {
         if !matches!(self.state, State::Base) {
             self.core.solver_mut().pop_model();
             self.named_assertions.pop_to(self.old_named_assertions);
-            self.command_level_marker = Some(self.core.solver().create_level());
+            self.command_level_marker = Some(self.core.solver_mut().create_level());
             self.state = State::Base;
         }
     }
@@ -872,7 +861,7 @@ impl<W: Write, Euf: EufT> Parser<W, Euf> {
                 let values = l
                     .zip_map_full(iter::repeat(()), |x, ()| {
                         let exp = self.parse_exp(x?, StartExpCtx::Exact)?;
-                        Ok(self.core.solver().canonize(exp))
+                        Ok(self.core.solver_mut().collapse(exp))
                     })
                     .collect::<Result<Vec<_>>>()?;
                 drop(l);
@@ -901,8 +890,7 @@ impl<W: Write, Euf: EufT> Parser<W, Euf> {
                 }
                 rest.finish()?;
                 writeln!(self.writer, "(");
-                let (intern, definitions) = self.core.get_definition_values();
-                for (k, v) in definitions {
+                self.core.get_definition_values(|k, v, intern| {
                     let k_i = k.with_intern(intern);
                     match v {
                         BoundDefinition::Const(x) => {
@@ -911,6 +899,7 @@ impl<W: Write, Euf: EufT> Parser<W, Euf> {
                             writeln!(self.writer, " (define-fun {k_i} () {sort} {x})");
                         }
                         BoundDefinition::Fn(f, assignment) => {
+                            debug_assert!(!f.args().is_empty());
                             let args =
                                 f.args().iter().enumerate().map(|(i, s)| {
                                     format_args2!("(x!{i} {})", s.with_intern(intern))
@@ -918,10 +907,10 @@ impl<W: Write, Euf: EufT> Parser<W, Euf> {
                             let args = parenthesized(args, " ");
                             let ret = f.ret().with_intern(intern);
                             writeln!(self.writer, " (define-fun {k_i} {args} {ret}");
-                            write_body::<_, Euf>(&mut self.writer, assignment, k_i, ret, intern);
+                            write_body::<_, L>(&mut self.writer, assignment, k_i, ret, intern);
                         }
                     }
-                }
+                });
                 writeln!(self.writer, ")");
             }
             Smt2Command::GetInfo => {
@@ -1127,7 +1116,7 @@ impl<W: Write, Euf: EufT> Parser<W, Euf> {
                 let exp = self.parse_exp(rest.next()?, StartExpCtx::Assert)?;
                 self.core
                     .solver_mut()
-                    .assert(exp.as_bool().ok_or(AssertBool(exp.sort()))?);
+                    .assert(exp.downcast().ok_or(AssertBool(exp.sort()))?);
                 rest.finish()?;
             }
             Smt2Command::CheckSat => {
@@ -1146,12 +1135,12 @@ impl<W: Write, Euf: EufT> Parser<W, Euf> {
                 let conj = l
                     .zip_map_full(0.., |token, _| {
                         let exp = self.parse_exp(token?, StartExpCtx::Exact)?;
-                        exp.as_bool().ok_or(AssertBool(exp.sort()))
+                        exp.downcast().ok_or(AssertBool(exp.sort()))
                     })
                     .collect::<Result<Vec<_>>>()?;
                 drop(l);
                 rest.finish()?;
-                self.command_level_marker = Some(self.core.solver().create_level());
+                self.command_level_marker = Some(self.core.solver_mut().create_level());
                 self.named_assertions
                     .extend(conj.into_iter().map(|(b, s)| (b, s)));
                 let res = self
@@ -1168,7 +1157,7 @@ impl<W: Write, Euf: EufT> Parser<W, Euf> {
                         bound: self.global_stack.len() as u32,
                         sort: self.sort_stack.len() as u32,
                         named_assert: self.named_assertions.push(),
-                        solver: self.core.solver().create_level(),
+                        solver: self.core.solver_mut().create_level(),
                     };
                     debug!(
                         "Push ({} -> {})",
@@ -1224,7 +1213,7 @@ impl<W: Write, Euf: EufT> Parser<W, Euf> {
             _ => return Err(InvalidCommand),
         }
         if matches!(self.state, State::Base) {
-            self.command_level_marker = Some(self.core.solver().create_level());
+            self.command_level_marker = Some(self.core.solver_mut().create_level());
         }
         Ok(())
     }
@@ -1246,7 +1235,7 @@ impl<W: Write, Euf: EufT> Parser<W, Euf> {
         Ok(())
     }
 
-    fn insert_bound(&mut self, name: Symbol, val: Bound<Euf::UExp>) -> Result<()> {
+    fn insert_bound(&mut self, name: Symbol, val: Bound<L::Exp>) -> Result<()> {
         self.core.define(name, val).map_err(|_| Shadow(name))?;
         self.global_stack.push(name);
         Ok(())
@@ -1281,9 +1270,9 @@ impl<W: Write, Euf: EufT> Parser<W, Euf> {
     }
 }
 
-fn write_body<'a, W: Write, Euf: EufT>(
+fn write_body<'a, W: Write, L: Logic>(
     writer: &mut PrintSuccessWriter<W>,
-    assignment: Euf::FunctionInfo<'a>,
+    assignment: impl FunctionAssignmentT<L::Exp>,
     name: WithIntern<Symbol>,
     ret: WithIntern<Sort>,
     intern: &InternInfo,
@@ -1319,6 +1308,6 @@ fn write_body<'a, W: Write, Euf: EufT>(
 /// Evaluate `data`, the bytes of an `smt2` file, reporting results to `stdout` and errors to
 /// `stderr`
 pub fn interp_smt2(data: impl FullBufRead, out: impl Write, err: impl Write) {
-    let mut p = Parser::<_, Euf>::new(out);
+    let mut p = Parser::<_, (euf::Euf, euf::EufPf, _)>::new(out);
     p.interp_smt2(data, err)
 }

@@ -1,6 +1,14 @@
+use crate::collapse::{Collapse, CollapseOut, ExprContext};
+use crate::exp::Fresh;
+use crate::intern::{Symbol, AND_SYM, BOOL_SORT, IMP_SYM, NOT_SYM, OR_SYM, XOR_SYM};
 use crate::junction::Junction;
+use crate::parser_fragment::{
+    exact_args, index_iter, mandatory_args, ParserFragment, PfExprContext, PfResult,
+};
+use crate::solver::{ReuseMem, SolverCollapse};
 use crate::theory::{Incremental, TheoryArg, TheoryWrapper};
-use crate::{Approx, BLit, BoolExp};
+use crate::util::extend_result;
+use crate::{AddSexpError, BLit, BoolExp, Disjunction, ExpLike, SubExp, SuperExp};
 use alloc::vec::Vec;
 use core::cmp::Ordering;
 use log::debug;
@@ -30,6 +38,8 @@ impl<'a, L> TheoryArg<'a, L> {
         }
     }
 
+    /// Optimizes `lits` by removing duplicates
+    /// Returns `true` if lits are absorbing (eg `(and false)` `(or true)`)
     fn optimize_junction(&mut self, lits: &mut Vec<BLit>, is_and: bool) -> bool {
         lits.sort_unstable();
 
@@ -52,27 +62,53 @@ impl<'a, L> TheoryArg<'a, L> {
         false
     }
 
-    fn bind_junction(&mut self, lits: &mut Vec<BLit>, is_and: bool, approx: Approx, target: BLit) {
+    fn bind_junction(
+        &mut self,
+        lits: &mut Vec<BLit>,
+        is_and: bool,
+        ctx: ExprContext<BoolExp>,
+        target: BLit,
+    ) {
         for lit in &mut *lits {
-            if approx != Approx::Approx(is_and) {
+            if ctx != ExprContext::Approx(is_and) {
                 self.sat
                     .add_clause_unchecked([*lit ^ !is_and, target ^ is_and].iter().copied());
             }
             *lit ^= is_and;
         }
-        if approx != Approx::Approx(!is_and) {
+        if ctx != ExprContext::Approx(!is_and) {
             lits.push(target ^ !is_and);
             self.sat.add_clause_unchecked(lits.iter().copied());
         }
     }
 
+    pub fn collapse_const(&mut self, c: bool, ctx: ExprContext<BoolExp>) -> BoolExp {
+        if let ExprContext::AssertEq(b) = ctx {
+            self.assert(b ^ !c);
+            b
+        } else {
+            BoolExp::from_bool(c)
+        }
+    }
+
     #[inline]
-    fn andor_reuse(&mut self, lits: &mut Vec<BLit>, is_and: bool, approx: Approx) -> BoolExp {
-        if self.optimize_junction(lits, is_and) {
-            return BoolExp::from_bool(!is_and);
+    fn andor_reuse(
+        &mut self,
+        lits: &mut Vec<BLit>,
+        is_and: bool,
+        absorbing: bool,
+        ctx: ExprContext<BoolExp>,
+    ) -> BoolExp {
+        if absorbing || self.optimize_junction(lits, is_and) {
+            return self.collapse_const(!is_and, ctx);
         }
         if lits.is_empty() {
-            return BoolExp::from_bool(is_and);
+            return self.collapse_const(is_and, ctx);
+        }
+
+        if let ExprContext::AssertEq(b) = ctx {
+            self.assert_junction_eq_inner(lits, is_and, b);
+            return b;
         }
 
         if let [lit] = &**lits {
@@ -80,28 +116,19 @@ impl<'a, L> TheoryArg<'a, L> {
         }
         let fresh = self.new_var_default();
         let res = Lit::new(fresh, true);
-        self.bind_junction(lits, is_and, approx, res);
+        self.bind_junction(lits, is_and, ctx, res);
         BoolExp::unknown(res)
     }
 
     fn assert_junction_eq_inner(&mut self, lits: &mut Vec<BLit>, is_and: bool, target: BoolExp) {
-        if self.optimize_junction(lits, is_and) {
-            self.assert(target ^ is_and);
-            return;
-        }
-
-        if lits.is_empty() {
-            self.assert(target ^ !is_and);
-        }
-
         match self.canonize(target).to_lit() {
             Ok(target) => {
-                let mut approx = Approx::Exact;
+                let mut approx = ExprContext::Exact;
                 if let Ok(idx) = lits.binary_search_by(|lit| lit.var().cmp(&target.var())) {
                     let found = lits[idx];
                     lits.remove(idx);
                     if found == target {
-                        approx = Approx::Approx(!is_and);
+                        approx = ExprContext::Approx(!is_and);
                     } else {
                         self.sat.add_clause_unchecked([target ^ is_and]);
                         if is_and {
@@ -128,44 +155,17 @@ impl<'a, L> TheoryArg<'a, L> {
         }
     }
 
-    /// Similar to [`collapse_bool`](Self::collapse_bool), but returns a boolean that approximates `j`
-    ///
-    /// If `approx` is `None` the returned boolean exactly matches `j` (same behaviour as  [`collapse_bool`](Self::collapse_bool))
-    ///
-    /// If `approx` is `Some(false)` the returned boolean is assigned false whenever `j` is assigned to false,
-    /// and when `j` is assigned to true the returned boolean is either also true or unconstrained
-    ///
-    /// If `approx` is `Some(true)` the returned boolean is assigned true whenever `j` is assigned to true,
-    /// and when `j` is assigned to false the returned boolean is either also false or unconstrained
-    ///
-    /// ## Example
-    /// ```
-    /// use plat_smt::Approx;
-    /// use plat_smt::euf::Euf;
-    /// use plat_smt::Solver;
-    /// use plat_smt::SolveResult;
-    /// let mut s = Solver::<Euf>::default();
-    /// let a = s.fresh_bool();
-    /// let b = s.fresh_bool();
-    /// let ab = s.collapse_bool_approx(a | b, Approx::Approx(false));
-    /// s.assert(!a);
-    /// s.assert(!b);
-    /// s.assert(ab);
-    /// assert!(matches!(s.check_sat(), SolveResult::Unsat))
-    /// ```
-    pub fn collapse_bool_approx<const IS_AND: bool>(
+    pub fn collapse_bool<const IS_AND: bool>(
         &mut self,
         mut j: Junction<IS_AND>,
-        approx: Approx,
+        ctx: ExprContext<BoolExp>,
     ) -> BoolExp {
-        if !self.is_ok() {
-            return BoolExp::TRUE;
-        }
-        debug!("{j:?} (approx: {approx:?}) was collapsed to ...");
-        let res = match j.absorbing {
-            true => BoolExp::from_bool(!IS_AND),
-            false => self.andor_reuse(&mut j.lits, IS_AND, approx),
-        };
+        debug_assert!(self.is_ok());
+        // if !self.is_ok() {
+        //     return BoolExp::TRUE;
+        // }
+        debug!("{j:?} (ctx: {ctx:?}) was collapsed to ...");
+        let res = self.andor_reuse(&mut j.lits, IS_AND, j.absorbing, ctx);
         self.incr.junction_buf = j.lits;
         debug!("... {res}");
         res
@@ -213,12 +213,13 @@ impl<'a, L> TheoryArg<'a, L> {
         }
     }
 
-    pub fn xor_approx(&mut self, b1: BoolExp, b2: BoolExp, approx: Approx) -> BoolExp {
-        if !self.is_ok() {
-            return BoolExp::TRUE;
-        }
+    pub fn xor(&mut self, b1: BoolExp, b2: BoolExp, ctx: ExprContext<BoolExp>) -> BoolExp {
         let b1 = self.canonize(b1);
         let b2 = self.canonize(b2);
+        if let ExprContext::AssertEq(target) = ctx {
+            self.assert_xor_eq(b1, b2, target);
+            return target;
+        }
         let res = match (b1.to_lit(), b2.to_lit()) {
             (_, Err(b2)) => b1 ^ b2,
             (Err(b1), _) => b2 ^ b1,
@@ -231,13 +232,13 @@ impl<'a, L> TheoryArg<'a, L> {
                 };
                 let fresh = self.new_var_default();
                 let fresh = Lit::new(fresh, true);
-                if approx != Approx::Approx(true) {
+                if ctx != ExprContext::Approx(true) {
                     self.sat
                         .add_clause_unchecked([l1, l2, !fresh].iter().copied());
                     self.sat
                         .add_clause_unchecked([!l1, !l2, !fresh].iter().copied());
                 }
-                if approx != Approx::Approx(false) {
+                if ctx != ExprContext::Approx(false) {
                     self.sat
                         .add_clause_unchecked([!l1, l2, fresh].iter().copied());
                     self.sat
@@ -250,11 +251,8 @@ impl<'a, L> TheoryArg<'a, L> {
         res
     }
 
-    pub fn assert_xor_eq(&mut self, b1: BoolExp, b2: BoolExp, target: BoolExp) {
-        if !self.is_ok() {
-            return;
-        }
-        let mut arr = [b1, b2, target];
+    fn assert_xor_eq(&mut self, b1: BoolExp, b2: BoolExp, target: BoolExp) {
+        let mut arr = [b1, b2, self.canonize(target)];
         arr.sort_unstable();
         if arr[0].var() == arr[1].var() {
             arr[0] = BoolExp::from_bool(arr[0].sign());
@@ -287,3 +285,217 @@ impl<'a, L> TheoryArg<'a, L> {
         }
     }
 }
+
+pub struct TseitenMarker;
+
+impl<const IS_AND: bool> CollapseOut for Junction<IS_AND> {
+    type Out = BoolExp;
+}
+
+impl<'a, T, M, const IS_AND: bool> Collapse<Junction<IS_AND>, TheoryArg<'a, M>, TseitenMarker>
+    for T
+{
+    fn collapse(
+        &mut self,
+        j: Junction<IS_AND>,
+        acts: &mut TheoryArg<'a, M>,
+        ctx: ExprContext<BoolExp>,
+    ) -> BoolExp {
+        acts.collapse_bool(j, ctx)
+    }
+
+    fn placeholder(&self, _: &Junction<IS_AND>) -> BoolExp {
+        BoolExp::TRUE
+    }
+}
+
+pub struct Xor(BoolExp, BoolExp);
+
+impl CollapseOut for Xor {
+    type Out = BoolExp;
+}
+
+impl<'a, T, M> Collapse<Xor, TheoryArg<'a, M>, TseitenMarker> for T {
+    fn collapse(
+        &mut self,
+        Xor(b1, b2): Xor,
+        acts: &mut TheoryArg<'a, M>,
+        ctx: ExprContext<BoolExp>,
+    ) -> BoolExp {
+        acts.xor(b1, b2, ctx)
+    }
+
+    fn placeholder(&self, _: &Xor) -> BoolExp {
+        BoolExp::TRUE
+    }
+}
+
+impl CollapseOut for BoolExp {
+    type Out = BoolExp;
+}
+
+impl<'a, T, M> Collapse<BoolExp, TheoryArg<'a, M>, TseitenMarker> for T {
+    fn collapse(
+        &mut self,
+        b: BoolExp,
+        acts: &mut TheoryArg<'a, M>,
+        _: ExprContext<BoolExp>,
+    ) -> BoolExp {
+        acts.canonize(b)
+    }
+
+    fn placeholder(&self, b: &BoolExp) -> BoolExp {
+        *b
+    }
+}
+
+impl<'a, T, M> Collapse<Fresh<BoolExp>, TheoryArg<'a, M>, TseitenMarker> for T {
+    fn collapse(
+        &mut self,
+        f: Fresh<BoolExp>,
+        acts: &mut TheoryArg<'a, M>,
+        _: ExprContext<BoolExp>,
+    ) -> BoolExp {
+        assert_eq!(f.sort, BOOL_SORT);
+        BoolExp::unknown(Lit::new(acts.new_var_default(), true))
+    }
+
+    fn placeholder(&self, f: &Fresh<BoolExp>) -> BoolExp {
+        assert_eq!(f.sort, BOOL_SORT);
+        BoolExp::TRUE
+    }
+}
+
+#[derive(Default)]
+pub struct JunctionPf<const B: bool>;
+
+impl<
+        'a,
+        M,
+        Exp: ExpLike + SuperExp<BoolExp, M>,
+        S: SolverCollapse<Junction<IS_AND>, TseitenMarker> + ReuseMem<Junction<IS_AND>>,
+        const IS_AND: bool,
+    > ParserFragment<Exp, S, M> for JunctionPf<IS_AND>
+{
+    fn handle_non_terminal(
+        &self,
+        f: Symbol,
+        children: &mut [Exp],
+        solver: &mut S,
+        ctx: PfExprContext<Exp>,
+    ) -> PfResult<Exp> {
+        let s = if IS_AND { AND_SYM } else { OR_SYM };
+        (f == s).then(|| {
+            let mut j: Junction<IS_AND> = solver.reuse_mem();
+            extend_result(&mut j, index_iter(children).map(|x| x.downcast()))?;
+            Ok(solver.collapse_in_ctx(j, ctx.lower().downcast()).upcast())
+        })
+    }
+
+    fn sub_ctx(&self, f: Symbol, _: &[Exp], ctx: PfExprContext<Exp>) -> Option<PfExprContext<Exp>> {
+        let s = if IS_AND { AND_SYM } else { OR_SYM };
+        (f == s).then(|| match ctx.lower() {
+            ExprContext::AssertEq(x) if x == BoolExp::from_bool(IS_AND).upcast() => {
+                ExprContext::AssertEq(BoolExp::from_bool(IS_AND).upcast()).into()
+            }
+            ExprContext::Approx(x) => ExprContext::Approx(x).into(),
+            _ => ExprContext::Exact.into(),
+        })
+    }
+}
+
+pub type AndPf = JunctionPf<true>;
+pub type OrPf = JunctionPf<false>;
+
+#[derive(Default)]
+pub struct XorPf;
+
+impl<'a, M, Exp: ExpLike + SuperExp<BoolExp, M>, S: SolverCollapse<Xor, TseitenMarker>>
+    ParserFragment<Exp, S, M> for XorPf
+{
+    fn handle_non_terminal(
+        &self,
+        f: Symbol,
+        children: &mut [Exp],
+        solver: &mut S,
+        ctx: PfExprContext<Exp>,
+    ) -> PfResult<Exp> {
+        (f == XOR_SYM).then(|| {
+            let child_len = children.len();
+            let mut children = index_iter(children);
+            let first_res = if child_len == 0 {
+                BoolExp::FALSE
+            } else {
+                let mut first_children = children.by_ref().take(child_len - 1);
+                first_children.try_fold(BoolExp::FALSE, |b1, b2| {
+                    Ok::<_, AddSexpError>(
+                        solver.collapse_in_ctx(Xor(b1, b2.downcast()?), ExprContext::Exact),
+                    )
+                })?
+            };
+            let last_child = if let Some(last_child) = children.next() {
+                last_child.downcast()?
+            } else {
+                BoolExp::FALSE
+            };
+            Ok(solver
+                .collapse_in_ctx(Xor(first_res, last_child), ctx.lower().downcast())
+                .upcast())
+        })
+    }
+}
+
+#[derive(Default)]
+pub struct ImpPf;
+
+impl<
+        'a,
+        M,
+        Exp: ExpLike + SuperExp<BoolExp, M>,
+        S: SolverCollapse<Disjunction, TseitenMarker> + ReuseMem<Disjunction>,
+    > ParserFragment<Exp, S, M> for ImpPf
+{
+    fn handle_non_terminal(
+        &self,
+        f: Symbol,
+        children: &mut [Exp],
+        solver: &mut S,
+        ctx: PfExprContext<Exp>,
+    ) -> PfResult<Exp> {
+        (f == IMP_SYM).then(|| {
+            let mut children = index_iter(children);
+            let mut d: Disjunction = solver.reuse_mem();
+            let [arg] = mandatory_args(&mut children)?;
+            let mut last: BoolExp = arg.downcast()?;
+            let other =
+                children.map(|x| Ok::<_, AddSexpError>(!mem::replace(&mut last, x.downcast()?)));
+            extend_result(&mut d, other)?;
+            d.push(last);
+            Ok(solver.collapse_in_ctx(d, ctx.lower().downcast()).upcast())
+        })
+    }
+}
+
+#[derive(Default)]
+pub struct NotPf;
+
+impl<'a, M, Exp: ExpLike + SuperExp<BoolExp, M>, S> ParserFragment<Exp, S, M> for NotPf {
+    fn handle_non_terminal(
+        &self,
+        f: Symbol,
+        children: &mut [Exp],
+        _: &mut S,
+        _: PfExprContext<Exp>,
+    ) -> PfResult<Exp> {
+        (f == NOT_SYM).then(|| {
+            let [child] = exact_args(&mut index_iter(children))?;
+            let bool_child: BoolExp = child.downcast()?;
+            Ok((!bool_child).upcast())
+        })
+    }
+    fn sub_ctx(&self, f: Symbol, _: &[Exp], ctx: PfExprContext<Exp>) -> Option<PfExprContext<Exp>> {
+        (f == NOT_SYM).then(|| ctx.negate())
+    }
+}
+
+pub type BoolOpPf = (NotPf, (AndPf, (OrPf, (ImpPf, XorPf))));
