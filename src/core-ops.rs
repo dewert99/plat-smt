@@ -1,8 +1,6 @@
 use crate::collapse::{CollapseOut, ExprContext};
 use crate::intern::{Symbol, DISTINCT_SYM, EQ_SYM, IF_SYM, ITE_SYM};
-use crate::parser_fragment::{
-    exact_args, index_iter, mandatory_args, ParserFragment, PfExprContext, PfResult,
-};
+use crate::parser_fragment::{exact_args, index_iter, mandatory_args, ParserFragment, PfResult};
 use crate::solver::{ReuseMem, SolverCollapse};
 use crate::tseitin::{BoolOpPf, TseitenMarker};
 use crate::util::extend_result;
@@ -97,7 +95,7 @@ impl<
         f: Symbol,
         children: &mut [Exp],
         solver: &mut S,
-        ctx: PfExprContext<Exp>,
+        ctx: ExprContext<Exp>,
     ) -> PfResult<Exp> {
         (f == EQ_SYM).then(|| {
             let mut children = index_iter(children);
@@ -113,16 +111,16 @@ impl<
                     ))
                 }),
             )?;
-            Ok(solver.collapse_in_ctx(c, ctx.lower().downcast()).upcast())
+            Ok(solver.collapse_in_ctx(c, ctx.downcast()).upcast())
         })
     }
     fn sub_ctx(
         &self,
         f: Symbol,
         children: &[Exp],
-        ctx: PfExprContext<Exp>,
-    ) -> Option<PfExprContext<Exp>> {
-        (f == EQ_SYM).then(|| match (ctx.lower().downcast(), &children) {
+        ctx: ExprContext<Exp>,
+    ) -> Option<ExprContext<Exp>> {
+        (f == EQ_SYM).then(|| match (ctx.downcast(), &children) {
             (ExprContext::AssertEq(BoolExp::TRUE), &[child, ..]) => {
                 ExprContext::AssertEq(*child).into()
             }
@@ -146,11 +144,11 @@ impl<
         f: Symbol,
         children: &mut [Exp],
         solver: &mut S,
-        ctx: PfExprContext<Exp>,
+        ctx: ExprContext<Exp>,
     ) -> PfResult<Exp> {
         (f == DISTINCT_SYM).then(|| {
             Ok(solver
-                .collapse_in_ctx(Distinct::try_new(children)?, ctx.lower().downcast())
+                .collapse_in_ctx(Distinct::try_new(children)?, ctx.downcast())
                 .upcast())
         })
     }
@@ -166,11 +164,11 @@ impl<'a, M1, M2, Exp: ExpLike + SuperExp<BoolExp, M1>, S: SolverCollapse<Ite<Exp
         f: Symbol,
         children: &mut [Exp],
         solver: &mut S,
-        ctx: PfExprContext<Exp>,
+        ctx: ExprContext<Exp>,
     ) -> PfResult<Exp> {
         (f == IF_SYM || f == ITE_SYM).then(|| {
             let [i, t, e] = exact_args(&mut index_iter(children))?;
-            Ok(solver.collapse_in_ctx(Ite::try_new(i.downcast()?, t.exp(), e.exp())?, ctx.lower()))
+            Ok(solver.collapse_in_ctx(Ite::try_new(i.downcast()?, t.exp(), e.exp())?, ctx))
         })
     }
 }

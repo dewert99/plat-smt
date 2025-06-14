@@ -1,9 +1,8 @@
 use crate::collapse::ExprContext;
-use crate::intern::{DisplayInterned, InternInfo, Symbol, WithIntern};
+use crate::intern::Symbol;
 use crate::parser_core::SexpTerminal;
 use crate::{BoolExp, ExpLike, Sort, StaticSort, SubExp, SuperExp};
 use alloc::borrow::Cow;
-use perfect_derive::perfect_derive;
 use AddSexpError::*;
 
 #[derive(Debug)]
@@ -113,45 +112,17 @@ pub fn exact_args<const N: usize, Exp: Copy>(
     Ok(res)
 }
 
-#[perfect_derive(Copy, Clone, Default, Debug)]
-pub struct PfExprContext<Exp>(pub(crate) ExprContext<Exp>, pub(crate) bool);
-
-impl<Exp> From<ExprContext<Exp>> for PfExprContext<Exp> {
-    fn from(value: ExprContext<Exp>) -> Self {
-        PfExprContext(value, false)
-    }
-}
-
-impl<Exp> PfExprContext<Exp> {
-    pub fn lower(self) -> ExprContext<Exp> {
-        self.0
-    }
-
-    pub fn with_intern(self, intern: &InternInfo) -> PfExprContext<WithIntern<Exp>>
-    where
-        Exp: DisplayInterned,
-    {
-        PfExprContext(self.0.with_intern(intern), self.1)
-    }
-
-    pub fn lower_strict(self) -> ExprContext<Exp> {
-        match self {
-            PfExprContext(ctx, false) => ctx,
-            PfExprContext(ExprContext::Approx(b), _) => ExprContext::Approx(b),
-            _ => ExprContext::Exact,
-        }
-    }
-
+impl<Exp> ExprContext<Exp> {
     pub fn negate<M>(self) -> Self
     where
         Exp: SuperExp<BoolExp, M>,
     {
-        let ctx = match self.0.downcast() {
+        let ctx = match self.downcast() {
             ExprContext::Approx(a) => ExprContext::Approx(!a),
             ExprContext::AssertEq(b) => ExprContext::AssertEq(!b),
             _ => ExprContext::Exact,
         };
-        PfExprContext(ctx.upcast(), !self.1)
+        ctx.upcast()
     }
 }
 
@@ -163,7 +134,7 @@ pub trait ParserFragment<Exp, S, M>: Default {
         &self,
         x: SexpTerminal,
         solver: &mut S,
-        ctx: PfExprContext<Exp>,
+        ctx: ExprContext<Exp>,
     ) -> PfResult<Exp> {
         None
     }
@@ -173,7 +144,7 @@ pub trait ParserFragment<Exp, S, M>: Default {
         f: Symbol,
         children: &mut [Exp],
         solver: &mut S,
-        ctx: PfExprContext<Exp>,
+        ctx: ExprContext<Exp>,
     ) -> PfResult<Exp> {
         None
     }
@@ -182,8 +153,8 @@ pub trait ParserFragment<Exp, S, M>: Default {
         &self,
         f: Symbol,
         previous_children: &[Exp],
-        ctx: PfExprContext<Exp>,
-    ) -> Option<PfExprContext<Exp>> {
+        ctx: ExprContext<Exp>,
+    ) -> Option<ExprContext<Exp>> {
         None
     }
 }
@@ -195,7 +166,7 @@ impl<Exp: ExpLike, S, M1, M2, P1: ParserFragment<Exp, S, M1>, P2: ParserFragment
         &self,
         x: SexpTerminal,
         solver: &mut S,
-        ctx: PfExprContext<Exp>,
+        ctx: ExprContext<Exp>,
     ) -> PfResult<Exp> {
         match self.0.handle_terminal(x, solver, ctx) {
             Some(res) => Some(res),
@@ -208,7 +179,7 @@ impl<Exp: ExpLike, S, M1, M2, P1: ParserFragment<Exp, S, M1>, P2: ParserFragment
         f: Symbol,
         children: &mut [Exp],
         solver: &mut S,
-        ctx: PfExprContext<Exp>,
+        ctx: ExprContext<Exp>,
     ) -> PfResult<Exp> {
         match self.0.handle_non_terminal(f, children, solver, ctx) {
             Some(res) => Some(res),
@@ -220,8 +191,8 @@ impl<Exp: ExpLike, S, M1, M2, P1: ParserFragment<Exp, S, M1>, P2: ParserFragment
         &self,
         f: Symbol,
         previous_children: &[Exp],
-        ctx: PfExprContext<Exp>,
-    ) -> Option<PfExprContext<Exp>> {
+        ctx: ExprContext<Exp>,
+    ) -> Option<ExprContext<Exp>> {
         match self.0.sub_ctx(f, previous_children, ctx) {
             Some(res) => Some(res),
             None => self.1.sub_ctx(f, previous_children, ctx),

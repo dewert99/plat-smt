@@ -2,9 +2,7 @@ use crate::collapse::{Collapse, CollapseOut, ExprContext};
 use crate::exp::Fresh;
 use crate::intern::{Symbol, AND_SYM, BOOL_SORT, IMP_SYM, NOT_SYM, OR_SYM, XOR_SYM};
 use crate::junction::Junction;
-use crate::parser_fragment::{
-    exact_args, index_iter, mandatory_args, ParserFragment, PfExprContext, PfResult,
-};
+use crate::parser_fragment::{exact_args, index_iter, mandatory_args, ParserFragment, PfResult};
 use crate::solver::{ReuseMem, SolverCollapse};
 use crate::theory::{Incremental, TheoryArg, TheoryWrapper};
 use crate::util::extend_result;
@@ -106,14 +104,15 @@ impl<'a, L> TheoryArg<'a, L> {
             return self.collapse_const(is_and, ctx);
         }
 
+        if let [lit] = &**lits {
+            return BoolExp::unknown(*lit);
+        }
+
         if let ExprContext::AssertEq(b) = ctx {
             self.assert_junction_eq_inner(lits, is_and, b);
             return b;
         }
 
-        if let [lit] = &**lits {
-            return BoolExp::unknown(*lit);
-        }
         let fresh = self.new_var_default();
         let res = Lit::new(fresh, true);
         self.bind_junction(lits, is_and, ctx, res);
@@ -309,7 +308,7 @@ impl<'a, T, M, const IS_AND: bool> Collapse<Junction<IS_AND>, TheoryArg<'a, M>, 
     }
 }
 
-pub struct Xor(BoolExp, BoolExp);
+pub struct Xor(pub BoolExp, pub BoolExp);
 
 impl CollapseOut for Xor {
     type Out = BoolExp;
@@ -382,19 +381,19 @@ impl<
         f: Symbol,
         children: &mut [Exp],
         solver: &mut S,
-        ctx: PfExprContext<Exp>,
+        ctx: ExprContext<Exp>,
     ) -> PfResult<Exp> {
         let s = if IS_AND { AND_SYM } else { OR_SYM };
         (f == s).then(|| {
             let mut j: Junction<IS_AND> = solver.reuse_mem();
             extend_result(&mut j, index_iter(children).map(|x| x.downcast()))?;
-            Ok(solver.collapse_in_ctx(j, ctx.lower().downcast()).upcast())
+            Ok(solver.collapse_in_ctx(j, ctx.downcast()).upcast())
         })
     }
 
-    fn sub_ctx(&self, f: Symbol, _: &[Exp], ctx: PfExprContext<Exp>) -> Option<PfExprContext<Exp>> {
+    fn sub_ctx(&self, f: Symbol, _: &[Exp], ctx: ExprContext<Exp>) -> Option<ExprContext<Exp>> {
         let s = if IS_AND { AND_SYM } else { OR_SYM };
-        (f == s).then(|| match ctx.lower() {
+        (f == s).then(|| match ctx {
             ExprContext::AssertEq(x) if x == BoolExp::from_bool(IS_AND).upcast() => {
                 ExprContext::AssertEq(BoolExp::from_bool(IS_AND).upcast()).into()
             }
@@ -418,7 +417,7 @@ impl<'a, M, Exp: ExpLike + SuperExp<BoolExp, M>, S: SolverCollapse<Xor, TseitenM
         f: Symbol,
         children: &mut [Exp],
         solver: &mut S,
-        ctx: PfExprContext<Exp>,
+        ctx: ExprContext<Exp>,
     ) -> PfResult<Exp> {
         (f == XOR_SYM).then(|| {
             let child_len = children.len();
@@ -439,7 +438,7 @@ impl<'a, M, Exp: ExpLike + SuperExp<BoolExp, M>, S: SolverCollapse<Xor, TseitenM
                 BoolExp::FALSE
             };
             Ok(solver
-                .collapse_in_ctx(Xor(first_res, last_child), ctx.lower().downcast())
+                .collapse_in_ctx(Xor(first_res, last_child), ctx.downcast())
                 .upcast())
         })
     }
@@ -460,7 +459,7 @@ impl<
         f: Symbol,
         children: &mut [Exp],
         solver: &mut S,
-        ctx: PfExprContext<Exp>,
+        ctx: ExprContext<Exp>,
     ) -> PfResult<Exp> {
         (f == IMP_SYM).then(|| {
             let mut children = index_iter(children);
@@ -471,7 +470,7 @@ impl<
                 children.map(|x| Ok::<_, AddSexpError>(!mem::replace(&mut last, x.downcast()?)));
             extend_result(&mut d, other)?;
             d.push(last);
-            Ok(solver.collapse_in_ctx(d, ctx.lower().downcast()).upcast())
+            Ok(solver.collapse_in_ctx(d, ctx.downcast()).upcast())
         })
     }
 }
@@ -485,7 +484,7 @@ impl<'a, M, Exp: ExpLike + SuperExp<BoolExp, M>, S> ParserFragment<Exp, S, M> fo
         f: Symbol,
         children: &mut [Exp],
         _: &mut S,
-        _: PfExprContext<Exp>,
+        _: ExprContext<Exp>,
     ) -> PfResult<Exp> {
         (f == NOT_SYM).then(|| {
             let [child] = exact_args(&mut index_iter(children))?;
@@ -493,7 +492,7 @@ impl<'a, M, Exp: ExpLike + SuperExp<BoolExp, M>, S> ParserFragment<Exp, S, M> fo
             Ok((!bool_child).upcast())
         })
     }
-    fn sub_ctx(&self, f: Symbol, _: &[Exp], ctx: PfExprContext<Exp>) -> Option<PfExprContext<Exp>> {
+    fn sub_ctx(&self, f: Symbol, _: &[Exp], ctx: ExprContext<Exp>) -> Option<ExprContext<Exp>> {
         (f == NOT_SYM).then(|| ctx.negate())
     }
 }

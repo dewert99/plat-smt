@@ -26,40 +26,65 @@ pub(super) type LitVec = smallvec::SmallVec<[Lit; 4]>;
 use crate::sp_insert_map::SPInsertMap;
 pub(super) use smallvec::smallvec as litvec;
 
+/// A possible [`Id`] for a [`Lit`]
 #[derive(Copy, Clone, Eq, PartialEq)]
-struct OpId(u32);
+struct LitId(u32);
 
-impl OpId {
-    const NONE: Self = OpId(u32::MAX);
+impl LitId {
+    /// No [`Id`] is associated with the lit
+    const NONE: Self = LitId(u32::MAX);
 
+    /// `id` is strongly associated with the lit.
+    ///
+    /// When it is unioned with true or false the lit must be assigned the same value and vice-verso
     fn some(id: Id) -> Self {
         let x = usize::from(id) as u32;
-        debug_assert_ne!(x, u32::MAX);
-        OpId(x)
+        debug_assert!(x < u32::MAX / 2);
+        LitId(x)
     }
 
+    /// `id` is weakly associated with the lit.
+    ///
+    /// Either `id` must not be used in any larger expressions and must have a bool eclass with no
+    /// children, or this lit must be known by the solver to be equal to another lit that is
+    /// strongly associated with the id.
+    fn some_weak(id: Id) -> Self {
+        let x = usize::from(id) as u32;
+        debug_assert!(x < u32::MAX / 2);
+        LitId(x | (1 << 31))
+    }
+
+    /// Returns `Some(id)` iff self represents and strong association to `id`.
     fn expand(self) -> Option<Id> {
+        match self.0 >> 31 {
+            1 => None,
+            _ => Some(Id::from(self.0 as usize)),
+        }
+    }
+
+    /// Returns `Some(id)` iff self represents any association to `id`.
+    fn expand_weak(self) -> Option<Id> {
         match self.0 {
             u32::MAX => None,
-            x => Some(Id::from(x as usize)),
+            x => Some(Id::from((x & (u32::MAX >> 1)) as usize)),
         }
     }
 }
 
-impl Debug for OpId {
+impl Debug for LitId {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         self.expand().fmt(f)
     }
 }
 
-impl Default for OpId {
+impl Default for LitId {
     fn default() -> Self {
-        OpId::NONE
+        LitId::NONE
     }
 }
 
-impl ConstDefault for OpId {
-    const DEFAULT: &'static Self = &OpId::NONE;
+impl ConstDefault for LitId {
+    const DEFAULT: &'static Self = &LitId::NONE;
 }
 
 #[derive(Debug, Clone)]
@@ -149,15 +174,24 @@ pub(super) fn id_for_bool(b: bool) -> Id {
 
 #[derive(Debug, Default)]
 pub(super) struct LitInfo {
-    ids: LMap<OpId>,
+    ids: LMap<LitId>,
     log: Vec<Lit>,
 }
 
 impl LitInfo {
     pub(super) fn add_id_to_lit(&mut self, id: Id, l: Lit) {
-        self.ids[l] = OpId::some(id);
+        self.ids[l] = LitId::some(id);
         self.log.push(l);
         debug!("(as @v{id:?} Bool) is defined as {:?}", BoolExp::unknown(l),);
+    }
+
+    pub(super) fn weak_add_id_to_lit(&mut self, id: Id, l: Lit) {
+        self.ids[l] = LitId::some_weak(id);
+        self.log.push(l);
+        debug!(
+            "(as @v{id:?} Bool) is weakly attached to {:?}",
+            BoolExp::unknown(l),
+        );
     }
 }
 
@@ -222,7 +256,7 @@ impl Incremental for Euf {
         self.ifs
             .remove_after(Id::from(info.egraph.number_of_uncanonical_nodes()));
         for lit in self.lit.log.drain(info.lit_log_len as usize..) {
-            self.lit.ids[lit] = OpId::NONE;
+            self.lit.ids[lit] = LitId::NONE;
         }
         for ids in self.eq_id_log.drain(info.eq_id_log_len as usize..) {
             self.eq_ids.remove(&ids);
@@ -493,6 +527,10 @@ impl Euf {
             })
     }
 
+    pub(super) fn check_id_for_lit(&mut self, l: Lit) -> Option<Id> {
+        self.lit.ids[l].expand_weak()
+    }
+
     pub(super) fn id_for_lit(&mut self, lit: Lit, acts: &mut Arg) -> Id {
         let val = acts.value_lit(lit);
         if val == lbool::TRUE {
@@ -500,8 +538,24 @@ impl Euf {
         } else if val == lbool::FALSE {
             id_for_bool(false)
         } else {
-            match &mut self.lit.ids[lit].expand() {
-                Some(id) => *id,
+            match self.lit.ids[lit].expand_weak() {
+                Some(id) => {
+                    match &mut *self.egraph[id] {
+                        EClass::Bool(BoolClass::Unknown(lits)) if lits.is_empty() => {
+                            // We are now using `id` in a larger expression, and it currently isn't
+                            // strongly associate with any lits so we must strengthen the
+                            // association with `lit`
+                            debug!(
+                                "(as @v{id:?} Bool) is defined as {:?} while strengthening",
+                                BoolExp::unknown(lit)
+                            );
+                            lits.push(lit);
+                            self.lit.ids[lit] = LitId::some(id)
+                        }
+                        _ => {}
+                    }
+                    id
+                }
                 None => {
                     let sym = acts
                         .intern_mut()
@@ -543,7 +597,7 @@ impl Euf {
                     } else if let Some(id) = self.lit.ids[lit].expand() {
                         id
                     } else {
-                        self.lit.ids[lit] = OpId::some(id);
+                        self.lit.ids[lit] = LitId::some(id);
                         let mut conf = None;
                         let ctx = MergeContext {
                             acts,

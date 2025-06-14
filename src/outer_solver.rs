@@ -2,7 +2,7 @@ use crate::collapse::ExprContext;
 use crate::exp::Fresh;
 use crate::full_theory::FullTheory;
 use crate::intern::*;
-use crate::parser_fragment::{ParserFragment, PfExprContext};
+use crate::parser_fragment::ParserFragment;
 use crate::solver::{SolverCollapse, SolverWithBound};
 use crate::theory::TheoryArg;
 use crate::util::HashMap;
@@ -100,7 +100,7 @@ pub enum StartExpCtx {
     Opt,
 }
 struct Frame<UExp> {
-    ctx: PfExprContext<UExp>,
+    ctx: ExprContext<UExp>,
     f: Symbol,
     expected: Option<Sort>,
     stack_len: u32,
@@ -301,7 +301,7 @@ impl<L: Logic> OuterSolver<L> {
         self.inner.bound.get(&sym)
     }
 
-    fn child_context(&self, frame: &Frame<L::Exp>) -> PfExprContext<L::Exp> {
+    fn child_context(&self, frame: &Frame<L::Exp>) -> ExprContext<<L as Logic>::Exp> {
         let parent = frame.ctx;
         let f = frame.f;
         let previous_children = &self.exp_stack[frame.stack_len as usize..];
@@ -339,7 +339,7 @@ impl<L: Logic> OuterSolver<L> {
     fn end_exp_inner(
         &mut self,
         f: Symbol,
-        ctx: PfExprContext<L::Exp>,
+        ctx: ExprContext<<L as Logic>::Exp>,
         expected: Option<Sort>,
         stack_len: u32,
     ) -> Result<L::Exp, AddSexpError> {
