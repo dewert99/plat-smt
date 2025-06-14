@@ -7,7 +7,7 @@ use crate::exp::Fresh;
 use crate::full_theory::FullTheory;
 use crate::intern::{DisplayInterned, InternInfo, Symbol, BOOL_SORT};
 use crate::outer_solver::Bound;
-use crate::parser_fragment::{index_iter, ParserFragment, PfExprContext, PfResult};
+use crate::parser_fragment::{index_iter, ParserFragment, PfResult};
 use crate::solver::{SolverCollapse, SolverWithBound};
 use crate::theory::TheoryArg;
 use crate::util::{format_args2, pairwise_sym, HashMap};
@@ -170,15 +170,40 @@ impl Euf {
                     }
                 }
                 (Ok(b1), Ok(b2)) => {
-                    let id1 = self.id_for_lit(b1, acts);
-                    let id2 = self.id_for_lit(b2, acts);
-                    let _ = self.union(acts, id1, id2, Justification::NOOP);
+                    acts.xor(
+                        BoolExp::unknown(b1),
+                        BoolExp::unknown(b2),
+                        ExprContext::AssertEq(BoolExp::FALSE),
+                    );
+                    self.unify_lits(acts, b1, b2);
+                    self.unify_lits(acts, !b1, !b2);
                 }
             },
             (Exp::Right(u1), Exp::Right(u2)) => {
                 let _ = self.union(acts, u1.id, u2.id, Justification::NOOP);
             }
             _ => unreachable!(),
+        }
+    }
+
+    fn unify_lits(&mut self, acts: &mut TheoryArg<PushInfo>, b1: Lit, b2: Lit) {
+        match (self.check_id_for_lit(b1), self.check_id_for_lit(b2)) {
+            (Some(id1), Some(id2)) => {
+                let _ = self.union(acts, id1, id2, Justification::NOOP);
+            }
+            (Some(id1), None) => self.lit.weak_add_id_to_lit(id1, b2),
+            (None, Some(id2)) => self.lit.weak_add_id_to_lit(id2, b1),
+            (None, None) => {
+                let sym = acts
+                    .intern_mut()
+                    .symbols
+                    .gen_sym(&format_args2!("bool|lit|{b1:?}"));
+                let id = self.egraph.add(sym.into(), Children::new(), |_| {
+                    EClass::Bool(BoolClass::Unknown(litvec![]))
+                });
+                self.lit.weak_add_id_to_lit(id, b1);
+                self.lit.weak_add_id_to_lit(id, b2);
+            }
         }
     }
 
@@ -421,54 +446,46 @@ impl ParserFragment<Exp, SolverWithBound<Solver<Euf>, HashMap<Symbol, Bound<Exp>
         f: Symbol,
         children: &mut [Exp],
         solver: &mut SolverWithBound<Solver<Euf>, HashMap<Symbol, Bound<Exp>>>,
-        ctx: PfExprContext<Exp>,
+        ctx: ExprContext<Exp>,
     ) -> PfResult<Exp> {
         use AddSexpError::*;
-        true.then(|| {
-            match solver.bound.get(&f) {
-                None => Err(Unbound),
-                Some(Bound::Const(c)) => {
-                    if !children.is_empty() {
-                        return Err(ExtraArgument { expected: 0 });
-                    }
-                    if let PfExprContext(ExprContext::AssertEq(mut exp), negate) = ctx {
-                        if exp.sort() == c.sort() {
-                            let mut cur = *c;
-                            let exp_b: Option<BoolExp> = exp.downcast();
-                            let cur_b: Option<BoolExp> = cur.downcast();
-                            if let (true, Some(exp_b), Some(cur_b)) = (negate, exp_b, cur_b) {
-                                exp = (!exp_b).upcast();
-                                cur = (!cur_b).upcast();
-                            }
-                            // ignore error since we will type check at a higher level
-                            let _ = solver.solver.assert_eq(exp, cur);
-                        }
-                    }
-                    Ok(*c)
+        true.then(|| match solver.bound.get(&f) {
+            None => Err(Unbound),
+            Some(Bound::Const(c)) => {
+                if !children.is_empty() {
+                    return Err(ExtraArgument { expected: 0 });
                 }
-                Some(Bound::Fn(def)) => {
-                    index_iter(children)
-                        .zip(def.args())
-                        .try_for_each(|(arg, sort)| {
-                            arg.expect_sort(*sort)?;
-                            Ok::<_, AddSexpError>(())
-                        })?;
-                    if children.len() < def.args().len() {
-                        return Err(MissingArgument {
-                            actual: children.len(),
-                            expected: def.args().len(),
-                        });
-                    } else if children.len() > def.args().len() {
-                        return Err(ExtraArgument {
-                            expected: def.args().len(),
-                        });
+                if let ExprContext::AssertEq(exp) = ctx {
+                    if exp.sort() == c.sort() {
+                        let cur = *c;
+                        let _ = solver.solver.assert_eq(exp, cur);
+                        return Ok(exp);
                     }
-                    Ok(SolverCollapse::collapse_in_ctx(
-                        &mut solver.solver,
-                        UFn(f, children.iter().copied(), def.ret()),
-                        ctx.lower(),
-                    ))
                 }
+                Ok(*c)
+            }
+            Some(Bound::Fn(def)) => {
+                index_iter(children)
+                    .zip(def.args())
+                    .try_for_each(|(arg, sort)| {
+                        arg.expect_sort(*sort)?;
+                        Ok::<_, AddSexpError>(())
+                    })?;
+                if children.len() < def.args().len() {
+                    return Err(MissingArgument {
+                        actual: children.len(),
+                        expected: def.args().len(),
+                    });
+                } else if children.len() > def.args().len() {
+                    return Err(ExtraArgument {
+                        expected: def.args().len(),
+                    });
+                }
+                Ok(SolverCollapse::collapse_in_ctx(
+                    &mut solver.solver,
+                    UFn(f, children.iter().copied(), def.ret()),
+                    ctx,
+                ))
             }
         })
     }
