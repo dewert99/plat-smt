@@ -1,7 +1,9 @@
-use crate::collapse::{CollapseOut, ExprContext};
+use crate::collapse::{Collapse, CollapseOut, ExprContext};
+use crate::exp::Fresh;
 use crate::intern::{Symbol, DISTINCT_SYM, EQ_SYM, IF_SYM, ITE_SYM};
 use crate::parser_fragment::{exact_args, index_iter, mandatory_args, ParserFragment, PfResult};
 use crate::solver::{ReuseMem, SolverCollapse};
+use crate::theory::TheoryArg;
 use crate::tseitin::{BoolOpPf, TseitenMarker};
 use crate::util::extend_result;
 use crate::{AddSexpError, BoolExp, Conjunction, ExpLike, SubExp, SuperExp};
@@ -22,6 +24,7 @@ impl<'a, Exp: ExpLike> Eq<Exp> {
     }
 
     pub fn new_unchecked(t: Exp, e: Exp) -> Self {
+        debug_assert_eq!(t.sort(), e.sort());
         Eq(t, e)
     }
 }
@@ -70,12 +73,58 @@ impl<'a, Exp: ExpLike> Ite<Exp> {
     }
 
     pub fn new_unchecked(i: BoolExp, t: Exp, e: Exp) -> Self {
+        debug_assert_eq!(t.sort(), e.sort());
         Ite(i, t, e)
     }
 }
 
 impl<Exp: ExpLike> CollapseOut for Ite<Exp> {
     type Out = Exp;
+}
+
+impl<
+        'a,
+        ME,
+        MB,
+        MF,
+        LM,
+        Exp: ExpLike + SuperExp<BoolExp, MB>,
+        Th: Collapse<Eq<Exp>, TheoryArg<'a, LM>, ME> + Collapse<Fresh<Exp>, TheoryArg<'a, LM>, MF>,
+    > Collapse<Ite<Exp>, TheoryArg<'a, LM>, (ME, MB, MF)> for Th
+{
+    fn collapse(
+        &mut self,
+        t: Ite<Exp>,
+        acts: &mut TheoryArg<'a, LM>,
+        ctx: ExprContext<Exp>,
+    ) -> Exp {
+        if let Err(b) = t.0.to_lit() {
+            return if b { t.1 } else { t.2 };
+        }
+        let res = if let ExprContext::AssertEq(x) = ctx {
+            x
+        } else {
+            let gen_sym = acts.intern_mut().symbols.gen_sym("ite");
+            self.collapse(
+                Fresh::new_unchecked(gen_sym, t.1.sort()),
+                acts,
+                ExprContext::Exact,
+            )
+        };
+
+        let eq1 = self.collapse(Eq::new_unchecked(t.1, res), acts, ExprContext::Exact);
+        let eq2 = self.collapse(Eq::new_unchecked(t.2, res), acts, ExprContext::Exact);
+
+        let j = acts.new_junction();
+        acts.assert_junction_eq(j | !t.0 | eq1, BoolExp::TRUE);
+        let j = acts.new_junction();
+        acts.assert_junction_eq(j | t.0 | eq2, BoolExp::TRUE);
+        res
+    }
+
+    fn placeholder(&self, t: &Ite<Exp>) -> Exp {
+        t.1
+    }
 }
 
 #[derive(Default)]
