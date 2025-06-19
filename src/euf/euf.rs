@@ -23,7 +23,6 @@ type Arg<'a> = TheoryArg<'a, PushInfo>;
 type ExplainArg<'a> = ExplainTheoryArg<'a, PushInfo>;
 
 pub(super) type LitVec = smallvec::SmallVec<[Lit; 4]>;
-use crate::sp_insert_map::SPInsertMap;
 pub(super) use smallvec::smallvec as litvec;
 
 /// A possible [`Id`] for a [`Lit`]
@@ -205,7 +204,6 @@ pub struct Euf {
     eq_id_log: Vec<[Id; 2]>,
     requests_handled: u32,
     function_info: FunctionInfo,
-    pub(super) ifs: SPInsertMap<(Lit, Id, Id), Id>,
 }
 
 impl Default for Euf {
@@ -226,7 +224,6 @@ impl Default for Euf {
             eq_id_log: vec![],
             requests_handled: 0,
             function_info: Default::default(),
-            ifs: Default::default(),
         };
         res.init();
         debug_assert_eq!(tid, id_for_bool(true));
@@ -253,8 +250,6 @@ impl Incremental for Euf {
 
     fn pop_to_level(&mut self, info: PushInfo, clear_lits: bool) {
         debug!("Requests handled = {}", info.requests_handled);
-        self.ifs
-            .remove_after(Id::from(info.egraph.number_of_uncanonical_nodes()));
         for lit in self.lit.log.drain(info.lit_log_len as usize..) {
             self.lit.ids[lit] = LitId::NONE;
         }
@@ -301,7 +296,6 @@ impl Incremental for Euf {
         self.lit.log.clear();
         self.lit.ids.clear();
         self.bool_class_history.clear();
-        self.ifs.clear();
         self.eq_ids.clear();
         for (b, s) in bools.into_iter().zip(bool_syms) {
             let id = self

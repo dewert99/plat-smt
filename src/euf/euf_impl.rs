@@ -2,7 +2,7 @@ use super::egraph::{children, Children, Op, EQ_OP};
 use super::euf::{litvec, BoolClass, EClass, Euf, Exp, FunctionInfoIter, PushInfo};
 use super::explain::Justification;
 use crate::collapse::{Collapse, CollapseOut, ExprContext};
-use crate::core_ops::{CoreOpsPf, Distinct, Eq, Ite};
+use crate::core_ops::{CoreOpsPf, Distinct, Eq};
 use crate::exp::Fresh;
 use crate::full_theory::FullTheory;
 use crate::intern::{DisplayInterned, InternInfo, Symbol, BOOL_SORT};
@@ -18,7 +18,6 @@ use log::debug;
 use plat_egg::raw::Language;
 use plat_egg::Id;
 use platsat::Lit;
-use std::mem;
 
 #[derive(Copy, Clone, Eq, PartialEq, Hash, Ord, PartialOrd, Debug)]
 pub struct UExp {
@@ -206,59 +205,6 @@ impl Euf {
             }
         }
     }
-
-    fn collapse_exp(
-        &mut self,
-        e: Exp,
-        ctx: ExprContext<Exp>,
-        acts: &mut TheoryArg<PushInfo>,
-    ) -> Exp {
-        if let ExprContext::AssertEq(target) = ctx {
-            self.assert_eq(target, e, acts);
-            target
-        } else {
-            e
-        }
-    }
-
-    fn bind_ite(&mut self, i: Lit, t: Id, e: Id, target: Id, acts: &mut TheoryArg<PushInfo>) {
-        let eqt = self.add_eq_node(target, t, ExprContext::Exact, acts);
-        match eqt.to_lit() {
-            Ok(l) => acts.add_theory_lemma(&[!i, l]),
-            Err(true) => {}
-            Err(false) => acts.add_theory_lemma(&[!i]),
-        }
-        let eqe = self.add_eq_node(target, e, ExprContext::Exact, acts);
-        match eqe.to_lit() {
-            Ok(l) => acts.add_theory_lemma(&[i, l]),
-            Err(true) => {}
-            Err(false) => acts.add_theory_lemma(&[i]),
-        }
-    }
-    fn raw_ite(
-        &mut self,
-        i: Lit,
-        t: Id,
-        e: Id,
-        s: Sort,
-        ctx: ExprContext<Exp>,
-        acts: &mut TheoryArg<PushInfo>,
-    ) -> Exp {
-        let mut ifs = mem::take(&mut self.ifs);
-        let mut added = false;
-        let id = ifs.get_or_insert((i, t, e), || {
-            added = true;
-            let sym = acts
-                .intern_mut()
-                .symbols
-                .gen_sym(&format_args2!("if|{i:?}|id{t}|id{e}"));
-            let (fresh_id, _, _) = self.sorted_fn_id(sym.into(), children![], s, ctx, acts);
-            self.bind_ite(i, t, e, fresh_id, acts);
-            fresh_id
-        });
-        self.ifs = ifs;
-        self.id_to_exp(id)
-    }
 }
 
 pub struct EufMarker;
@@ -364,42 +310,20 @@ impl<'a> Collapse<Eq<Exp>, TheoryArg<'a, PushInfo>, EufMarker> for Euf {
             self.assert_eq(e1, e2, acts);
             BoolExp::TRUE
         } else {
-            let id1 = self.id_for_exp(e1, acts);
-            let id2 = self.id_for_exp(e2, acts);
-            self.add_eq_node(id1, id2, ctx, acts)
-        }
-    }
-
-    fn placeholder(&self, _: &Eq<Exp>) -> BoolExp {
-        BoolExp::TRUE
-    }
-}
-
-impl<'a> Collapse<Ite<Exp>, TheoryArg<'a, PushInfo>, EufMarker> for Euf {
-    fn collapse(
-        &mut self,
-        Ite(i, t, e): Ite<Exp>,
-        acts: &mut TheoryArg<'a, PushInfo>,
-        ctx: ExprContext<Exp>,
-    ) -> Exp {
-        // TODO CANONIZE t and e?
-        match acts.canonize(i).to_lit() {
-            Err(true) => self.collapse_exp(t, ctx, acts),
-            Err(false) => self.collapse_exp(e, ctx, acts),
-            Ok(ilit) => {
-                if t == e {
-                    self.collapse_exp(t, ctx, acts)
-                } else {
-                    let tid = self.id_for_exp(t, acts);
-                    let eid = self.id_for_exp(e, acts);
-                    self.raw_ite(ilit, tid, eid, t.sort(), ctx, acts)
+            match (e1.downcast(), e2.downcast()) {
+                (Some(BoolExp::TRUE), Some(b)) | (Some(b), Some(BoolExp::TRUE)) => b,
+                (Some(BoolExp::FALSE), Some(b)) | (Some(b), Some(BoolExp::FALSE)) => !b,
+                _ => {
+                    let id1 = self.id_for_exp(e1, acts);
+                    let id2 = self.id_for_exp(e2, acts);
+                    self.add_eq_node(id1, id2, ctx, acts)
                 }
             }
         }
     }
 
-    fn placeholder(&self, &Ite(_, t, _): &Ite<Exp>) -> Exp {
-        t
+    fn placeholder(&self, _: &Eq<Exp>) -> BoolExp {
+        BoolExp::TRUE
     }
 }
 

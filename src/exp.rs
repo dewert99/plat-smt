@@ -269,6 +269,15 @@ impl<E: HasSort> Fresh<E> {
             Err(())
         }
     }
+
+    pub fn new_unchecked(name: Symbol, sort: Sort) -> Self {
+        debug_assert!(E::can_have_sort(sort));
+        Fresh {
+            name,
+            sort,
+            phantom: PhantomData,
+        }
+    }
 }
 
 impl<E: ExpLike> CollapseOut for Fresh<E> {
