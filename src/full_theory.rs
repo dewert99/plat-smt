@@ -3,9 +3,8 @@ use crate::exp::ExpLike;
 use crate::intern::Symbol;
 use crate::theory::{ExplainTheoryArg, Incremental, Theory, TheoryArg};
 
-pub trait FullTheory:
-    Incremental
-    + for<'a> Theory<TheoryArg<'a, Self::LevelMarker>, ExplainTheoryArg<'a, Self::LevelMarker>>
+pub trait FullTheory<R>: Incremental
+    + for<'a> Theory<TheoryArg<'a, Self::LevelMarker, R>, ExplainTheoryArg<'a, Self::LevelMarker, R>>
 {
     type Exp: ExpLike;
 
@@ -32,15 +31,16 @@ impl<Exp, H: Iterator<Item = Exp>, I: Iterator<Item = (H, Exp)>> FunctionAssignm
     type H = H;
 }
 
-pub trait TopLevelCollapse<T: CollapseOut, M>:
-    Incremental + for<'a> Collapse<T, TheoryArg<'a, Self::LevelMarker>, M>
+pub trait TopLevelCollapse<T: CollapseOut, M, R>:
+    Incremental + for<'a> Collapse<T, TheoryArg<'a, Self::LevelMarker, R>, M>
 {
 }
 
 impl<
         T: CollapseOut,
         M,
-        Th: Incremental + for<'a> Collapse<T, TheoryArg<'a, Th::LevelMarker>, M>,
-    > TopLevelCollapse<T, M> for Th
+        R,
+        Th: Incremental + for<'a> Collapse<T, TheoryArg<'a, Th::LevelMarker, R>, M>,
+    > TopLevelCollapse<T, M, R> for Th
 {
 }

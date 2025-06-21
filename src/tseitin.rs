@@ -1,19 +1,24 @@
 use crate::collapse::{Collapse, CollapseOut, ExprContext};
+use crate::def_recorder::DefRecorder;
 use crate::exp::Fresh;
 use crate::intern::{Symbol, AND_SYM, BOOL_SORT, IMP_SYM, NOT_SYM, OR_SYM, XOR_SYM};
 use crate::junction::Junction;
-use crate::parser_fragment::{exact_args, index_iter, mandatory_args, ParserFragment, PfResult};
+use crate::parser_fragment::{exact_args, index_iter, mandatory_args, ParserFragment};
 use crate::solver::{ReuseMem, SolverCollapse};
-use crate::theory::{Incremental, TheoryArg, TheoryWrapper};
+use crate::theory::{
+    ExplainTheoryArg, Incremental, Reborrow, TheoryArgRaw, TheoryArgT, TheoryWrapper,
+};
 use crate::util::extend_result;
 use crate::{AddSexpError, BLit, BoolExp, Disjunction, ExpLike, SubExp, SuperExp};
 use alloc::vec::Vec;
 use core::cmp::Ordering;
+use core::ops::DerefMut;
 use log::debug;
+use platsat::{core::ExplainTheoryArg as SatExplainTheoryArg, TheoryArg as SatTheoryArg};
 use platsat::{lbool, Lit};
 use std::mem;
 
-impl<Th: Incremental> TheoryWrapper<Th> {
+impl<Th: Incremental, R> TheoryWrapper<Th, R> {
     /// Returns an empty [`Conjunction`] or [`Disjunction`]  which reuses memory from the last call
     /// to [`collapse_bool`](Self::collapse_bool)
     pub fn new_junction<const IS_AND: bool>(&mut self) -> Junction<IS_AND> {
@@ -25,8 +30,24 @@ impl<Th: Incremental> TheoryWrapper<Th> {
     }
 }
 
-impl<'a, L> TheoryArg<'a, L> {
-    pub fn assert(&mut self, b: BoolExp) {
+pub trait SatExplainTheoryArgT<'a>:
+    TheoryArgT + DerefMut<Target = &'a mut SatExplainTheoryArg>
+{
+}
+
+impl<'a, M, R: DefRecorder> SatExplainTheoryArgT<'a>
+    for TheoryArgRaw<'a, &'a mut SatExplainTheoryArg, M, R>
+{
+}
+
+pub trait SatTheoryArgT<'a>: TheoryArgT + DerefMut<Target = SatTheoryArg<'a>> {
+    type Explain<'b>: SatExplainTheoryArgT<'b, M = Self::M>
+    where
+        Self: 'b;
+
+    fn for_explain(&mut self) -> Self::Explain<'_>;
+
+    fn assert(&mut self, b: BoolExp) {
         match self.canonize(b).to_lit() {
             Ok(l) => self.add_clause_unchecked([l]),
             Err(true) => {}
@@ -38,6 +59,7 @@ impl<'a, L> TheoryArg<'a, L> {
 
     /// Optimizes `lits` by removing duplicates
     /// Returns `true` if lits are absorbing (eg `(and false)` `(or true)`)
+    #[doc(hidden)]
     fn optimize_junction(&mut self, lits: &mut Vec<BLit>, is_and: bool) -> bool {
         lits.sort_unstable();
 
@@ -46,7 +68,7 @@ impl<'a, L> TheoryArg<'a, L> {
         // remove duplicates, true literals, etc.
         for i in 0..lits.len() {
             let lit_i = lits[i];
-            let value = self.sat.value_lit(lit_i);
+            let value = self.value_lit(lit_i);
             if (value == lbool::TRUE ^ is_and) || lit_i == !last_lit {
                 return true;
             } else if !(value ^ is_and == lbool::FALSE) && lit_i != last_lit {
@@ -60,6 +82,7 @@ impl<'a, L> TheoryArg<'a, L> {
         false
     }
 
+    #[doc(hidden)]
     fn bind_junction(
         &mut self,
         lits: &mut Vec<BLit>,
@@ -69,18 +92,17 @@ impl<'a, L> TheoryArg<'a, L> {
     ) {
         for lit in &mut *lits {
             if ctx != ExprContext::Approx(is_and) {
-                self.sat
-                    .add_clause_unchecked([*lit ^ !is_and, target ^ is_and].iter().copied());
+                self.add_clause_unchecked([*lit ^ !is_and, target ^ is_and].iter().copied());
             }
             *lit ^= is_and;
         }
         if ctx != ExprContext::Approx(!is_and) {
             lits.push(target ^ !is_and);
-            self.sat.add_clause_unchecked(lits.iter().copied());
+            self.add_clause_unchecked(lits.iter().copied());
         }
     }
 
-    pub fn collapse_const(&mut self, c: bool, ctx: ExprContext<BoolExp>) -> BoolExp {
+    fn collapse_const(&mut self, c: bool, ctx: ExprContext<BoolExp>) -> BoolExp {
         if let ExprContext::AssertEq(b) = ctx {
             self.assert(b ^ !c);
             b
@@ -90,6 +112,7 @@ impl<'a, L> TheoryArg<'a, L> {
     }
 
     #[inline]
+    #[doc(hidden)]
     fn andor_reuse(
         &mut self,
         lits: &mut Vec<BLit>,
@@ -115,10 +138,16 @@ impl<'a, L> TheoryArg<'a, L> {
 
         let fresh = self.new_var_default();
         let res = Lit::new(fresh, true);
+        self.log_def(
+            BoolExp::unknown(res),
+            if is_and { AND_SYM } else { OR_SYM },
+            lits.iter().map(|l| BoolExp::unknown(*l)),
+        );
         self.bind_junction(lits, is_and, ctx, res);
         BoolExp::unknown(res)
     }
 
+    #[doc(hidden)]
     fn assert_junction_eq_inner(&mut self, lits: &mut Vec<BLit>, is_and: bool, target: BoolExp) {
         match self.canonize(target).to_lit() {
             Ok(target) => {
@@ -129,11 +158,11 @@ impl<'a, L> TheoryArg<'a, L> {
                     if found == target {
                         approx = ExprContext::Approx(!is_and);
                     } else {
-                        self.sat.add_clause_unchecked([target ^ is_and]);
+                        self.add_clause_unchecked([target ^ is_and]);
                         if is_and {
                             lits.iter_mut().for_each(|l| *l = !*l);
                         }
-                        self.sat.add_clause_unchecked(lits.iter().copied());
+                        self.add_clause_unchecked(lits.iter().copied());
                         return;
                     }
                 }
@@ -144,17 +173,17 @@ impl<'a, L> TheoryArg<'a, L> {
                     lits.iter_mut().for_each(|l| *l = !*l);
                 }
                 if is_and ^ target {
-                    self.sat.add_clause_unchecked(lits.iter().copied());
+                    self.add_clause_unchecked(lits.iter().copied());
                 } else {
                     lits.iter().for_each(|l| {
-                        self.sat.add_clause_unchecked([*l]);
+                        self.add_clause_unchecked([*l]);
                     });
                 }
             }
         }
     }
 
-    pub fn collapse_bool<const IS_AND: bool>(
+    fn collapse_bool<const IS_AND: bool>(
         &mut self,
         mut j: Junction<IS_AND>,
         ctx: ExprContext<BoolExp>,
@@ -165,12 +194,12 @@ impl<'a, L> TheoryArg<'a, L> {
         // }
         debug!("{j:?} (ctx: {ctx:?}) was collapsed to ...");
         let res = self.andor_reuse(&mut j.lits, IS_AND, j.absorbing, ctx);
-        self.incr.junction_buf = j.lits;
+        *self.junction_buf_mut() = j.lits;
         debug!("... {res}");
         res
     }
 
-    pub fn add_clause(&mut self, i: impl IntoIterator<Item = BoolExp>) {
+    fn add_clause(&mut self, i: impl IntoIterator<Item = BoolExp>) {
         let mut j: Disjunction = self.new_junction();
         j.extend(i);
         if j.absorbing || self.optimize_junction(&mut j.lits, false) {
@@ -178,14 +207,10 @@ impl<'a, L> TheoryArg<'a, L> {
             return;
         }
         self.add_clause_unchecked(j.lits.iter().copied());
-        self.incr.junction_buf = j.lits;
+        *self.junction_buf_mut() = j.lits;
     }
 
-    pub fn assert_junction_eq<const IS_AND: bool>(
-        &mut self,
-        mut j: Junction<IS_AND>,
-        target: BoolExp,
-    ) {
+    fn assert_junction_eq<const IS_AND: bool>(&mut self, mut j: Junction<IS_AND>, target: BoolExp) {
         if !self.is_ok() {
             return;
         }
@@ -193,21 +218,21 @@ impl<'a, L> TheoryArg<'a, L> {
             true => self.assert(target ^ IS_AND),
             false => self.assert_junction_eq_inner(&mut j.lits, IS_AND, target),
         };
-        self.incr.junction_buf = j.lits;
+        *self.junction_buf_mut() = j.lits;
         res
     }
 
     /// Returns an empty [`Conjunction`] or [`Disjunction`]  which reuses memory from the last call
     /// to [`collapse_bool`](Self::collapse_bool)
-    pub fn new_junction<const IS_AND: bool>(&mut self) -> Junction<IS_AND> {
-        self.incr.junction_buf.clear();
+    fn new_junction<const IS_AND: bool>(&mut self) -> Junction<IS_AND> {
+        self.junction_buf_mut().clear();
         Junction {
             absorbing: false,
-            lits: mem::take(&mut self.incr.junction_buf),
+            lits: mem::take(self.junction_buf_mut()),
         }
     }
 
-    pub fn canonize(&mut self, b: BoolExp) -> BoolExp {
+    fn canonize(&mut self, b: BoolExp) -> BoolExp {
         match b.to_lit() {
             Ok(l) => {
                 let v = self.value_lit(l);
@@ -223,7 +248,7 @@ impl<'a, L> TheoryArg<'a, L> {
         }
     }
 
-    pub fn xor(&mut self, b1: BoolExp, b2: BoolExp, ctx: ExprContext<BoolExp>) -> BoolExp {
+    fn xor(&mut self, b1: BoolExp, b2: BoolExp, ctx: ExprContext<BoolExp>) -> BoolExp {
         let b1 = self.canonize(b1);
         let b2 = self.canonize(b2);
         if let ExprContext::AssertEq(target) = ctx {
@@ -242,17 +267,18 @@ impl<'a, L> TheoryArg<'a, L> {
                 };
                 let fresh = self.new_var_default();
                 let fresh = Lit::new(fresh, true);
+                self.log_def(
+                    BoolExp::unknown(fresh),
+                    XOR_SYM,
+                    [l1, l2].into_iter().map(BoolExp::unknown),
+                );
                 if ctx != ExprContext::Approx(true) {
-                    self.sat
-                        .add_clause_unchecked([l1, l2, !fresh].iter().copied());
-                    self.sat
-                        .add_clause_unchecked([!l1, !l2, !fresh].iter().copied());
+                    self.add_clause_unchecked([l1, l2, !fresh].iter().copied());
+                    self.add_clause_unchecked([!l1, !l2, !fresh].iter().copied());
                 }
                 if ctx != ExprContext::Approx(false) {
-                    self.sat
-                        .add_clause_unchecked([!l1, l2, fresh].iter().copied());
-                    self.sat
-                        .add_clause_unchecked([l1, !l2, fresh].iter().copied());
+                    self.add_clause_unchecked([!l1, l2, fresh].iter().copied());
+                    self.add_clause_unchecked([l1, !l2, fresh].iter().copied());
                 }
                 BoolExp::unknown(fresh)
             }
@@ -261,6 +287,7 @@ impl<'a, L> TheoryArg<'a, L> {
         res
     }
 
+    #[doc(hidden)]
     fn assert_xor_eq(&mut self, b1: BoolExp, b2: BoolExp, target: BoolExp) {
         let mut arr = [b1, b2, self.canonize(target)];
         arr.sort_unstable();
@@ -275,40 +302,52 @@ impl<'a, L> TheoryArg<'a, L> {
         match arr.map(BoolExp::to_lit) {
             [Err(b1), Err(b2), Err(b3)] => {
                 if b1 ^ b2 != b3 {
-                    self.sat.add_clause_unchecked([]);
+                    self.add_clause_unchecked([]);
                 }
             }
             [Ok(l), Err(b1), Err(b2)] | [Err(b1), Ok(l), Err(b2)] | [Err(b1), Err(b2), Ok(l)] => {
-                self.sat.add_clause_unchecked([l ^ b1 ^ !b2]);
+                self.add_clause_unchecked([l ^ b1 ^ !b2]);
             }
             [Err(b), Ok(l1), Ok(l2)] | [Ok(l1), Err(b), Ok(l2)] | [Ok(l1), Ok(l2), Err(b)] => {
-                self.sat.add_clause_unchecked([l1 ^ b, !l2].iter().copied());
-                self.sat.add_clause_unchecked([!l1 ^ b, l2].iter().copied());
+                self.add_clause_unchecked([l1 ^ b, !l2].iter().copied());
+                self.add_clause_unchecked([!l1 ^ b, l2].iter().copied());
             }
             [Ok(l1), Ok(l2), Ok(l3)] => {
-                self.sat.add_clause_unchecked([l1, l2, !l3].iter().copied());
-                self.sat
-                    .add_clause_unchecked([!l1, !l2, !l3].iter().copied());
-                self.sat.add_clause_unchecked([!l1, l2, l3].iter().copied());
-                self.sat.add_clause_unchecked([l1, !l2, l3].iter().copied());
+                self.add_clause_unchecked([l1, l2, !l3].iter().copied());
+                self.add_clause_unchecked([!l1, !l2, !l3].iter().copied());
+                self.add_clause_unchecked([!l1, l2, l3].iter().copied());
+                self.add_clause_unchecked([l1, !l2, l3].iter().copied());
             }
         }
     }
 }
 
+impl<'a, M, R: DefRecorder> SatTheoryArgT<'a> for TheoryArgRaw<'a, SatTheoryArg<'a>, M, R> {
+    type Explain<'b>
+        = TheoryArgRaw<'b, &'b mut SatExplainTheoryArg, M, R>
+    where
+        Self: 'b;
+
+    fn for_explain(&mut self) -> Self::Explain<'_> {
+        ExplainTheoryArg {
+            sat: self.sat.explain_arg(),
+            incr: self.incr.reborrow(),
+        }
+    }
+}
 pub struct TseitenMarker;
 
 impl<const IS_AND: bool> CollapseOut for Junction<IS_AND> {
     type Out = BoolExp;
 }
 
-impl<'a, T, M, const IS_AND: bool> Collapse<Junction<IS_AND>, TheoryArg<'a, M>, TseitenMarker>
+impl<'a, T, A: SatTheoryArgT<'a>, const IS_AND: bool> Collapse<Junction<IS_AND>, A, TseitenMarker>
     for T
 {
     fn collapse(
         &mut self,
         j: Junction<IS_AND>,
-        acts: &mut TheoryArg<'a, M>,
+        acts: &mut A,
         ctx: ExprContext<BoolExp>,
     ) -> BoolExp {
         acts.collapse_bool(j, ctx)
@@ -325,13 +364,8 @@ impl CollapseOut for Xor {
     type Out = BoolExp;
 }
 
-impl<'a, T, M> Collapse<Xor, TheoryArg<'a, M>, TseitenMarker> for T {
-    fn collapse(
-        &mut self,
-        Xor(b1, b2): Xor,
-        acts: &mut TheoryArg<'a, M>,
-        ctx: ExprContext<BoolExp>,
-    ) -> BoolExp {
+impl<'a, T, A: SatTheoryArgT<'a>> Collapse<Xor, A, TseitenMarker> for T {
+    fn collapse(&mut self, Xor(b1, b2): Xor, acts: &mut A, ctx: ExprContext<BoolExp>) -> BoolExp {
         acts.xor(b1, b2, ctx)
     }
 
@@ -344,13 +378,8 @@ impl CollapseOut for BoolExp {
     type Out = BoolExp;
 }
 
-impl<'a, T, M> Collapse<BoolExp, TheoryArg<'a, M>, TseitenMarker> for T {
-    fn collapse(
-        &mut self,
-        b: BoolExp,
-        acts: &mut TheoryArg<'a, M>,
-        _: ExprContext<BoolExp>,
-    ) -> BoolExp {
+impl<'a, T, A: SatTheoryArgT<'a>> Collapse<BoolExp, A, TseitenMarker> for T {
+    fn collapse(&mut self, b: BoolExp, acts: &mut A, _: ExprContext<BoolExp>) -> BoolExp {
         acts.canonize(b)
     }
 
@@ -359,13 +388,8 @@ impl<'a, T, M> Collapse<BoolExp, TheoryArg<'a, M>, TseitenMarker> for T {
     }
 }
 
-impl<'a, T, M> Collapse<Fresh<BoolExp>, TheoryArg<'a, M>, TseitenMarker> for T {
-    fn collapse(
-        &mut self,
-        f: Fresh<BoolExp>,
-        acts: &mut TheoryArg<'a, M>,
-        _: ExprContext<BoolExp>,
-    ) -> BoolExp {
+impl<'a, T, A: SatTheoryArgT<'a>> Collapse<Fresh<BoolExp>, A, TseitenMarker> for T {
+    fn collapse(&mut self, f: Fresh<BoolExp>, acts: &mut A, _: ExprContext<BoolExp>) -> BoolExp {
         assert_eq!(f.sort, BOOL_SORT);
         BoolExp::unknown(Lit::new(acts.new_var_default(), true))
     }

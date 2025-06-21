@@ -1,3 +1,4 @@
+use crate::def_recorder::LoggingDefRecorder;
 use crate::full_buf_read::FullBufRead;
 use crate::full_theory::FunctionAssignmentT;
 use crate::intern::*;
@@ -11,7 +12,7 @@ use crate::{euf, solver, AddSexpError, BoolExp, HasSort, SubExp, SuperExp};
 use core::fmt::Arguments;
 use hashbrown::HashMap;
 use internal_iterator::InternalIterator;
-use log::debug;
+use log::info;
 use no_std_compat::prelude::v1::*;
 use smallvec::SmallVec;
 use std::fmt::Formatter;
@@ -1159,7 +1160,7 @@ impl<W: Write, L: Logic> Parser<W, L> {
                         named_assert: self.named_assertions.push(),
                         solver: self.core.solver_mut().create_level(),
                     };
-                    debug!(
+                    info!(
                         "Push ({} -> {})",
                         self.push_info.len(),
                         self.push_info.len() + 1
@@ -1170,10 +1171,10 @@ impl<W: Write, L: Logic> Parser<W, L> {
             Smt2Command::Pop => {
                 let n = rest.try_next_parse()?.unwrap_or(1);
                 if n > self.push_info.len() {
-                    debug!("Pop ({} -> clear)", self.push_info.len());
+                    info!("Pop ({} -> clear)", self.push_info.len());
                     self.clear()
                 } else if n > 0 {
-                    debug!(
+                    info!(
                         "Pop ({} -> {})",
                         self.push_info.len(),
                         self.push_info.len() - n
@@ -1308,6 +1309,6 @@ fn write_body<'a, W: Write, L: Logic>(
 /// Evaluate `data`, the bytes of an `smt2` file, reporting results to `stdout` and errors to
 /// `stderr`
 pub fn interp_smt2(data: impl FullBufRead, out: impl Write, err: impl Write) {
-    let mut p = Parser::<_, (euf::Euf, euf::EufPf, _)>::new(out);
+    let mut p = Parser::<_, (euf::Euf, euf::EufPf, LoggingDefRecorder, _)>::new(out);
     p.interp_smt2(data, err)
 }

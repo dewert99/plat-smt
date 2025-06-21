@@ -17,6 +17,10 @@ const BASE_SYMBOLS: &[&str] = &[
     "let*", "!",
 ];
 
+pub fn resolve_or_fail(s: Symbol) -> &'static str {
+    BASE_SYMBOLS[s.0.get() as usize - 1]
+}
+
 const fn u8_slice_eq(s0: &[u8], s1: &[u8]) -> bool {
     match (s0, s1) {
         ([], []) => true,
@@ -58,6 +62,10 @@ pub const LET_STAR_SYM: Symbol = base_symbol("let*");
 pub const ANNOT_SYM: Symbol = base_symbol("!");
 
 const BASE_SORTS: &[(Symbol, &[Sort])] = &[(BOOL_SYM, &[])];
+
+pub fn resolve_sort_or_fail(s: Sort) -> impl Display {
+    resolve_or_fail(BASE_SORTS[s.0.get() as usize - 1].0)
+}
 
 const fn sort_slice_eq(s0: &[Sort], s1: &[Sort]) -> bool {
     match (s0, s1) {
@@ -128,7 +136,7 @@ impl SymbolInfo {
         let res = res as u32;
         if cfg!(debug_assertions) {
             // this is only useful for logging
-            write!(&mut self.symbol_data, "{name}|{res}").unwrap();
+            write!(&mut self.symbol_data, "{name}@@{res}").unwrap();
         }
         self.symbol_indices.push(self.symbol_data.len());
         Symbol(NonZeroU32::new(res).unwrap())
@@ -169,6 +177,7 @@ fn test_symbols() {
     let g1 = symbols.gen_sym("gen_sym");
     let g2 = symbols.gen_sym("gen_sym");
     assert_ne!(g1, g2);
+    let x = symbols.resolve(g1);
     assert!(symbols.resolve(g1).starts_with("gen_sym"));
     assert!(symbols.resolve(g2).starts_with("gen_sym"));
     assert_eq!(symbols.resolve(TRUE_SYM), "true")

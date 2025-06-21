@@ -66,18 +66,6 @@ pub(crate) fn display_sexp<H, I: IntoIterator>(
     Parenthesized(Some(head), iter.into_iter(), " ")
 }
 
-macro_rules! display_debug {
-    ($ty:ty) => {
-        impl core::fmt::Display for $ty {
-            fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
-                core::fmt::Debug::fmt(self, f)
-            }
-        }
-    };
-}
-
-pub(crate) use display_debug;
-
 pub trait Bind<X> {}
 
 impl<T, X> Bind<X> for T {}

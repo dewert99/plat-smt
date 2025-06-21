@@ -1,10 +1,12 @@
 use crate::collapse::{Collapse, CollapseOut, ExprContext};
 use crate::core_ops::Eq;
+use crate::def_recorder::DefRecorder;
 use crate::exp::*;
 use crate::full_theory::{FullTheory, TopLevelCollapse};
 use crate::intern::*;
 use crate::junction::*;
 use crate::theory::{TheoryArg, TheoryWrapper};
+use crate::tseitin::SatTheoryArgT;
 use crate::util::{DefaultHashBuilder, Either};
 use crate::Symbol;
 use hashbrown::HashMap;
@@ -37,10 +39,25 @@ type BatSolver = platsat::Solver<NoCb>;
 /// The main solver structure including the sat solver and egraph.
 ///
 /// It allows constructing and asserting expressions [`Exp`] within the solver
-#[perfect_derive(Default)]
-pub struct Solver<Euf: FullTheory> {
-    pub(crate) euf: TheoryWrapper<Euf>,
+pub struct Solver<Euf: FullTheory<R>, R> {
+    pub(crate) th: TheoryWrapper<Euf, R>,
     sat: BatSolver,
+}
+
+impl<Th: FullTheory<R> + Default, R: DefRecorder> Default for Solver<Th, R> {
+    fn default() -> Self {
+        let mut res = Solver {
+            th: Default::default(),
+            sat: Default::default(),
+        };
+        res.open(
+            |th: &mut Th, acts| {
+                th.init(acts);
+            },
+            (),
+        );
+        res
+    }
 }
 
 pub type BLit = Lit;
@@ -91,20 +108,20 @@ pub trait SolverCollapse<T: CollapseOut, M> {
     }
 }
 
-impl<Th: FullTheory, T: CollapseOut, M> SolverCollapse<T, M> for Solver<Th>
+impl<R: DefRecorder, Th: FullTheory<R>, T: CollapseOut, M> SolverCollapse<T, M> for Solver<Th, R>
 where
-    Th: TopLevelCollapse<T, M>,
+    Th: TopLevelCollapse<T, M, R>,
 {
     fn collapse_in_ctx(&mut self, t: T, ctx: ExprContext<T::Out>) -> T::Out {
-        let p = Collapse::<T, TheoryArg<Th::LevelMarker>, M>::placeholder(&*self.euf, &t);
+        let p = Collapse::<T, TheoryArg<Th::LevelMarker, R>, M>::placeholder(&*self.th, &t);
         self.open(|th, acts| th.collapse(t, acts, ctx), p)
     }
 }
 
-impl<'a, 'b, Th: FullTheory, T: CollapseOut, M> SolverCollapse<T, M>
-    for (&'a mut Th, &'a mut TheoryArg<'b, Th::LevelMarker>)
+impl<'a, 'b, R, Th: FullTheory<R>, T: CollapseOut, M> SolverCollapse<T, M>
+    for (&'a mut Th, &'a mut TheoryArg<'b, Th::LevelMarker, R>)
 where
-    Th: TopLevelCollapse<T, M>,
+    Th: TopLevelCollapse<T, M, R>,
 {
     fn collapse_in_ctx(&mut self, t: T, ctx: ExprContext<T::Out>) -> T::Out {
         self.0.collapse(t, self.1, ctx)
@@ -127,9 +144,9 @@ pub trait ReuseMem<T> {
     fn reuse_mem(&mut self) -> T;
 }
 
-impl<Th: FullTheory, const B: bool> ReuseMem<Junction<B>> for Solver<Th> {
+impl<Th: FullTheory<R>, R, const B: bool> ReuseMem<Junction<B>> for Solver<Th, R> {
     fn reuse_mem(&mut self) -> Junction<B> {
-        self.euf.new_junction()
+        self.th.new_junction()
     }
 }
 
@@ -139,7 +156,7 @@ impl<T, S: ReuseMem<T>, B> ReuseMem<T> for SolverWithBound<S, B> {
     }
 }
 
-impl<Euf: FullTheory> Solver<Euf> {
+impl<Th: FullTheory<R>, R: DefRecorder> Solver<Th, R> {
     pub fn is_ok(&self) -> bool {
         self.sat.is_ok()
     }
@@ -151,12 +168,12 @@ impl<Euf: FullTheory> Solver<Euf> {
 
     pub(crate) fn open<U>(
         &mut self,
-        f: impl FnOnce(&mut Euf, &mut TheoryArg<Euf::LevelMarker>) -> U,
+        f: impl FnOnce(&mut Th, &mut TheoryArg<Th::LevelMarker, R>) -> U,
         default: U,
     ) -> U {
         let mut ret = default;
         self.sat.with_theory_arg(|acts| {
-            let (euf, mut acts) = self.euf.open(acts);
+            let (euf, mut acts) = self.th.open(acts);
             ret = f(euf, &mut acts)
         });
         ret
@@ -165,9 +182,9 @@ impl<Euf: FullTheory> Solver<Euf> {
     pub fn assert_eq<M, MEq, T>(&mut self, t: T, target: T::Out) -> Result<(), (Sort, Sort)>
     where
         T: CollapseOut,
-        Euf: TopLevelCollapse<T, M> + TopLevelCollapse<Eq<T::Out>, MEq>,
+        Th: TopLevelCollapse<T, M, R> + TopLevelCollapse<Eq<T::Out>, MEq, R>,
     {
-        let p: T::Out = Collapse::<T, TheoryArg<Euf::LevelMarker>, M>::placeholder(&*self.euf, &t);
+        let p: T::Out = Collapse::<T, TheoryArg<Th::LevelMarker, R>, M>::placeholder(&*self.th, &t);
         if p.sort() != target.sort() {
             return Err((p.sort(), target.sort()));
         }
@@ -189,11 +206,11 @@ impl<Euf: FullTheory> Solver<Euf> {
     }
 
     pub fn intern(&self) -> &InternInfo {
-        self.euf.intern()
+        self.th.intern()
     }
 
     pub fn intern_mut(&mut self) -> &mut InternInfo {
-        self.euf.intern_mut()
+        self.th.intern_mut()
     }
 
     /// Assert that `b` is true
@@ -225,7 +242,7 @@ impl<Euf: FullTheory> Solver<Euf> {
             true => lbool::FALSE,
             false => self
                 .sat
-                .solve_limited_preserving_trail_th(&mut self.euf, &c.lits),
+                .solve_limited_preserving_trail_th(&mut self.th, &c.lits),
         };
         if res == lbool::FALSE {
             debug!("check-sat {c:?} returned unsat",);
@@ -250,16 +267,17 @@ impl<Euf: FullTheory> Solver<Euf> {
 
     /// Restores the state after calling `raw_check_sat_assuming`
     pub fn pop_model(&mut self) {
-        self.sat.pop_model(&mut self.euf);
+        self.sat.pop_model(&mut self.th);
     }
 
     pub fn clear(&mut self) {
         self.sat.reset();
-        self.euf.clear();
+        self.th.clear();
+        self.open(|th, acts| th.init(acts), ());
     }
 
     pub fn simplify(&mut self) {
-        self.sat.simplify_th(&mut self.euf);
+        self.sat.simplify_th(&mut self.th);
     }
 
     /// Like [`check_sat_assuming`](Solver::check_sat_assuming) but takes in an
@@ -296,16 +314,16 @@ impl<Euf: FullTheory> Solver<Euf> {
     // }
 
     pub(crate) fn last_unsat_core(&mut self) -> impl InternalIterator<Item = Lit> + '_ {
-        self.sat.unsat_core(&mut self.euf)
+        self.sat.unsat_core(&mut self.th)
     }
 
-    pub fn function_info<'a>(&'a mut self) -> (impl Fn(Symbol) -> Euf::FunctionInfo<'a>, &'a Self) {
-        self.euf.init_function_info();
-        (|f| self.euf.get_function_info(f), self)
+    pub fn function_info<'a>(&'a mut self) -> (impl Fn(Symbol) -> Th::FunctionInfo<'a>, &'a Self) {
+        self.th.init_function_info();
+        (|f| self.th.get_function_info(f), self)
     }
 
-    pub fn theory(&self) -> &Euf {
-        &self.euf
+    pub fn theory(&self) -> &Th {
+        &self.th
     }
 
     pub fn sat_options(&self) -> SolverOpts {
@@ -325,7 +343,7 @@ pub struct LevelMarker<M> {
     euf: Option<M>,
 }
 
-impl<Euf: FullTheory> Solver<Euf> {
+impl<Euf: FullTheory<R>, R: DefRecorder> Solver<Euf, R> {
     /// Creates a [`LevelMarker`] which can later be used with [`pop_to_level`](Self::pop_to_level)
     /// to reset the solver to the state it has now
     ///
@@ -335,17 +353,17 @@ impl<Euf: FullTheory> Solver<Euf> {
         trace!("Push sat model: {:?}", self.sat.raw_model());
         LevelMarker {
             sat: self.sat.checkpoint(),
-            euf: self.is_ok().then(|| self.euf.create_level()),
+            euf: self.is_ok().then(|| self.th.create_level()),
         }
     }
 
     /// Resets the solver to the state it had when `marker` was created by [`create_level`](Self::create_level)
     pub fn pop_to_level(&mut self, marker: LevelMarker<Euf::LevelMarker>) {
-        self.euf.restore_trail_len(marker.sat.trail_len());
+        self.th.restore_trail_len(marker.sat.trail_len());
         self.sat.restore_checkpoint(marker.sat);
         trace!("Pop sat model: {:?}", self.sat.raw_model());
         if let Some(x) = marker.euf {
-            self.euf.pop_to_level(x, true);
+            self.th.pop_to_level(x, true);
         }
     }
 }
