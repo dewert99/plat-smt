@@ -1,7 +1,9 @@
 use crate::collapse::{Collapse, CollapseOut, ExprContext};
-use crate::intern::{DisplayInterned, InternInfo, Sort, Symbol, BOOL_SORT};
-use crate::util::display_debug;
-use core::fmt::{Debug, Formatter};
+use crate::intern::{
+    DisplayInterned, InternInfo, Sort, Symbol, BOOL_SORT, FALSE_SYM, NOT_SYM, TRUE_SYM,
+};
+use crate::rexp::{rexp_debug, AsRexp, Namespace, NamespaceVar, Rexp};
+use core::fmt::{Debug, Display, Formatter};
 use core::hash::Hash;
 use core::marker::PhantomData;
 use platsat::clause::{Lit, Var};
@@ -15,12 +17,21 @@ pub trait HasSort {
 }
 
 pub trait ExpLike:
-    Copy + Debug + DisplayInterned + HasSort + Eq + Hash + Ord + CollapseOut<Out = Self>
+    Copy + Debug + DisplayInterned + AsRexp + HasSort + Eq + Hash + Ord + CollapseOut<Out = Self>
 {
 }
 
-impl<T: Copy + Debug + DisplayInterned + HasSort + Eq + Hash + Ord + CollapseOut<Out = Self>>
-    ExpLike for T
+impl<
+        T: Copy
+            + Debug
+            + DisplayInterned
+            + HasSort
+            + Eq
+            + Hash
+            + Ord
+            + AsRexp
+            + CollapseOut<Out = Self>,
+    > ExpLike for T
 {
 }
 
@@ -122,6 +133,15 @@ impl<E1: HasSort, E2: HasSort> HasSort for EitherExp<E1, E2> {
     }
 }
 
+impl<L: crate::rexp::AsRexp, R: crate::rexp::AsRexp> crate::rexp::AsRexp for EitherExp<L, R> {
+    fn as_rexp<O>(&self, f: impl for<'a> FnOnce(Rexp<'a>) -> O) -> O {
+        match self {
+            EitherExp::Left(l) => l.as_rexp(f),
+            EitherExp::Right(r) => r.as_rexp(f),
+        }
+    }
+}
+
 impl<E1: Debug, E2: Debug> Debug for EitherExp<E1, E2> {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         match self {
@@ -207,22 +227,34 @@ impl BitXor<bool> for BoolExp {
     }
 }
 
-impl Debug for BoolExp {
-    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+impl AsRexp for BoolExp {
+    fn as_rexp<R>(&self, f: impl FnOnce(Rexp<'_>) -> R) -> R {
         match self.to_lit() {
-            Err(c) => Debug::fmt(&c, f),
+            Err(c) => f(Rexp::Call(if c { TRUE_SYM } else { FALSE_SYM }, &[])),
             Ok(l) => {
+                let base = Rexp::Nv(NamespaceVar(Namespace::Bool, l.var().idx()));
                 if l.sign() {
-                    write!(f, "(as @b{:?} Bool)", l.var())
+                    f(base)
                 } else {
-                    write!(f, "(as (not @b{:?}) Bool)", l.var())
+                    f(Rexp::Call(NOT_SYM, &[base]))
                 }
             }
         }
     }
 }
 
-display_debug!(BoolExp);
+rexp_debug!(BoolExp);
+
+impl Display for BoolExp {
+    fn fmt(&self, f: &mut Formatter<'_>) -> core::fmt::Result {
+        match self.to_lit() {
+            Err(c) => Debug::fmt(&c, f),
+            Ok(_) => {
+                write!(f, "(as {self:?} Bool)")
+            }
+        }
+    }
+}
 
 impl<E1: ExpLike, E2: ExpLike> CollapseOut for EitherExp<E1, E2> {
     type Out = EitherExp<E1, E2>;

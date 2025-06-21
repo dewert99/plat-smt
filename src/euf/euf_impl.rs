@@ -3,25 +3,25 @@ use super::euf::{litvec, BoolClass, EClass, Euf, Exp, FunctionInfoIter, PushInfo
 use super::explain::Justification;
 use crate::collapse::{Collapse, CollapseOut, ExprContext};
 use crate::core_ops::{Distinct, DistinctPf, Eq, EqPf, ItePf};
+use crate::def_recorder::DefRecorder;
 use crate::exp::Fresh;
 use crate::full_theory::FullTheory;
-use crate::intern::{DisplayInterned, InternInfo, Symbol, BOOL_SORT};
+use crate::intern::{DisplayInterned, InternInfo, Symbol, BOOL_SORT, DISTINCT_SYM};
 use crate::outer_solver::Bound;
 use crate::parser_core::SexpTerminal;
 use crate::parser_fragment::{index_iter, ParserFragment, PfResult};
+use crate::rexp::{rexp_debug, AsRexp, Namespace, NamespaceVar, Rexp};
 use crate::solver::{SolverCollapse, SolverWithBound};
-use crate::theory::TheoryArg;
-use crate::tseitin::BoolOpPf;
+use crate::tseitin::{BoolOpPf, SatTheoryArgT};
 use crate::util::{pairwise_sym, HashMap};
 use crate::{AddSexpError, BoolExp, Conjunction, HasSort, Solver, Sort, SubExp, SuperExp};
 use alloc::borrow::Cow;
-use core::fmt::Formatter;
-use log::debug;
+use core::fmt::{Debug, Formatter};
 use plat_egg::raw::Language;
 use plat_egg::Id;
 use platsat::Lit;
 
-#[derive(Copy, Clone, Eq, PartialEq, Hash, Ord, PartialOrd, Debug)]
+#[derive(Copy, Clone, Eq, PartialEq, Hash, Ord, PartialOrd)]
 pub struct UExp {
     pub(super) id: Id,
     pub(super) sort: Sort,
@@ -48,6 +48,17 @@ impl UExp {
     }
 }
 
+impl AsRexp for UExp {
+    fn as_rexp<R>(&self, f: impl for<'a> FnOnce(Rexp<'a>) -> R) -> R {
+        f(Rexp::Nv(NamespaceVar(
+            Namespace::Uninterpreted,
+            usize::from(self.id) as u32,
+        )))
+    }
+}
+
+rexp_debug!(UExp);
+
 impl DisplayInterned for UExp {
     fn fmt(&self, i: &InternInfo, f: &mut Formatter<'_>) -> std::fmt::Result {
         write!(f, "(as @v{:?} {})", self.id(), self.sort().with_intern(i))
@@ -72,7 +83,7 @@ impl Into<Cow<'static, str>> for Never {
     }
 }
 
-impl FullTheory for Euf {
+impl<R: DefRecorder> FullTheory<R> for Euf {
     type Exp = Exp;
     fn init_function_info(&mut self) {
         self.init_function_info()
@@ -89,24 +100,29 @@ impl FullTheory for Euf {
 }
 
 impl Euf {
-    fn sorted_fn_id(
+    fn sorted_fn_id<'a>(
         &mut self,
         f: Op,
         children: Children,
         target_sort: Sort,
         ctx: ExprContext<Exp>,
-        acts: &mut TheoryArg<PushInfo>,
+        acts: &mut impl SatTheoryArgT<'a, M = PushInfo>,
     ) -> (Id, Exp, bool) {
         let mut added = false;
-        let id = self.egraph.add(f.into(), children, |id| {
+        let id = self.egraph.add(f.into(), children, |id, children| {
+            acts.log_def(
+                UExp::new(id, target_sort),
+                f.sym(),
+                children.iter().map(|id| UExp::new(*id, target_sort)),
+            );
             added = true;
-            debug!("adding for id {id} in {ctx:?}");
             if target_sort == BOOL_SORT {
                 let lits = if let ExprContext::AssertEq(_) = ctx {
                     litvec![]
                 } else {
                     let l = Lit::new(acts.new_var_default(), true);
                     self.lit.add_id_to_lit(id, l, false);
+                    acts.log_def_exp(BoolExp::unknown(l), UExp::new(id, BOOL_SORT));
                     litvec![l]
                 };
 
@@ -136,12 +152,12 @@ impl Euf {
         (id, exp, added)
     }
 
-    pub(super) fn add_eq_node(
+    pub(super) fn add_eq_node<'a>(
         &mut self,
         id1: Id,
         id2: Id,
         ctx: ExprContext<BoolExp>,
-        acts: &mut TheoryArg<PushInfo>,
+        acts: &mut impl SatTheoryArgT<'a, M = PushInfo>,
     ) -> (bool, BoolExp) {
         let cid1 = self.find(id1);
         let cid2 = self.find(id2);
@@ -159,7 +175,12 @@ impl Euf {
         (added, exp)
     }
 
-    fn assert_eq(&mut self, e1: Exp, e2: Exp, acts: &mut TheoryArg<PushInfo>) -> () {
+    fn assert_eq<'a>(
+        &mut self,
+        e1: Exp,
+        e2: Exp,
+        acts: &mut impl SatTheoryArgT<'a, M = PushInfo>,
+    ) -> () {
         match (e1, e2) {
             (Exp::Left(b1), Exp::Left(b2)) => match (b1.to_lit(), b2.to_lit()) {
                 (Err(pol), Ok(l)) | (Ok(l), Err(pol)) => {
@@ -187,7 +208,12 @@ impl Euf {
         }
     }
 
-    fn unify_lits(&mut self, acts: &mut TheoryArg<PushInfo>, b1: Lit, b2: Lit) {
+    fn unify_lits<'a>(
+        &mut self,
+        acts: &mut impl SatTheoryArgT<'a, M = PushInfo>,
+        b1: Lit,
+        b2: Lit,
+    ) {
         if let Some(id1) = self.check_id_for_lit(b1) {
             if let Some(id2) = self.check_id_for_lit(b2) {
                 let _ = self.union(acts, id1, id2, Justification::NOOP);
@@ -215,7 +241,7 @@ impl<'a, Arg> Collapse<UExp, Arg, EufMarker> for Euf {
 
 impl<'a, Arg> Collapse<Fresh<UExp>, Arg, EufMarker> for Euf {
     fn collapse(&mut self, fresh: Fresh<UExp>, _: &mut Arg, _: ExprContext<UExp>) -> UExp {
-        let id = self.egraph.add(fresh.name.into(), Children::new(), |_| {
+        let id = self.egraph.add(fresh.name.into(), Children::new(), |_, _| {
             EClass::Uninterpreted(fresh.sort)
         });
         UExp::new(id, fresh.sort)
@@ -226,11 +252,11 @@ impl<'a, Arg> Collapse<Fresh<UExp>, Arg, EufMarker> for Euf {
     }
 }
 
-impl<'a, 'b> Collapse<Distinct<'b, Exp>, TheoryArg<'a, PushInfo>, EufMarker> for Euf {
+impl<'a, 'b, A: SatTheoryArgT<'a, M = PushInfo>> Collapse<Distinct<'b, Exp>, A, EufMarker> for Euf {
     fn collapse(
         &mut self,
         Distinct(exps): Distinct<Exp>,
-        acts: &mut TheoryArg<'a, PushInfo>,
+        acts: &mut A,
         ctx: ExprContext<BoolExp>,
     ) -> BoolExp {
         if ctx != ExprContext::Approx(false) && ctx != ExprContext::AssertEq(BoolExp::TRUE) {
@@ -264,13 +290,15 @@ impl<'a, 'b> Collapse<Distinct<'b, Exp>, TheoryArg<'a, PushInfo>, EufMarker> for
         let b = if ctx == ExprContext::AssertEq(BoolExp::TRUE) {
             BoolExp::TRUE
         } else {
-            BoolExp::unknown(Lit::new(acts.new_var_default(), true))
+            let b = BoolExp::unknown(Lit::new(acts.new_var_default(), true));
+            acts.log_def(b, DISTINCT_SYM, exps.iter().copied());
+            b
         };
         for exp in exps {
             let id = self.id_for_exp(*exp, acts, false);
             let mut added = false;
             self.egraph
-                .add(distinct_sym.into(), Children::from_slice(&[id]), |_| {
+                .add(distinct_sym.into(), Children::from_slice(&[id]), |_, _| {
                     added = true;
                     EClass::Singleton(!b)
                 });
@@ -286,11 +314,11 @@ impl<'a, 'b> Collapse<Distinct<'b, Exp>, TheoryArg<'a, PushInfo>, EufMarker> for
     }
 }
 
-impl<'a> Collapse<Eq<Exp>, TheoryArg<'a, PushInfo>, EufMarker> for Euf {
+impl<'a, A: SatTheoryArgT<'a, M = PushInfo>> Collapse<Eq<Exp>, A, EufMarker> for Euf {
     fn collapse(
         &mut self,
         Eq(e1, e2): Eq<Exp>,
-        acts: &mut TheoryArg<'a, PushInfo>,
+        acts: &mut A,
         ctx: ExprContext<BoolExp>,
     ) -> BoolExp {
         if e1 == e2 {
@@ -333,11 +361,13 @@ impl<I: Iterator<Item = Exp>> CollapseOut for UFn<I> {
     type Out = Exp;
 }
 
-impl<'a, I: Iterator<Item = Exp>> Collapse<UFn<I>, TheoryArg<'a, PushInfo>, EufMarker> for Euf {
+impl<'a, I: Iterator<Item = Exp>, A: SatTheoryArgT<'a, M = PushInfo>> Collapse<UFn<I>, A, EufMarker>
+    for Euf
+{
     fn collapse(
         &mut self,
         UFn(f, children, sort): UFn<I>,
-        acts: &mut TheoryArg<'a, PushInfo>,
+        acts: &mut A,
         ctx: ExprContext<Exp>,
     ) -> Exp {
         let children = self.resolve_children(children, acts);
@@ -353,12 +383,12 @@ impl<'a, I: Iterator<Item = Exp>> Collapse<UFn<I>, TheoryArg<'a, PushInfo>, EufM
     }
 }
 
-type EufSolver = SolverWithBound<Solver<Euf>, HashMap<Symbol, Bound<Exp>>>;
+type EufSolver<R> = SolverWithBound<Solver<Euf, R>, HashMap<Symbol, Bound<Exp>>>;
 
 #[derive(Default)]
 pub struct UFnPf;
 
-impl ParserFragment<Exp, EufSolver, EufMarker> for UFnPf {
+impl<R: DefRecorder> ParserFragment<Exp, EufSolver<R>, EufMarker> for UFnPf {
     fn supports(&self, _: Symbol) -> bool {
         true
     }
@@ -367,7 +397,7 @@ impl ParserFragment<Exp, EufSolver, EufMarker> for UFnPf {
         &self,
         f: Symbol,
         children: &mut [Exp],
-        solver: &mut EufSolver,
+        solver: &mut EufSolver<R>,
         ctx: ExprContext<Exp>,
     ) -> Result<Exp, AddSexpError> {
         use AddSexpError::*;
@@ -416,8 +446,8 @@ impl ParserFragment<Exp, EufSolver, EufMarker> for UFnPf {
 #[derive(Default)]
 pub struct EgraphPf<I>(I);
 
-impl<E: SubExp<Exp, MS> + Copy, M, MS, I: ParserFragment<E, EufSolver, M>>
-    ParserFragment<E, EufSolver, (M, MS)> for EgraphPf<I>
+impl<R: DefRecorder, E: SubExp<Exp, MS> + Copy, M, MS, I: ParserFragment<E, EufSolver<R>, M>>
+    ParserFragment<E, EufSolver<R>, (M, MS)> for EgraphPf<I>
 {
     fn supports(&self, s: Symbol) -> bool {
         self.0.supports(s)
@@ -425,7 +455,7 @@ impl<E: SubExp<Exp, MS> + Copy, M, MS, I: ParserFragment<E, EufSolver, M>>
     fn handle_terminal(
         &self,
         x: SexpTerminal,
-        solver: &mut EufSolver,
+        solver: &mut EufSolver<R>,
         ctx: ExprContext<E>,
     ) -> PfResult<E> {
         self.0.handle_terminal(x, solver, ctx)
@@ -435,7 +465,7 @@ impl<E: SubExp<Exp, MS> + Copy, M, MS, I: ParserFragment<E, EufSolver, M>>
         &self,
         f: Symbol,
         children: &mut [E],
-        solver: &mut EufSolver,
+        solver: &mut EufSolver<R>,
         ctx: ExprContext<E>,
     ) -> Result<E, AddSexpError> {
         let Some(children_ids) = solver.solver.open(
@@ -453,10 +483,10 @@ impl<E: SubExp<Exp, MS> + Copy, M, MS, I: ParserFragment<E, EufSolver, M>>
 
         let mut enode = SymbolLang::new(f.into(), children_ids);
 
-        if let Some(existing_id) = solver.solver.euf.egraph.lookup(&mut enode) {
-            let res: Exp = match &*solver.solver.euf.egraph[existing_id] {
+        if let Some(existing_id) = solver.solver.th.egraph.lookup(&mut enode) {
+            let res: Exp = match &*solver.solver.th.egraph[existing_id] {
                 EClass::Uninterpreted(s) => {
-                    UExp::new(solver.solver.euf.egraph.find(existing_id), *s).upcast()
+                    UExp::new(solver.solver.th.egraph.find(existing_id), *s).upcast()
                 }
                 EClass::Bool(BoolClass::Const(b)) => BoolExp::from_bool(*b).upcast(),
                 EClass::Bool(BoolClass::Unknown(l)) => BoolExp::unknown(l[0]).upcast(),

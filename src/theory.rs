@@ -1,4 +1,6 @@
-use crate::intern::InternInfo;
+use crate::def_recorder::DefRecorder;
+use crate::intern::{InternInfo, Symbol};
+use crate::ExpLike;
 use core::fmt::{Debug, Formatter};
 use log::debug;
 use no_std_compat::prelude::v1::*;
@@ -41,27 +43,29 @@ struct PushInfo<X> {
 }
 
 #[perfect_derive(Default, Debug)]
-pub struct TheoryWrapper<Th: Incremental> {
+pub struct TheoryWrapper<Th: Incremental, R> {
     th: Th,
     prev_model_len: u32,
     // whether we've handled prop_log since the last push or pop
     done_prop_log: bool,
-    pub(crate) arg: IncrementalArgData<Th::LevelMarker>,
+    pub(crate) arg: IncrementalArgData<Th::LevelMarker, R>,
 }
 
 #[perfect_derive(Default)]
-pub struct IncrementalArgData<M> {
+pub struct IncrementalArgData<M, R> {
     total_level: u32,
     push_log: Vec<PushInfo<M>>,
     pub(crate) junction_buf: Vec<Lit>,
     intern: InternInfo,
+    recorder: R,
 }
 
-impl<M: Debug> Debug for IncrementalArgData<M> {
+impl<M: Debug, R: Debug> Debug for IncrementalArgData<M, R> {
     fn fmt(&self, f: &mut Formatter<'_>) -> core::fmt::Result {
         f.debug_struct("IncrementalArg")
             .field("decision_level", &self.total_level)
             .field("push_log", &self.push_log)
+            .field("recorder", &self.recorder)
             .finish()
     }
 }
@@ -96,33 +100,79 @@ impl<'a, T> Reborrow for &'a mut T {
     }
 }
 
-pub struct TheoryArgRaw<'a, S, M> {
+pub struct TheoryArgRaw<'a, S, M, R> {
     pub sat: S,
-    pub incr: &'a mut IncrementalArgData<M>,
+    pub incr: &'a mut IncrementalArgData<M, R>,
 }
 
-pub type TheoryArg<'a, M> = TheoryArgRaw<'a, SatTheoryArg<'a>, M>;
-pub type ExplainTheoryArg<'a, M> = TheoryArgRaw<'a, &'a mut SatExplainTheoryArg, M>;
+pub type TheoryArg<'a, M, R> = TheoryArgRaw<'a, SatTheoryArg<'a>, M, R>;
+pub type ExplainTheoryArg<'a, M, R> = TheoryArgRaw<'a, &'a mut SatExplainTheoryArg, M, R>;
 
-impl<'a, S, M> TheoryArgRaw<'a, S, M> {
-    pub fn base_marker(&self) -> Option<&M> {
+pub trait TheoryArgT {
+    type M;
+
+    type R: DefRecorder;
+
+    fn base_marker(&self) -> Option<&Self::M>;
+
+    fn last_marker(&self) -> Option<&Self::M>;
+    fn intern(&self) -> &InternInfo;
+
+    fn intern_mut(&mut self) -> &mut InternInfo;
+
+    fn junction_buf_mut(&mut self) -> &mut Vec<Lit>;
+
+    fn recorder_mut(&mut self) -> (&InternInfo, &mut Self::R);
+
+    fn log_def<Exp: ExpLike, Exp2: ExpLike>(
+        &mut self,
+        val: Exp,
+        f: Symbol,
+        arg: impl Iterator<Item = Exp2> + Clone,
+    ) {
+        let (intern, recorder) = self.recorder_mut();
+        recorder.log_def(val, f, arg, intern)
+    }
+
+    fn log_def_exp<Exp: ExpLike, Exp2: ExpLike>(&mut self, val: Exp, def: Exp2) {
+        let (intern, recorder) = self.recorder_mut();
+        recorder.log_def_exp(val, def, intern)
+    }
+    fn log_alias<Exp: ExpLike>(&mut self, alias: Symbol, exp: Exp) {
+        let (intern, recorder) = self.recorder_mut();
+        recorder.log_alias(alias, exp, intern)
+    }
+}
+
+impl<'a, S, M, R: DefRecorder> TheoryArgT for TheoryArgRaw<'a, S, M, R> {
+    type M = M;
+    type R = R;
+    fn base_marker(&self) -> Option<&M> {
         self.incr.push_log.first().map(|x| &x.th)
     }
 
-    pub fn last_marker(&self) -> Option<&M> {
+    fn last_marker(&self) -> Option<&M> {
         self.incr.push_log.last().map(|x| &x.th)
     }
 
-    pub fn intern(&self) -> &InternInfo {
+    fn intern(&self) -> &InternInfo {
         &self.incr.intern
     }
 
-    pub fn intern_mut(&mut self) -> &mut InternInfo {
+    fn intern_mut(&mut self) -> &mut InternInfo {
         &mut self.incr.intern
+    }
+
+    fn junction_buf_mut(&mut self) -> &mut Vec<Lit> {
+        &mut self.incr.junction_buf
+    }
+
+    fn recorder_mut(&mut self) -> (&InternInfo, &mut Self::R) {
+        (&self.incr.intern, &mut self.incr.recorder)
     }
 }
 
-impl<'a, S, M> Deref for TheoryArgRaw<'a, S, M> {
+impl<'a, S, M, R> Deref for TheoryArgRaw<'a, S, M, R> {
     type Target = S;
 
     fn deref(&self) -> &Self::Target {
@@ -130,15 +180,15 @@ impl<'a, S, M> Deref for TheoryArgRaw<'a, S, M> {
     }
 }
 
-impl<'a, S, M> DerefMut for TheoryArgRaw<'a, S, M> {
+impl<'a, S, M, R> DerefMut for TheoryArgRaw<'a, S, M, R> {
     fn deref_mut(&mut self) -> &mut Self::Target {
         &mut self.sat
     }
 }
 
-impl<'a, S: Reborrow, M> Reborrow for TheoryArgRaw<'a, S, M> {
+impl<'a, S: Reborrow, M, R> Reborrow for TheoryArgRaw<'a, S, M, R> {
     type Target<'b>
-        = TheoryArgRaw<'b, S::Target<'b>, M>
+        = TheoryArgRaw<'b, S::Target<'b>, M, R>
     where
         Self: 'b;
 
@@ -150,17 +200,12 @@ impl<'a, S: Reborrow, M> Reborrow for TheoryArgRaw<'a, S, M> {
     }
 }
 
-impl<'a, M> TheoryArg<'a, M> {
-    pub fn for_explain(&mut self) -> ExplainTheoryArg<M> {
-        ExplainTheoryArg {
-            sat: self.sat.explain_arg(),
-            incr: self.incr.reborrow(),
-        }
-    }
-}
-
 /// Theory that parametrizes the solver and can react on events.
 pub trait Theory<Arg, ExplainArg> {
+    /// Extra initialization step called with theory arg in [`Default`] implementation and after
+    /// clear
+    fn init(&mut self, _acts: &mut Arg) {}
+
     /// Pre-check called before `learn`, return `Err` if there is a conflict
     #[allow(unused_variables)]
     fn initial_check(&mut self, acts: &mut Arg) -> Result<(), ()> {
@@ -196,9 +241,13 @@ pub trait Theory<Arg, ExplainArg> {
 }
 
 impl<
+        R,
         Th: Incremental
-            + for<'a> Theory<TheoryArg<'a, Th::LevelMarker>, ExplainTheoryArg<'a, Th::LevelMarker>>,
-    > TheoryWrapper<Th>
+            + for<'a> Theory<
+                TheoryArg<'a, Th::LevelMarker, R>,
+                ExplainTheoryArg<'a, Th::LevelMarker, R>,
+            >,
+    > TheoryWrapper<Th, R>
 {
     pub fn clear(&mut self) {
         self.th.clear();
@@ -215,7 +264,10 @@ impl<
     pub fn open<'a, S: Reborrow>(
         &'a mut self,
         sat: &'a mut S,
-    ) -> (&'a mut Th, TheoryArgRaw<'a, S::Target<'a>, Th::LevelMarker>) {
+    ) -> (
+        &'a mut Th,
+        TheoryArgRaw<'a, S::Target<'a>, Th::LevelMarker, R>,
+    ) {
         (
             &mut self.th,
             TheoryArgRaw {
@@ -247,9 +299,13 @@ impl<
 }
 
 impl<
+        R,
         Th: Incremental
-            + for<'a> Theory<TheoryArg<'a, Th::LevelMarker>, ExplainTheoryArg<'a, Th::LevelMarker>>,
-    > SatTheory for TheoryWrapper<Th>
+            + for<'a> Theory<
+                TheoryArg<'a, Th::LevelMarker, R>,
+                ExplainTheoryArg<'a, Th::LevelMarker, R>,
+            >,
+    > SatTheory for TheoryWrapper<Th, R>
 {
     fn final_check(&mut self, acts: &mut SatTheoryArg) {
         let mut acts = TheoryArg {
@@ -341,7 +397,7 @@ impl<
     }
 }
 
-impl<Th: Incremental> Deref for TheoryWrapper<Th> {
+impl<Th: Incremental, R> Deref for TheoryWrapper<Th, R> {
     type Target = Th;
 
     fn deref(&self) -> &Self::Target {
@@ -349,7 +405,7 @@ impl<Th: Incremental> Deref for TheoryWrapper<Th> {
     }
 }
 
-impl<Th: Incremental> DerefMut for TheoryWrapper<Th> {
+impl<Th: Incremental, R> DerefMut for TheoryWrapper<Th, R> {
     fn deref_mut(&mut self) -> &mut Self::Target {
         &mut self.th
     }

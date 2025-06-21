@@ -219,7 +219,12 @@ impl<D> Deref for EGraph<D> {
 }
 
 impl EGraph<EClass> {
-    pub fn add(&mut self, op: Op, children: Children, mut mk_data: impl FnMut(Id) -> EClass) -> Id {
+    pub fn add(
+        &mut self,
+        op: Op,
+        children: Children,
+        mut mk_data: impl FnMut(Id, &[Id]) -> EClass,
+    ) -> Id {
         let id = RawEGraph::raw_add(
             self,
             |x| &mut x.inner,
@@ -231,7 +236,7 @@ impl EGraph<EClass> {
             |_, _, _| unreachable!(),
             |this, id, _| {
                 this.explain.add(id);
-                mk_data(id)
+                mk_data(id, &this.id_to_node(id).children)
             },
         );
         self.inner.find_mut(id)

@@ -1,10 +1,9 @@
 use crate::collapse::{Collapse, CollapseOut, ExprContext};
-use crate::exp::Fresh;
+use crate::exp::{EitherExp, Fresh};
 use crate::intern::{Symbol, DISTINCT_SYM, EQ_SYM, IF_SYM, ITE_SYM};
-use crate::parser_fragment::{exact_args, index_iter, mandatory_args, ParserFragment, PfResult};
+use crate::parser_fragment::{exact_args, index_iter, mandatory_args, ParserFragment};
 use crate::solver::{ReuseMem, SolverCollapse};
-use crate::theory::TheoryArg;
-use crate::tseitin::{andor_sub_ctx, BoolOpPf, TseitenMarker};
+use crate::tseitin::{andor_sub_ctx, BoolOpPf, SatTheoryArgT, TseitenMarker};
 use crate::util::extend_result;
 use crate::{AddSexpError, BoolExp, Conjunction, ExpLike, SubExp, SuperExp};
 
@@ -79,27 +78,36 @@ impl<'a, Exp: ExpLike> Ite<Exp> {
 impl<Exp: ExpLike> CollapseOut for Ite<Exp> {
     type Out = Exp;
 }
-
 pub struct IteMarker<Eq, Fresh>(Eq, Fresh);
 impl<
         'a,
         Exp: ExpLike,
-        M,
+        A: SatTheoryArgT<'a>,
         EqM,
         FM,
-        Th: Collapse<Eq<Exp>, TheoryArg<'a, M>, EqM> + Collapse<Fresh<Exp>, TheoryArg<'a, M>, FM>,
-    > Collapse<Ite<Exp>, TheoryArg<'a, M>, IteMarker<EqM, FM>> for Th
+        Th: Collapse<Eq<Exp>, A, EqM> + Collapse<Fresh<Exp>, A, FM>,
+    > Collapse<Ite<Exp>, A, IteMarker<EqM, FM>> for Th
 {
-    fn collapse(&mut self, t: Ite<Exp>, acts: &mut TheoryArg<'a, M>, ctx: ExprContext<Exp>) -> Exp {
+    fn collapse(&mut self, t: Ite<Exp>, acts: &mut A, ctx: ExprContext<Exp>) -> Exp {
         match t.0.to_lit() {
             Ok(i) => {
                 let res = match ctx {
                     ExprContext::AssertEq(x) if x.sort() == t.1.sort() => x,
-                    _ => self.collapse(
-                        Fresh::new(acts.intern_mut().symbols.gen_sym("ite"), t.1.sort()).unwrap(),
-                        acts,
-                        ExprContext::Exact,
-                    ),
+                    _ => {
+                        let res = self.collapse(
+                            Fresh::new(acts.intern_mut().symbols.gen_sym("ite"), t.1.sort())
+                                .unwrap(),
+                            acts,
+                            ExprContext::Exact,
+                        );
+                        let args = [
+                            EitherExp::Left(t.0),
+                            EitherExp::Right(t.1),
+                            EitherExp::Right(t.2),
+                        ];
+                        acts.log_def(res, ITE_SYM, args.iter().copied());
+                        res
+                    }
                 };
 
                 let eq1 = self.collapse(Eq::new_unchecked(res, t.1), acts, ExprContext::Exact);

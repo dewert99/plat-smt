@@ -1,10 +1,11 @@
 use crate::collapse::ExprContext;
+use crate::def_recorder::DefRecorder;
 use crate::exp::Fresh;
 use crate::full_theory::FullTheory;
 use crate::intern::*;
 use crate::parser_fragment::ParserFragment;
 use crate::solver::{SolverCollapse, SolverWithBound};
-use crate::theory::TheoryArg;
+use crate::theory::{TheoryArg, TheoryArgT};
 use crate::util::HashMap;
 use crate::AddSexpError::{AsSortMismatch, Unbound};
 use crate::{
@@ -12,19 +13,28 @@ use crate::{
 };
 use alloc::vec::Vec;
 use hashbrown::hash_map::Entry;
-use log::{debug, info};
+use log::info;
 use smallvec::SmallVec;
+use std::iter;
 
-type WrapSolver<T, Exp> = SolverWithBound<Solver<T>, HashMap<Symbol, Bound<Exp>>>;
+#[allow(type_alias_bounds)]
+type WrapSolver<L: Logic> =
+    SolverWithBound<Solver<L::Theory, L::R>, HashMap<Symbol, Bound<L::Exp>>>;
 
 pub trait Logic {
     type Exp: SuperExp<BoolExp, Self::EM> + ExpLike;
 
     type LevelMarker: Clone;
-    type Theory: FullTheory<Exp = Self::Exp, LevelMarker = Self::LevelMarker>
-        + for<'a> collapse::Collapse<Self::Exp, TheoryArg<'a, Self::LevelMarker>, Self::CM>
-        + for<'a> collapse::Collapse<Fresh<Self::Exp>, TheoryArg<'a, Self::LevelMarker>, Self::CM>;
-    type Parser: ParserFragment<Self::Exp, WrapSolver<Self::Theory, Self::Exp>, Self::M>;
+
+    type R: DefRecorder;
+    type Theory: FullTheory<Self::R, Exp = Self::Exp, LevelMarker = Self::LevelMarker>
+        + for<'a> collapse::Collapse<Self::Exp, TheoryArg<'a, Self::LevelMarker, Self::R>, Self::CM>
+        + for<'a> collapse::Collapse<
+            Fresh<Self::Exp>,
+            TheoryArg<'a, Self::LevelMarker, Self::R>,
+            Self::CM,
+        >;
+    type Parser: ParserFragment<Self::Exp, WrapSolver<Self>, Self::M>;
 
     type EM;
 
@@ -33,19 +43,21 @@ pub trait Logic {
 }
 
 impl<
+        R: DefRecorder,
         M,
         EM,
         CM,
-        Th: FullTheory
-            + for<'a> collapse::Collapse<Th::Exp, TheoryArg<'a, Th::LevelMarker>, CM>
-            + for<'a> collapse::Collapse<Fresh<Th::Exp>, TheoryArg<'a, Th::LevelMarker>, CM>,
-        P: ParserFragment<Th::Exp, WrapSolver<Th, Th::Exp>, M>,
-    > Logic for (Th, P, (M, EM, CM))
+        Th: FullTheory<R>
+            + for<'a> collapse::Collapse<Th::Exp, TheoryArg<'a, Th::LevelMarker, R>, CM>
+            + for<'a> collapse::Collapse<Fresh<Th::Exp>, TheoryArg<'a, Th::LevelMarker, R>, CM>,
+        P: ParserFragment<Th::Exp, SolverWithBound<Solver<Th, R>, HashMap<Symbol, Bound<Th::Exp>>>, M>,
+    > Logic for (Th, P, R, (M, EM, CM))
 where
     Th::Exp: SuperExp<BoolExp, EM>,
 {
     type Exp = Th::Exp;
     type LevelMarker = Th::LevelMarker;
+    type R = R;
     type Theory = Th;
     type Parser = P;
     type EM = EM;
@@ -112,10 +124,11 @@ struct Frame<UExp> {
 ///
 /// ### `(assert (not (= true false)))`
 /// ```
+/// use plat_smt::def_recorder::LoggingDefRecorder;
 /// use plat_smt::intern::{EQ_SYM, FALSE_SYM, NOT_SYM, TRUE_SYM};
 /// use plat_smt::outer_solver::{StartExpCtx::*, OuterSolver};
 /// use plat_smt::euf::{Euf, EufPf};
-/// let mut solver = OuterSolver::<(Euf, EufPf, _)>::default();
+/// let mut solver = OuterSolver::<(Euf, EufPf, LoggingDefRecorder, _)>::default();
 /// // Use Assert to start since this is an assertion
 /// solver.start_exp(NOT_SYM, None, Assert);
 /// // Afterwards we use Opt to optimize sub expressions by knowing their position in the whole expression
@@ -131,20 +144,22 @@ struct Frame<UExp> {
 ///
 /// ### `(declare-fun f (Bool, Bool) Bool)`
 /// ```
+/// # use plat_smt::def_recorder::LoggingDefRecorder;
 /// # use plat_smt::euf::{Euf, EufPf};
 /// use plat_smt::intern::{BOOL_SORT, EQ_SYM, FALSE_SYM, NOT_SYM, TRUE_SYM};
 /// # use plat_smt::outer_solver::{StartExpCtx::*, OuterSolver, Bound, FnSort};
-/// # let mut solver = OuterSolver::<(Euf, EufPf, _)>::default();
+/// # let mut solver = OuterSolver::<(Euf, EufPf, LoggingDefRecorder, _)>::default();
 /// let f_sym = solver.intern_mut().symbols.intern("f");
 /// solver.define(f_sym, Bound::Fn(FnSort::new([BOOL_SORT, BOOL_SORT].into_iter().collect(), BOOL_SORT))).ok().unwrap();
 /// ```
 ///
 /// ### `(assert (not (let ((x (f true false))) (f x x))))`
 /// ```
+/// # use plat_smt::def_recorder::LoggingDefRecorder;
 /// # use plat_smt::euf::{Euf, EufPf};
 /// use plat_smt::intern::{BOOL_SORT, EQ_SYM, FALSE_SYM, NOT_SYM, TRUE_SYM};
 /// # use plat_smt::outer_solver::{StartExpCtx::*, OuterSolver, Bound, FnSort};
-/// # let mut solver = OuterSolver::<(Euf, EufPf, _)>::default();
+/// # let mut solver = OuterSolver::<(Euf, EufPf, LoggingDefRecorder, _)>::default();
 /// # let f_sym = solver.intern_mut().symbols.intern("f");
 /// # solver.define(f_sym, Bound::Fn(FnSort::new([BOOL_SORT, BOOL_SORT].into_iter().collect(), BOOL_SORT))).ok().unwrap();
 /// let x_sym = solver.intern_mut().symbols.intern("x");
@@ -171,10 +186,11 @@ struct Frame<UExp> {
 ///
 /// ### `(assert (not (f (! (f true false) :named x) x)))`
 /// ```
+/// # use plat_smt::def_recorder::LoggingDefRecorder;
 /// # use plat_smt::euf::{Euf, EufPf};
 /// use plat_smt::intern::{BOOL_SORT, EQ_SYM, FALSE_SYM, NOT_SYM, TRUE_SYM};
 /// # use plat_smt::outer_solver::{StartExpCtx::*, OuterSolver, Bound, FnSort};
-/// # let mut solver = OuterSolver::<(Euf, EufPf, _)>::default();
+/// # let mut solver = OuterSolver::<(Euf, EufPf, LoggingDefRecorder, _)>::default();
 /// # let f_sym = solver.intern_mut().symbols.intern("f");
 /// # solver.define(f_sym, Bound::Fn(FnSort::new([BOOL_SORT, BOOL_SORT].into_iter().collect(), BOOL_SORT))).ok().unwrap();
 /// let x_sym = solver.intern_mut().symbols.intern("x");
@@ -196,7 +212,7 @@ struct Frame<UExp> {
 /// solver.end_exp_take().unwrap(); // (not (f (f true false) x))
 /// ```
 pub struct OuterSolver<L: Logic> {
-    inner: WrapSolver<L::Theory, L::Exp>,
+    inner: WrapSolver<L>,
     parser: L::Parser,
     stack: Vec<Frame<L::Exp>>,
     exp_stack: Vec<L::Exp>,
@@ -224,18 +240,13 @@ impl<L: Logic> OuterSolver<L> {
     fn optimize_binding(&mut self, name: Symbol, b: Bound<L::Exp>) -> Bound<L::Exp> {
         match &b {
             Bound::Fn(FnSort { args, ret }) if args.is_empty() => {
-                let exp: L::Exp = if *ret == BOOL_SORT {
-                    self.inner.solver.fresh_bool().upcast()
-                } else {
-                    match Fresh::<L::Exp>::new(name, *ret) {
-                        Ok(fresh) => self.inner.collapse(fresh),
-                        _ => return b,
-                    }
+                let exp = match Fresh::<L::Exp>::new(name, *ret) {
+                    Ok(fresh) => self.inner.collapse(fresh),
+                    _ => return b,
                 };
-                debug!(
-                    "{} is bound to {}",
-                    name.with_intern(self.intern()),
-                    exp.with_intern(self.intern())
+                self.solver_mut().open(
+                    |_, acts| acts.log_def(exp, name, iter::empty::<L::Exp>()),
+                    (),
                 );
                 Bound::Const(exp)
             }
@@ -269,6 +280,11 @@ impl<L: Logic> OuterSolver<L> {
         match entry {
             Entry::Occupied(_) => Err(bound),
             Entry::Vacant(vac) => {
+                if let Bound::Const(e) = bound {
+                    self.inner
+                        .solver
+                        .open(|_, acts| acts.log_alias(symbol, e), ());
+                }
                 vac.insert(bound);
                 Ok(())
             }
@@ -409,14 +425,14 @@ impl<L: Logic> OuterSolver<L> {
         &mut self,
         mut f: impl FnMut(
             Symbol,
-            BoundDefinition<<<L as Logic>::Theory as FullTheory>::FunctionInfo<'_>, L::Exp>,
+            BoundDefinition<<<L as Logic>::Theory as FullTheory<L::R>>::FunctionInfo<'_>, L::Exp>,
             &InternInfo,
         ),
     ) {
         let mut syms: Vec<_> = self.defined_symbols().collect();
         syms.sort_unstable_by_key(|sym| self.intern().symbols.resolve(*sym));
         let solver = &mut self.inner.solver;
-        solver.euf.init_function_info();
+        solver.th.init_function_info();
         let bound = &self.inner.bound;
         syms.into_iter().for_each(|sym| {
             let val = bound.get(&sym).unwrap();
@@ -428,7 +444,7 @@ impl<L: Logic> OuterSolver<L> {
                 ),
                 Bound::Fn(s) => f(
                     sym,
-                    BoundDefinition::Fn(s, solver.euf.get_function_info(sym)),
+                    BoundDefinition::Fn(s, solver.th.get_function_info(sym)),
                     solver.intern(),
                 ),
             }
@@ -448,11 +464,11 @@ impl<L: Logic> OuterSolver<L> {
             .insert(FALSE_SYM, Bound::Const(BoolExp::FALSE.upcast()));
     }
 
-    pub fn solver(&self) -> &Solver<L::Theory> {
+    pub fn solver(&self) -> &Solver<L::Theory, L::R> {
         &self.inner.solver
     }
 
-    pub fn solver_mut(&mut self) -> &mut Solver<L::Theory> {
+    pub fn solver_mut(&mut self) -> &mut Solver<L::Theory, L::R> {
         &mut self.inner.solver
     }
 
