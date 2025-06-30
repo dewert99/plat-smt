@@ -3,7 +3,7 @@ use super::explain::{EqIds, Justification};
 use crate::exp::{BoolExp, EitherExp};
 use crate::intern::{DisplayInterned, InternInfo, Sort, FALSE_SYM, TRUE_SYM};
 use crate::theory::{ExplainTheoryArg, Incremental, Theory, TheoryArg};
-use crate::util::{format_args2, minmax, Bind, DebugIter, DisplayFn, HashMap};
+use crate::util::{minmax, Bind, DebugIter, DisplayFn, HashMap};
 use crate::{SubExp, Symbol};
 use core::fmt::Display;
 use default_vec2::ConstDefault;
@@ -36,7 +36,8 @@ impl LitId {
 
     /// `id` is strongly associated with the lit.
     ///
-    /// When it is unioned with true or false the lit must be assigned the same value and vice-verso
+    /// When `lit` is assigned a value `id` will be union-ed with true or false
+    /// based on the assignment
     fn some(id: Id) -> Self {
         let x = usize::from(id) as u32;
         debug_assert!(x < u32::MAX / 2);
@@ -45,9 +46,8 @@ impl LitId {
 
     /// `id` is weakly associated with the lit.
     ///
-    /// Either `id` must not be used in any larger expressions and must have a bool eclass with no
-    /// children, or this lit must be known by the solver to be equal to another lit that is
-    /// strongly associated with the id.
+    /// When `lit` is assigned a value `id` may be union-ed with true or false
+    /// based on the assignment but this must not be relied upon for completeness
     fn some_weak(id: Id) -> Self {
         let x = usize::from(id) as u32;
         debug_assert!(x < u32::MAX / 2);
@@ -87,7 +87,7 @@ impl ConstDefault for LitId {
     const DEFAULT: &'static Self = &LitId::NONE;
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub(super) enum BoolClass {
     Const(bool),
     Unknown(LitVec),
@@ -102,7 +102,7 @@ impl BoolClass {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub(super) enum EClass {
     Uninterpreted(Sort),
     Bool(BoolClass),
@@ -179,6 +179,11 @@ pub(super) struct LitInfo {
 }
 
 impl LitInfo {
+    pub(super) fn strengthen_id_for_lit(&mut self, id: Id, lit: Lit) {
+        debug_assert_eq!(self.ids[lit].expand_weak(), Some(id));
+        self.ids[lit] = LitId::some(id);
+    }
+
     pub(super) fn add_id_to_lit(&mut self, id: Id, l: Lit) {
         self.ids[l] = LitId::some(id);
         self.log.push(l);
@@ -371,7 +376,7 @@ impl<'a> Theory<TheoryArg<'a, PushInfo>, ExplainTheoryArg<'a, PushInfo>> for Euf
 
     fn explain_propagation(&mut self, p: Lit, acts: &mut ExplainArg, is_final: bool) {
         let base_len = acts.clause_builder().len();
-        if let Some(id) = self.lit.ids[p].expand() {
+        if let Some(id) = self.lit.ids[p].expand_weak() {
             let const_bool = self.id_for_bool(true);
             if self.egraph.find(id) == self.egraph.find(const_bool) {
                 self.explain(id, const_bool, is_final, acts);
@@ -527,7 +532,7 @@ impl Euf {
             })
     }
 
-    pub(super) fn check_id_for_lit(&mut self, l: Lit) -> Option<Id> {
+    pub(super) fn check_id_for_lit(&self, l: Lit) -> Option<Id> {
         self.lit.ids[l].expand_weak()
     }
 
@@ -540,29 +545,14 @@ impl Euf {
         } else {
             match self.lit.ids[lit].expand_weak() {
                 Some(id) => {
-                    match &mut *self.egraph[id] {
-                        EClass::Bool(BoolClass::Unknown(lits)) if lits.is_empty() => {
-                            // We are now using `id` in a larger expression, and it currently isn't
-                            // strongly associate with any lits so we must strengthen the
-                            // association with `lit`
-                            debug!(
-                                "(as @v{id:?} Bool) is defined as {:?} while strengthening",
-                                BoolExp::unknown(lit)
-                            );
-                            lits.push(lit);
-                            self.lit.ids[lit] = LitId::some(id)
-                        }
-                        _ => {}
-                    }
+                    // If it was weak before we now need it to be strong
+                    self.lit.strengthen_id_for_lit(id, lit);
                     id
                 }
                 None => {
-                    let sym = acts
-                        .intern_mut()
-                        .symbols
-                        .gen_sym(&format_args2!("bool|lit|{lit:?}"));
+                    let sym = acts.intern_mut().symbols.gen_sym("bool");
                     let id = self.egraph.add(sym.into(), Children::new(), |_| {
-                        EClass::Bool(BoolClass::Unknown(litvec![lit]))
+                        EClass::Bool(BoolClass::Unknown(litvec![]))
                     });
                     self.lit.add_id_to_lit(id, lit);
                     id
@@ -594,24 +584,17 @@ impl Euf {
                         id_for_bool(true)
                     } else if val == lbool::FALSE {
                         id_for_bool(false)
-                    } else if let Some(id) = self.lit.ids[lit].expand() {
-                        id
+                    } else if let Some(exp_id) = self.lit.ids[lit].expand_weak() {
+                        self.lit.strengthen_id_for_lit(exp_id, lit);
+                        if let EClass::Bool(BoolClass::Unknown(b)) = &*self.egraph[exp_id] {
+                            if b.is_empty() {
+                                self.merge_lit_into_id(id, acts, lit);
+                            }
+                        }
+                        exp_id
                     } else {
                         self.lit.ids[lit] = LitId::some(id);
-                        let mut conf = None;
-                        let ctx = MergeContext {
-                            acts,
-                            history: &mut self.bool_class_history,
-                            lit: &mut self.lit,
-                            conflict: &mut conf,
-                        };
-                        ctx.merge_fn(id, Id::MAX)(
-                            &mut *self.egraph[id],
-                            EClass::Bool(BoolClass::Unknown(litvec![lit])),
-                        );
-                        if conf.is_some() {
-                            acts.raise_conflict(&[], false)
-                        }
+                        self.merge_lit_into_id(id, acts, lit);
                         return;
                     }
                 }
@@ -619,6 +602,23 @@ impl Euf {
             Exp::Right(u) => u.id(),
         };
         let _ = self.union(acts, id, exp_id, Justification::NOOP);
+    }
+
+    fn merge_lit_into_id(&mut self, id: Id, acts: &mut Arg, lit: Lit) {
+        let mut conf = None;
+        let ctx = MergeContext {
+            acts,
+            history: &mut self.bool_class_history,
+            lit: &mut self.lit,
+            conflict: &mut conf,
+        };
+        ctx.merge_fn(id, Id::MAX)(
+            &mut *self.egraph[id],
+            EClass::Bool(BoolClass::Unknown(litvec![lit])),
+        );
+        if conf.is_some() {
+            acts.raise_conflict(&[], false)
+        }
     }
 
     pub(super) fn resolve_children(
