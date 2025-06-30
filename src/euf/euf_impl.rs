@@ -105,7 +105,7 @@ impl Euf {
                     litvec![]
                 } else {
                     let l = Lit::new(acts.new_var_default(), true);
-                    self.lit.add_id_to_lit(id, l);
+                    self.lit.add_id_to_lit(id, l, false);
                     litvec![l]
                 };
 
@@ -141,11 +141,11 @@ impl Euf {
         id2: Id,
         ctx: ExprContext<BoolExp>,
         acts: &mut TheoryArg<PushInfo>,
-    ) -> BoolExp {
+    ) -> (bool, BoolExp) {
         let cid1 = self.find(id1);
         let cid2 = self.find(id2);
         if cid1 == cid2 {
-            return acts.collapse_const(true, ctx);
+            return (false, acts.collapse_const(true, ctx));
         }
         let (_, exp, added) =
             self.sorted_fn_id(EQ_OP, children![cid1, cid2], BOOL_SORT, ctx.upcast(), acts);
@@ -155,7 +155,7 @@ impl Euf {
                 self.finish_eq_node(l, cid1, cid2, acts);
             }
         }
-        exp
+        (added, exp)
     }
 
     fn assert_eq(&mut self, e1: Exp, e2: Exp, acts: &mut TheoryArg<PushInfo>) -> () {
@@ -187,23 +187,15 @@ impl Euf {
     }
 
     fn unify_lits(&mut self, acts: &mut TheoryArg<PushInfo>, b1: Lit, b2: Lit) {
-        match (self.check_id_for_lit(b1), self.check_id_for_lit(b2)) {
-            (Some(id1), Some(id2)) => {
+        if let Some(id1) = self.check_id_for_lit(b1) {
+            if let Some(id2) = self.check_id_for_lit(b2) {
                 let _ = self.union(acts, id1, id2, Justification::NOOP);
+            } else {
+                self.lit.add_id_to_lit(id1, b2, true)
             }
-            (Some(id1), None) => self.lit.weak_add_id_to_lit(id1, b2),
-            (None, Some(id2)) => self.lit.weak_add_id_to_lit(id2, b1),
-            (None, None) => {
-                let sym = acts
-                    .intern_mut()
-                    .symbols
-                    .gen_sym(&format_args2!("bool|lit|{b1:?}"));
-                let id = self.egraph.add(sym.into(), Children::new(), |_| {
-                    EClass::Bool(BoolClass::Unknown(litvec![]))
-                });
-                self.lit.weak_add_id_to_lit(id, b1);
-                self.lit.weak_add_id_to_lit(id, b2);
-            }
+        } else {
+            let id = self.id_for_lit(b2, acts, true);
+            self.lit.add_id_to_lit(id, b1, true);
         }
     }
 
@@ -222,13 +214,13 @@ impl Euf {
     }
 
     fn bind_ite(&mut self, i: Lit, t: Id, e: Id, target: Id, acts: &mut TheoryArg<PushInfo>) {
-        let eqt = self.add_eq_node(target, t, ExprContext::Exact, acts);
+        let (_, eqt) = self.add_eq_node(target, t, ExprContext::Exact, acts);
         match eqt.to_lit() {
             Ok(l) => acts.add_theory_lemma(&[!i, l]),
             Err(true) => {}
             Err(false) => acts.add_theory_lemma(&[!i]),
         }
-        let eqe = self.add_eq_node(target, e, ExprContext::Exact, acts);
+        let (_, eqe) = self.add_eq_node(target, e, ExprContext::Exact, acts);
         match eqe.to_lit() {
             Ok(l) => acts.add_theory_lemma(&[i, l]),
             Err(true) => {}
@@ -243,7 +235,7 @@ impl Euf {
         s: Sort,
         ctx: ExprContext<Exp>,
         acts: &mut TheoryArg<PushInfo>,
-    ) -> Exp {
+    ) -> (bool, Exp) {
         let mut ifs = mem::take(&mut self.ifs);
         let mut added = false;
         let id = ifs.get_or_insert((i, t, e), || {
@@ -257,7 +249,7 @@ impl Euf {
             fresh_id
         });
         self.ifs = ifs;
-        self.id_to_exp(id)
+        (added, self.id_to_exp(id))
     }
 }
 
@@ -366,7 +358,13 @@ impl<'a> Collapse<Eq<Exp>, TheoryArg<'a, PushInfo>, EufMarker> for Euf {
         } else {
             let id1 = self.id_for_exp(e1, acts);
             let id2 = self.id_for_exp(e2, acts);
-            self.add_eq_node(id1, id2, ctx, acts)
+            let (added, res) = self.add_eq_node(id1, id2, ctx, acts);
+            if added {
+                if let [Some(b1), Some(b2)] = [e1, e2].map(BoolExp::from_downcast) {
+                    acts.xor(b1, b2, ExprContext::AssertEq(!res));
+                }
+            }
+            res
         }
     }
 
@@ -392,7 +390,18 @@ impl<'a> Collapse<Ite<Exp>, TheoryArg<'a, PushInfo>, EufMarker> for Euf {
                 } else {
                     let tid = self.id_for_exp(t, acts);
                     let eid = self.id_for_exp(e, acts);
-                    self.raw_ite(ilit, tid, eid, t.sort(), ctx, acts)
+                    let (added, res) = self.raw_ite(ilit, tid, eid, t.sort(), ctx, acts);
+                    if added {
+                        if let [Some(tb), Some(eb), Some(rb)] =
+                            [t, e, res].map(BoolExp::from_downcast)
+                        {
+                            acts.add_clause([!i, !rb, tb]);
+                            acts.add_clause([!i, !tb, rb]);
+                            acts.add_clause([i, !rb, eb]);
+                            acts.add_clause([i, !eb, rb]);
+                        }
+                    }
+                    res
                 }
             }
         }

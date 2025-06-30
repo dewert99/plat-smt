@@ -75,8 +75,10 @@ pub trait Reborrow {
 }
 
 impl<'a> Reborrow for SatTheoryArg<'a> {
-    type Target<'b> = SatTheoryArg<'b>
-    where Self: 'b;
+    type Target<'b>
+        = SatTheoryArg<'b>
+    where
+        Self: 'b;
 
     fn reborrow(&mut self) -> Self::Target<'_> {
         self.reborrow()
@@ -84,7 +86,10 @@ impl<'a> Reborrow for SatTheoryArg<'a> {
 }
 
 impl<'a, T> Reborrow for &'a mut T {
-    type Target<'b> = &'b mut T where Self: 'b;
+    type Target<'b>
+        = &'b mut T
+    where
+        Self: 'b;
 
     fn reborrow(&mut self) -> Self::Target<'_> {
         &mut *self
@@ -132,7 +137,10 @@ impl<'a, S, M> DerefMut for TheoryArgRaw<'a, S, M> {
 }
 
 impl<'a, S: Reborrow, M> Reborrow for TheoryArgRaw<'a, S, M> {
-    type Target<'b> = TheoryArgRaw<'b, S::Target<'b>, M> where Self: 'b;
+    type Target<'b>
+        = TheoryArgRaw<'b, S::Target<'b>, M>
+    where
+        Self: 'b;
 
     fn reborrow(&mut self) -> Self::Target<'_> {
         TheoryArgRaw {
@@ -169,6 +177,11 @@ pub trait Theory<Arg, ExplainArg> {
     ///
     /// return `Err` if there is a conflict
     fn pre_decision_check(&mut self, acts: &mut Arg) -> Result<(), ()>;
+
+    /// Final check ran before returning sat
+    ///
+    /// If it doesn't make any propagations or raise a conflict the solver will return sat
+    fn final_check(&mut self, _acts: &mut Arg) {}
 
     /// If the theory uses `TheoryArgument::propagate`, it must implement
     /// this function to explain the propagations.
@@ -238,7 +251,13 @@ impl<
             + for<'a> Theory<TheoryArg<'a, Th::LevelMarker>, ExplainTheoryArg<'a, Th::LevelMarker>>,
     > SatTheory for TheoryWrapper<Th>
 {
-    fn final_check(&mut self, _: &mut SatTheoryArg) {}
+    fn final_check(&mut self, acts: &mut SatTheoryArg) {
+        let mut acts = TheoryArg {
+            sat: acts.reborrow(),
+            incr: &mut self.arg,
+        };
+        self.th.final_check(&mut acts)
+    }
 
     fn create_level(&mut self) {
         self.done_prop_log = false;
@@ -287,7 +306,7 @@ impl<
             sat: acts.reborrow(),
             incr: &mut self.arg,
         };
-        let _ = (|| {
+        let _: Result<(), ()> = (|| {
             self.th.initial_check(&mut acts)?;
             while (self.prev_model_len as usize) < acts.model().len() {
                 self.th
