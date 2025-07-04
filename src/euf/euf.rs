@@ -3,7 +3,7 @@ use super::explain::{EqIds, Justification};
 use crate::exp::{BoolExp, EitherExp};
 use crate::intern::{DisplayInterned, InternInfo, Sort, FALSE_SYM, TRUE_SYM};
 use crate::theory::{ExplainTheoryArg, Incremental, Theory, TheoryArg};
-use crate::util::{format_args2, minmax, Bind, DebugIter, DisplayFn, HashMap};
+use crate::util::{minmax, Bind, DebugIter, DisplayFn, HashMap};
 use crate::{SubExp, Symbol};
 use core::fmt::Display;
 use default_vec2::ConstDefault;
@@ -23,6 +23,7 @@ type Arg<'a> = TheoryArg<'a, PushInfo>;
 type ExplainArg<'a> = ExplainTheoryArg<'a, PushInfo>;
 
 pub(super) type LitVec = smallvec::SmallVec<[Lit; 4]>;
+use crate::collapse::ExprContext;
 use crate::sp_insert_map::SPInsertMap;
 pub(super) use smallvec::smallvec as litvec;
 
@@ -36,22 +37,29 @@ impl LitId {
 
     /// `id` is strongly associated with the lit.
     ///
-    /// When it is unioned with true or false the lit must be assigned the same value and vice-verso
-    fn some(id: Id) -> Self {
-        let x = usize::from(id) as u32;
-        debug_assert!(x < u32::MAX / 2);
-        LitId(x)
-    }
-
-    /// `id` is weakly associated with the lit.
+    /// If `weak` is false: When `lit` is assigned a value `id` will be union-ed with true or false
+    /// based on the assignment
     ///
-    /// Either `id` must not be used in any larger expressions and must have a bool eclass with no
-    /// children, or this lit must be known by the solver to be equal to another lit that is
-    /// strongly associated with the id.
-    fn some_weak(id: Id) -> Self {
+    /// If `weak` is true: When `lit` is assigned a value `id` may be union-ed with true or false
+    /// based on the assignment but this must not be relied upon for completeness
+    ///
+    /// lits must not use weak ids for explanations.
+    /// If lit_a and is weakly associated with id_a, and lit_b is strongly associated with id_a,
+    /// then if lit_a is learned first and then lit_b (possibly from their negations) lit_b will
+    /// union id_a with true, and later when asked for the explanation of lit_a if egraph tried to
+    /// use id_a for the explanation it would explain lit_a using lit_b even though lit_b was learned
+    /// later
+    ///
+    /// lits can get away without using weak ids for explanations since lits with weak ids don't get
+    /// stored in the eclass so they can never be propagated by euf
+    ///
+    /// converting a weak association to a strong association is acceptable as long as the lit hasn't
+    /// been assigned a value which prevents the problem described earlier
+    ///
+    fn some(id: Id, weak: bool) -> Self {
         let x = usize::from(id) as u32;
         debug_assert!(x < u32::MAX / 2);
-        LitId(x | (1 << 31))
+        LitId(x | ((weak as u32) << 31))
     }
 
     /// Returns `Some(id)` iff self represents and strong association to `id`.
@@ -87,7 +95,7 @@ impl ConstDefault for LitId {
     const DEFAULT: &'static Self = &LitId::NONE;
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub(super) enum BoolClass {
     Const(bool),
     Unknown(LitVec),
@@ -102,7 +110,7 @@ impl BoolClass {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub(super) enum EClass {
     Uninterpreted(Sort),
     Bool(BoolClass),
@@ -179,18 +187,18 @@ pub(super) struct LitInfo {
 }
 
 impl LitInfo {
-    pub(super) fn add_id_to_lit(&mut self, id: Id, l: Lit) {
-        self.ids[l] = LitId::some(id);
-        self.log.push(l);
-        debug!("(as @v{id:?} Bool) is defined as {:?}", BoolExp::unknown(l),);
+    pub(super) fn strengthen_id_for_lit(&mut self, id: Id, lit: Lit) {
+        debug_assert_eq!(self.ids[lit].expand_weak(), Some(id));
+        self.ids[lit] = LitId::some(id, false);
     }
 
-    pub(super) fn weak_add_id_to_lit(&mut self, id: Id, l: Lit) {
-        self.ids[l] = LitId::some_weak(id);
+    pub(super) fn add_id_to_lit(&mut self, id: Id, l: Lit, weak: bool) {
+        self.ids[l] = LitId::some(id, weak);
         self.log.push(l);
         debug!(
-            "(as @v{id:?} Bool) is weakly attached to {:?}",
+            "(as @v{id:?} Bool) is defined as {:?} (weak: {})",
             BoolExp::unknown(l),
+            weak
         );
     }
 }
@@ -323,7 +331,7 @@ impl<'a> Theory<TheoryArg<'a, PushInfo>, ExplainTheoryArg<'a, PushInfo>> for Euf
                     Lit::new(acts.new_var(lbool::UNDEF, false), true)
                 });
                 let (id, res) = self.add_uncanonical(EQ_OP, children![id0, id1], lit, acts);
-                self.lit.add_id_to_lit(id, lit);
+                self.lit.add_id_to_lit(id, lit, false);
                 self.make_equality_true(id0, id1);
                 debug!(
                     "{} is defined as (= {} {}) mid-search",
@@ -367,6 +375,19 @@ impl<'a> Theory<TheoryArg<'a, PushInfo>, ExplainTheoryArg<'a, PushInfo>> for Euf
 
     fn pre_decision_check(&mut self, acts: &mut Arg) -> Result {
         self.rebuild(acts)
+    }
+
+    #[cold]
+    fn final_check(&mut self, acts: &mut TheoryArg<'a, PushInfo>) {
+        for i in 0..acts.model().len() {
+            let l = acts.model()[i];
+            for (lp, b) in [(l, true), (!l, false)] {
+                if let Some(id) = self.lit.ids[lp].expand_weak() {
+                    let res = self.union(acts, id, id_for_bool(b), Justification::from_lit(l));
+                    debug_assert!(res.is_ok());
+                }
+            }
+        }
     }
 
     fn explain_propagation(&mut self, p: Lit, acts: &mut ExplainArg, is_final: bool) {
@@ -464,8 +485,8 @@ impl<'a, 'b> MergeContext<'a, 'b> {
                         if self.acts.value_lit(l) != lbool::TRUE {
                             self.acts.propagate(l);
                             // hack only used for
-                            self.lit.add_id_to_lit(id1, l);
-                            self.lit.add_id_to_lit(id2, !l);
+                            self.lit.add_id_to_lit(id1, l, false);
+                            self.lit.add_id_to_lit(id2, !l, false);
                         }
                     }
                 }
@@ -527,11 +548,11 @@ impl Euf {
             })
     }
 
-    pub(super) fn check_id_for_lit(&mut self, l: Lit) -> Option<Id> {
-        self.lit.ids[l].expand_weak()
+    pub(super) fn check_id_for_lit(&self, lit: Lit) -> Option<Id> {
+        self.lit.ids[lit].expand_weak()
     }
 
-    pub(super) fn id_for_lit(&mut self, lit: Lit, acts: &mut Arg) -> Id {
+    pub(super) fn id_for_lit(&mut self, lit: Lit, acts: &mut Arg, weak: bool) -> Id {
         let val = acts.value_lit(lit);
         if val == lbool::TRUE {
             id_for_bool(true)
@@ -540,36 +561,22 @@ impl Euf {
         } else {
             match self.lit.ids[lit].expand_weak() {
                 Some(id) => {
-                    match &mut *self.egraph[id] {
-                        EClass::Bool(BoolClass::Unknown(lits)) if lits.is_empty() => {
-                            // We are now using `id` in a larger expression, and it currently isn't
-                            // strongly associate with any lits so we must strengthen the
-                            // association with `lit`
-                            debug!(
-                                "(as @v{id:?} Bool) is defined as {:?} while strengthening",
-                                BoolExp::unknown(lit)
-                            );
-                            lits.push(lit);
-                            self.lit.ids[lit] = LitId::some(id)
-                        }
-                        _ => {}
-                    }
+                    // If it was weak before we now need it to be strong
+                    self.lit.ids[lit].0 &= !((!weak as u32) << 31);
                     id
                 }
                 None => {
-                    let sym = acts
-                        .intern_mut()
-                        .symbols
-                        .gen_sym(&format_args2!("bool|lit|{lit:?}"));
+                    let sym = acts.intern_mut().symbols.gen_sym("bool");
                     let id = self.egraph.add(sym.into(), Children::new(), |_| {
-                        EClass::Bool(BoolClass::Unknown(litvec![lit]))
+                        EClass::Bool(BoolClass::Unknown(litvec![]))
                     });
-                    self.lit.add_id_to_lit(id, lit);
+                    self.lit.add_id_to_lit(id, lit, weak);
                     id
                 }
             }
         }
     }
+
     pub(super) fn id_for_bool(&self, b: bool) -> Id {
         id_for_bool(b)
     }
@@ -578,41 +585,76 @@ impl Euf {
         match exp {
             Exp::Left(b) => match b.to_lit() {
                 Err(b) => id_for_bool(b),
-                Ok(lit) => self.id_for_lit(lit, acts),
+                Ok(lit) => self.id_for_lit(lit, acts, false),
             },
             Exp::Right(u) => u.id(),
         }
     }
 
     pub(super) fn union_exp(&mut self, exp: Exp, id: Id, acts: &mut Arg) {
+        debug!("Union exp {exp:?}, @v{id:?}");
         let exp_id = match exp {
-            Exp::Left(b) => match b.to_lit() {
+            Exp::Left(b) => match acts.canonize(b).to_lit() {
                 Err(b) => id_for_bool(b),
                 Ok(lit) => {
-                    let val = acts.value_lit(lit);
-                    if val == lbool::TRUE {
-                        id_for_bool(true)
-                    } else if val == lbool::FALSE {
-                        id_for_bool(false)
-                    } else if let Some(id) = self.lit.ids[lit].expand() {
-                        id
-                    } else {
-                        self.lit.ids[lit] = LitId::some(id);
-                        let mut conf = None;
-                        let ctx = MergeContext {
-                            acts,
-                            history: &mut self.bool_class_history,
-                            lit: &mut self.lit,
-                            conflict: &mut conf,
-                        };
-                        ctx.merge_fn(id, Id::MAX)(
-                            &mut *self.egraph[id],
-                            EClass::Bool(BoolClass::Unknown(litvec![lit])),
-                        );
-                        if conf.is_some() {
-                            acts.raise_conflict(&[], false)
+                    match &mut *self.egraph[id] {
+                        EClass::Bool(BoolClass::Unknown(l)) => {
+                            if let Some(lit_id) = self.lit.ids[lit].expand_weak() {
+                                // unifying with a lit that already has an id
+                                // strengthen lit since it now represents a function
+                                self.lit.strengthen_id_for_lit(lit_id, lit);
+                                if *self.egraph[lit_id]
+                                    == EClass::Bool(BoolClass::Unknown(litvec![]))
+                                {
+                                    let EClass::Bool(BoolClass::Unknown(l)) = &mut *self.egraph[id]
+                                    else {
+                                        unreachable!()
+                                    };
+                                    if l.is_empty() {
+                                        // must have just created id
+                                        // if lit wasn't stored in a class it will need to be now
+                                        // add it to the new function so it will be removed
+                                        // when this is undone
+                                        l.push(lit);
+                                        debug_assert_eq!(
+                                            usize::from(id) + 1,
+                                            self.egraph.uncanonical_ids().len()
+                                        );
+                                    } else {
+                                        // merging these classes won't make cause lit to get
+                                        // values based on the class since it wasn't storted
+                                        // so we add this equality manually with an xor
+                                        acts.xor(
+                                            BoolExp::unknown(l[0]),
+                                            BoolExp::unknown(lit),
+                                            ExprContext::AssertEq(BoolExp::FALSE),
+                                        );
+                                    }
+                                }
+                                lit_id
+                            } else {
+                                if l.is_empty() {
+                                    l.push(lit);
+                                    debug_assert_eq!(
+                                        usize::from(id) + 1,
+                                        self.egraph.uncanonical_ids().len()
+                                    );
+                                } else {
+                                    acts.xor(
+                                        BoolExp::unknown(l[0]),
+                                        BoolExp::unknown(lit),
+                                        ExprContext::AssertEq(BoolExp::FALSE),
+                                    );
+                                }
+                                self.lit.add_id_to_lit(id, lit, false);
+                                return;
+                            }
                         }
-                        return;
+                        EClass::Bool(BoolClass::Const(b)) => {
+                            acts.assert(BoolExp::unknown(lit ^ !*b));
+                            return;
+                        }
+                        _ => unreachable!(),
                     }
                 }
             },
@@ -756,8 +798,10 @@ impl Euf {
         just: Justification,
     ) -> Result {
         debug!(
-            "EUF union {} with {} by {just:?}",
+            "EUF union @v{:?} ({}) with @v{:?} ({}) by {just:?}",
+            id1,
             self.id_to_display_exp(id1, acts),
+            id2,
             self.id_to_display_exp(id2, acts)
         );
         let mut conflict = None;

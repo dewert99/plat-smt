@@ -1,0 +1,13 @@
+(set-logic QF_UF)
+(declare-const a Bool)
+(declare-const b Bool)
+(declare-const c Bool)
+(declare-const d Bool)
+
+(assert (ite a b c))
+(assert (= d (ite a c b)))
+(assert (or a d))
+(assert (xor b c))
+(check-sat-assuming ((not c)))
+(get-model)
+(check-sat-assuming (c))

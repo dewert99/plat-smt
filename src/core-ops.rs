@@ -2,7 +2,7 @@ use crate::collapse::{CollapseOut, ExprContext};
 use crate::intern::{Symbol, DISTINCT_SYM, EQ_SYM, IF_SYM, ITE_SYM};
 use crate::parser_fragment::{exact_args, index_iter, mandatory_args, ParserFragment, PfResult};
 use crate::solver::{ReuseMem, SolverCollapse};
-use crate::tseitin::{BoolOpPf, TseitenMarker};
+use crate::tseitin::{andor_sub_ctx, BoolOpPf, TseitenMarker};
 use crate::util::extend_result;
 use crate::{AddSexpError, BoolExp, Conjunction, ExpLike, SubExp, SuperExp};
 
@@ -102,12 +102,13 @@ impl<
             let mut c: Conjunction = solver.reuse_mem();
             let [exp1] = mandatory_args(&mut children)?;
             let exp1 = exp1.exp();
+            let inner_ctx = andor_sub_ctx(ctx.downcast(), true);
             extend_result(
                 &mut c,
                 children.map(|exp2| {
                     Ok(solver.collapse_in_ctx(
                         Eq::new_unchecked(exp1, exp2.expect_sort(exp1.sort())?),
-                        ExprContext::Exact,
+                        inner_ctx,
                     ))
                 }),
             )?;

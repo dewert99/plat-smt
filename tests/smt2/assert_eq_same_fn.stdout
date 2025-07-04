@@ -1,0 +1,11 @@
+sat
+(
+ (define-fun a () S (as @v3 S))
+ (define-fun b () S (as @v4 S))
+ (define-fun f ((x!0 S)) Bool
+  (ite (= x!0 (as @v3 S)) true
+  (ite (= x!0 (as @v4 S)) true
+   false)))
+ (define-fun p () Bool false)
+ (define-fun q () Bool false)
+)

@@ -170,6 +170,17 @@ impl<'a, L> TheoryArg<'a, L> {
         res
     }
 
+    pub fn add_clause(&mut self, i: impl IntoIterator<Item = BoolExp>) {
+        let mut j: Disjunction = self.new_junction();
+        j.extend(i);
+        if j.absorbing || self.optimize_junction(&mut j.lits, false) {
+            // assert true
+            return;
+        }
+        self.add_clause_unchecked(j.lits.iter().copied());
+        self.incr.junction_buf = j.lits;
+    }
+
     pub fn assert_junction_eq<const IS_AND: bool>(
         &mut self,
         mut j: Junction<IS_AND>,
@@ -393,13 +404,20 @@ impl<
 
     fn sub_ctx(&self, f: Symbol, _: &[Exp], ctx: ExprContext<Exp>) -> Option<ExprContext<Exp>> {
         let s = if IS_AND { AND_SYM } else { OR_SYM };
-        (f == s).then(|| match ctx {
-            ExprContext::AssertEq(x) if x == BoolExp::from_bool(IS_AND).upcast() => {
-                ExprContext::AssertEq(BoolExp::from_bool(IS_AND).upcast()).into()
-            }
-            ExprContext::Approx(x) => ExprContext::Approx(x).into(),
-            _ => ExprContext::Exact.into(),
-        })
+        (f == s).then(|| andor_sub_ctx(ctx, IS_AND))
+    }
+}
+
+pub fn andor_sub_ctx<Exp: SuperExp<BoolExp, M> + Eq, M>(
+    ctx: ExprContext<Exp>,
+    is_and: bool,
+) -> ExprContext<Exp> {
+    match ctx {
+        ExprContext::AssertEq(x) if x == BoolExp::from_bool(is_and).upcast() => {
+            ExprContext::AssertEq(BoolExp::from_bool(is_and).upcast()).into()
+        }
+        ExprContext::Approx(x) => ExprContext::Approx(x).into(),
+        _ => ExprContext::Exact.into(),
     }
 }
 

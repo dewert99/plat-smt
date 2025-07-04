@@ -1,0 +1,8 @@
+sat
+(
+ (define-fun a () Bool true)
+ (define-fun b () Bool true)
+ (define-fun c () Bool false)
+ (define-fun d () Bool false)
+)
+unsat
