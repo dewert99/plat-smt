@@ -387,24 +387,23 @@ impl<
         const IS_AND: bool,
     > ParserFragment<Exp, S, M> for JunctionPf<IS_AND>
 {
+    fn supports(&self, s: Symbol) -> bool {
+        s == (if IS_AND { AND_SYM } else { OR_SYM })
+    }
     fn handle_non_terminal(
         &self,
-        f: Symbol,
+        _: Symbol,
         children: &mut [Exp],
         solver: &mut S,
         ctx: ExprContext<Exp>,
-    ) -> PfResult<Exp> {
-        let s = if IS_AND { AND_SYM } else { OR_SYM };
-        (f == s).then(|| {
-            let mut j: Junction<IS_AND> = solver.reuse_mem();
-            extend_result(&mut j, index_iter(children).map(|x| x.downcast()))?;
-            Ok(solver.collapse_in_ctx(j, ctx.downcast()).upcast())
-        })
+    ) -> Result<Exp, AddSexpError> {
+        let mut j: Junction<IS_AND> = solver.reuse_mem();
+        extend_result(&mut j, index_iter(children).map(|x| x.downcast()))?;
+        Ok(solver.collapse_in_ctx(j, ctx.downcast()).upcast())
     }
 
-    fn sub_ctx(&self, f: Symbol, _: &[Exp], ctx: ExprContext<Exp>) -> Option<ExprContext<Exp>> {
-        let s = if IS_AND { AND_SYM } else { OR_SYM };
-        (f == s).then(|| andor_sub_ctx(ctx, IS_AND))
+    fn sub_ctx(&self, _: Symbol, _: &[Exp], ctx: ExprContext<Exp>) -> ExprContext<Exp> {
+        andor_sub_ctx(ctx, IS_AND)
     }
 }
 
@@ -430,35 +429,36 @@ pub struct XorPf;
 impl<'a, M, Exp: ExpLike + SuperExp<BoolExp, M>, S: SolverCollapse<Xor, TseitenMarker>>
     ParserFragment<Exp, S, M> for XorPf
 {
+    fn supports(&self, s: Symbol) -> bool {
+        s == XOR_SYM
+    }
     fn handle_non_terminal(
         &self,
-        f: Symbol,
+        _: Symbol,
         children: &mut [Exp],
         solver: &mut S,
         ctx: ExprContext<Exp>,
-    ) -> PfResult<Exp> {
-        (f == XOR_SYM).then(|| {
-            let child_len = children.len();
-            let mut children = index_iter(children);
-            let first_res = if child_len == 0 {
-                BoolExp::FALSE
-            } else {
-                let mut first_children = children.by_ref().take(child_len - 1);
-                first_children.try_fold(BoolExp::FALSE, |b1, b2| {
-                    Ok::<_, AddSexpError>(
-                        solver.collapse_in_ctx(Xor(b1, b2.downcast()?), ExprContext::Exact),
-                    )
-                })?
-            };
-            let last_child = if let Some(last_child) = children.next() {
-                last_child.downcast()?
-            } else {
-                BoolExp::FALSE
-            };
-            Ok(solver
-                .collapse_in_ctx(Xor(first_res, last_child), ctx.downcast())
-                .upcast())
-        })
+    ) -> Result<Exp, AddSexpError> {
+        let child_len = children.len();
+        let mut children = index_iter(children);
+        let first_res = if child_len == 0 {
+            BoolExp::FALSE
+        } else {
+            let mut first_children = children.by_ref().take(child_len - 1);
+            first_children.try_fold(BoolExp::FALSE, |b1, b2| {
+                Ok::<_, AddSexpError>(
+                    solver.collapse_in_ctx(Xor(b1, b2.downcast()?), ExprContext::Exact),
+                )
+            })?
+        };
+        let last_child = if let Some(last_child) = children.next() {
+            last_child.downcast()?
+        } else {
+            BoolExp::FALSE
+        };
+        Ok(solver
+            .collapse_in_ctx(Xor(first_res, last_child), ctx.downcast())
+            .upcast())
     }
 }
 
@@ -472,24 +472,25 @@ impl<
         S: SolverCollapse<Disjunction, TseitenMarker> + ReuseMem<Disjunction>,
     > ParserFragment<Exp, S, M> for ImpPf
 {
+    fn supports(&self, s: Symbol) -> bool {
+        s == IMP_SYM
+    }
     fn handle_non_terminal(
         &self,
-        f: Symbol,
+        _: Symbol,
         children: &mut [Exp],
         solver: &mut S,
         ctx: ExprContext<Exp>,
-    ) -> PfResult<Exp> {
-        (f == IMP_SYM).then(|| {
-            let mut children = index_iter(children);
-            let mut d: Disjunction = solver.reuse_mem();
-            let [arg] = mandatory_args(&mut children)?;
-            let mut last: BoolExp = arg.downcast()?;
-            let other =
-                children.map(|x| Ok::<_, AddSexpError>(!mem::replace(&mut last, x.downcast()?)));
-            extend_result(&mut d, other)?;
-            d.push(last);
-            Ok(solver.collapse_in_ctx(d, ctx.downcast()).upcast())
-        })
+    ) -> Result<Exp, AddSexpError> {
+        let mut children = index_iter(children);
+        let mut d: Disjunction = solver.reuse_mem();
+        let [arg] = mandatory_args(&mut children)?;
+        let mut last: BoolExp = arg.downcast()?;
+        let other =
+            children.map(|x| Ok::<_, AddSexpError>(!mem::replace(&mut last, x.downcast()?)));
+        extend_result(&mut d, other)?;
+        d.push(last);
+        Ok(solver.collapse_in_ctx(d, ctx.downcast()).upcast())
     }
 }
 
@@ -497,21 +498,22 @@ impl<
 pub struct NotPf;
 
 impl<'a, M, Exp: ExpLike + SuperExp<BoolExp, M>, S> ParserFragment<Exp, S, M> for NotPf {
+    fn supports(&self, s: Symbol) -> bool {
+        s == NOT_SYM
+    }
     fn handle_non_terminal(
         &self,
-        f: Symbol,
+        _: Symbol,
         children: &mut [Exp],
         _: &mut S,
         _: ExprContext<Exp>,
-    ) -> PfResult<Exp> {
-        (f == NOT_SYM).then(|| {
-            let [child] = exact_args(&mut index_iter(children))?;
-            let bool_child: BoolExp = child.downcast()?;
-            Ok((!bool_child).upcast())
-        })
+    ) -> Result<Exp, AddSexpError> {
+        let [child] = exact_args(&mut index_iter(children))?;
+        let bool_child: BoolExp = child.downcast()?;
+        Ok((!bool_child).upcast())
     }
-    fn sub_ctx(&self, f: Symbol, _: &[Exp], ctx: ExprContext<Exp>) -> Option<ExprContext<Exp>> {
-        (f == NOT_SYM).then(|| ctx.negate())
+    fn sub_ctx(&self, _: Symbol, _: &[Exp], ctx: ExprContext<Exp>) -> ExprContext<Exp> {
+        ctx.negate()
     }
 }
 

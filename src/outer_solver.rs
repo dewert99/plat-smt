@@ -306,7 +306,7 @@ impl<L: Logic> OuterSolver<L> {
         let f = frame.f;
         let previous_children = &self.exp_stack[frame.stack_len as usize..];
         self.parser
-            .sub_ctx(f, previous_children, parent)
+            .try_sub_ctx(f, previous_children, parent)
             .unwrap_or_default()
     }
 
@@ -346,7 +346,7 @@ impl<L: Logic> OuterSolver<L> {
         let children_slice = &mut self.exp_stack[stack_len as usize..];
         let res = self
             .parser
-            .handle_non_terminal(f, children_slice, &mut self.inner, ctx)
+            .try_handle_non_terminal(f, children_slice, &mut self.inner, ctx)
             .unwrap_or(Err(Unbound))?;
         if let Some(expected) = expected {
             if res.sort() != expected {
