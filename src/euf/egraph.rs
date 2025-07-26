@@ -186,6 +186,10 @@ impl SymbolLang {
         res
     }
 
+    pub(crate) fn children_owned(self) -> Children {
+        self.children
+    }
+
     pub fn op(&self) -> Op {
         self.op
     }

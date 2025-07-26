@@ -130,6 +130,7 @@ pub type PfResult<Exp> = Option<Result<Exp, AddSexpError>>;
 
 #[allow(unused_variables)]
 pub trait ParserFragment<Exp, S, M>: Default {
+    fn supports(&self, s: Symbol) -> bool;
     fn handle_terminal(
         &self,
         x: SexpTerminal,
@@ -139,14 +140,24 @@ pub trait ParserFragment<Exp, S, M>: Default {
         None
     }
 
+    /// Requires that `self.`[`supports`](Self::supports)`(f)`
     fn handle_non_terminal(
         &self,
         f: Symbol,
         children: &mut [Exp],
         solver: &mut S,
         ctx: ExprContext<Exp>,
+    ) -> Result<Exp, AddSexpError>;
+
+    fn try_handle_non_terminal(
+        &self,
+        f: Symbol,
+        children: &mut [Exp],
+        solver: &mut S,
+        ctx: ExprContext<Exp>,
     ) -> PfResult<Exp> {
-        None
+        self.supports(f)
+            .then(|| self.handle_non_terminal(f, children, solver, ctx))
     }
 
     fn sub_ctx(
@@ -154,14 +165,28 @@ pub trait ParserFragment<Exp, S, M>: Default {
         f: Symbol,
         previous_children: &[Exp],
         ctx: ExprContext<Exp>,
+    ) -> ExprContext<Exp> {
+        ExprContext::Exact
+    }
+
+    fn try_sub_ctx(
+        &self,
+        f: Symbol,
+        previous_children: &[Exp],
+        ctx: ExprContext<Exp>,
     ) -> Option<ExprContext<Exp>> {
-        None
+        self.supports(f)
+            .then(|| self.sub_ctx(f, previous_children, ctx))
     }
 }
 
 impl<Exp: ExpLike, S, M1, M2, P1: ParserFragment<Exp, S, M1>, P2: ParserFragment<Exp, S, M2>>
     ParserFragment<Exp, S, (M1, M2)> for (P1, P2)
 {
+    fn supports(&self, s: Symbol) -> bool {
+        self.0.supports(s) || self.1.supports(s)
+    }
+
     fn handle_terminal(
         &self,
         x: SexpTerminal,
@@ -180,10 +205,23 @@ impl<Exp: ExpLike, S, M1, M2, P1: ParserFragment<Exp, S, M1>, P2: ParserFragment
         children: &mut [Exp],
         solver: &mut S,
         ctx: ExprContext<Exp>,
-    ) -> PfResult<Exp> {
-        match self.0.handle_non_terminal(f, children, solver, ctx) {
-            Some(res) => Some(res),
+    ) -> Result<Exp, AddSexpError> {
+        match self.0.try_handle_non_terminal(f, children, solver, ctx) {
+            Some(res) => res,
             None => self.1.handle_non_terminal(f, children, solver, ctx),
+        }
+    }
+
+    fn try_handle_non_terminal(
+        &self,
+        f: Symbol,
+        children: &mut [Exp],
+        solver: &mut S,
+        ctx: ExprContext<Exp>,
+    ) -> PfResult<Exp> {
+        match self.0.try_handle_non_terminal(f, children, solver, ctx) {
+            Some(res) => Some(res),
+            None => self.1.try_handle_non_terminal(f, children, solver, ctx),
         }
     }
 
@@ -192,10 +230,22 @@ impl<Exp: ExpLike, S, M1, M2, P1: ParserFragment<Exp, S, M1>, P2: ParserFragment
         f: Symbol,
         previous_children: &[Exp],
         ctx: ExprContext<Exp>,
-    ) -> Option<ExprContext<Exp>> {
-        match self.0.sub_ctx(f, previous_children, ctx) {
-            Some(res) => Some(res),
+    ) -> ExprContext<Exp> {
+        match self.0.try_sub_ctx(f, previous_children, ctx) {
+            Some(res) => res,
             None => self.1.sub_ctx(f, previous_children, ctx),
+        }
+    }
+
+    fn try_sub_ctx(
+        &self,
+        f: Symbol,
+        previous_children: &[Exp],
+        ctx: ExprContext<Exp>,
+    ) -> Option<ExprContext<Exp>> {
+        match self.0.try_sub_ctx(f, previous_children, ctx) {
+            Some(res) => Some(res),
+            None => self.1.try_sub_ctx(f, previous_children, ctx),
         }
     }
 }
