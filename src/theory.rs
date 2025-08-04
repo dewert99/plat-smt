@@ -1,5 +1,6 @@
-use crate::def_recorder::DefRecorder;
 use crate::intern::{InternInfo, Symbol};
+use crate::recorder::{ClauseKind, Recorder};
+use crate::tseitin::SatTheoryArgT;
 use crate::ExpLike;
 use core::fmt::{Debug, Formatter};
 use log::debug;
@@ -57,7 +58,7 @@ pub struct IncrementalArgData<M, R> {
     push_log: Vec<PushInfo<M>>,
     pub(crate) junction_buf: Vec<Lit>,
     intern: InternInfo,
-    recorder: R,
+    pub(crate) recorder: R,
 }
 
 impl<M: Debug, R: Debug> Debug for IncrementalArgData<M, R> {
@@ -111,7 +112,7 @@ pub type ExplainTheoryArg<'a, M, R> = TheoryArgRaw<'a, &'a mut SatExplainTheoryA
 pub trait TheoryArgT {
     type M;
 
-    type R: DefRecorder;
+    type R: Recorder;
 
     fn base_marker(&self) -> Option<&Self::M>;
 
@@ -144,7 +145,7 @@ pub trait TheoryArgT {
     }
 }
 
-impl<'a, S, M, R: DefRecorder> TheoryArgT for TheoryArgRaw<'a, S, M, R> {
+impl<'a, S, M, R: Recorder> TheoryArgT for TheoryArgRaw<'a, S, M, R> {
     type M = M;
     type R = R;
     fn base_marker(&self) -> Option<&M> {
@@ -169,20 +170,6 @@ impl<'a, S, M, R: DefRecorder> TheoryArgT for TheoryArgRaw<'a, S, M, R> {
 
     fn recorder_mut(&mut self) -> (&InternInfo, &mut Self::R) {
         (&self.incr.intern, &mut self.incr.recorder)
-    }
-}
-
-impl<'a, S, M, R> Deref for TheoryArgRaw<'a, S, M, R> {
-    type Target = S;
-
-    fn deref(&self) -> &Self::Target {
-        &self.sat
-    }
-}
-
-impl<'a, S, M, R> DerefMut for TheoryArgRaw<'a, S, M, R> {
-    fn deref_mut(&mut self) -> &mut Self::Target {
-        &mut self.sat
     }
 }
 
@@ -241,7 +228,7 @@ pub trait Theory<Arg, ExplainArg> {
 }
 
 impl<
-        R,
+        R: Recorder,
         Th: Incremental
             + for<'a> Theory<
                 TheoryArg<'a, Th::LevelMarker, R>,
@@ -287,6 +274,9 @@ impl<
         acts.clause_builder().push(p);
         let (th, mut arg) = self.open(&mut acts);
         th.explain_propagation(p, &mut arg, is_final);
+        self.arg
+            .recorder
+            .log_clause(acts.clause_builder(), ClauseKind::TheoryExplain);
         acts.clause_builder()
     }
     pub fn intern(&self) -> &InternInfo {
@@ -299,7 +289,7 @@ impl<
 }
 
 impl<
-        R,
+        R: Recorder,
         Th: Incremental
             + for<'a> Theory<
                 TheoryArg<'a, Th::LevelMarker, R>,
@@ -394,6 +384,11 @@ impl<
         acts: &'a mut SatExplainTheoryArg,
     ) -> &'a [Lit] {
         self.explain_propagation_clause_either(p, acts, true)
+    }
+
+    #[inline]
+    fn on_new_clause(&mut self, clause: &[Lit]) {
+        self.arg.recorder.log_clause(clause, ClauseKind::Sat)
     }
 }
 

@@ -1,7 +1,7 @@
 use super::egraph::{children, Children, EGraph, Op, PushInfo as EGPushInfo, SymbolLang, EQ_OP};
 use super::explain::{EqIds, Justification};
 use crate::exp::{BoolExp, EitherExp};
-use crate::intern::{DisplayInterned, InternInfo, Sort, BOOL_SORT, FALSE_SYM, TRUE_SYM};
+use crate::intern::{DisplayInterned, InternInfo, Sort, BOOL_SORT, EQ_SYM, FALSE_SYM, TRUE_SYM};
 use crate::theory::{Incremental, Theory};
 use crate::util::{minmax, Bind, DebugIter, DisplayFn, HashMap};
 use crate::{SubExp, Symbol};
@@ -135,6 +135,14 @@ impl EClass {
             EClass::Bool(BoolClass::Unknown(_)) => f.write_str("(as _ Bool)"),
             EClass::Singleton(b) => write!(f, "(Singleton {b:?})"),
         })
+    }
+
+    fn to_sort(&self) -> Sort {
+        match self {
+            EClass::Uninterpreted(s) => *s,
+            EClass::Bool(_) => BOOL_SORT,
+            _ => BOOL_SORT,
+        }
     }
 }
 
@@ -306,7 +314,17 @@ impl<'a, A: SatTheoryArgT<'a, M = PushInfo>> Theory<A, A::Explain<'a>> for Euf {
             self.requests_handled += 1;
             if self.find(id0) != self.find(id1) {
                 let lit = self.eq_ids.get_or_insert([id0, id1], || {
-                    Lit::new(acts.new_var(lbool::UNDEF, false), true)
+                    let res = Lit::new(acts.new_var(lbool::UNDEF, false), true);
+                    acts.log_def(
+                        BoolExp::unknown(res),
+                        EQ_SYM,
+                        [
+                            UExp::new(id0, self.egraph[id0].to_sort()),
+                            UExp::new(id1, self.egraph[id1].to_sort()),
+                        ]
+                        .into_iter(),
+                    );
+                    res
                 });
                 let (id, res) = self.add_uncanonical(EQ_OP, children![id0, id1], lit, acts);
                 self.lit.add_id_to_lit(id, lit, false);
@@ -764,15 +782,9 @@ impl Euf {
     }
 
     fn conflict<'a>(&mut self, acts: &mut impl SatTheoryArgT<'a, M = PushInfo>, id1: Id, id2: Id) {
-        acts.raise_conflict(&[], false);
+        acts.for_explain().clause_builder().clear();
         let add_clause = self.explain(id1, id2, false, &mut acts.for_explain());
-        debug!(
-            "EUF Conflict by {:?} (costly: {add_clause})",
-            acts.explain_arg().clause_builder()
-        );
-        if add_clause {
-            acts.make_conflict_costly();
-        }
+        acts.raise_conflict_using_builder(add_clause)
     }
 
     pub(super) fn rebuild<'a>(

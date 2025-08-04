@@ -232,7 +232,7 @@ impl AsRexp for BoolExp {
         match self.to_lit() {
             Err(c) => f(Rexp::Call(if c { TRUE_SYM } else { FALSE_SYM }, &[])),
             Ok(l) => {
-                let base = Rexp::Nv(NamespaceVar(Namespace::Bool, l.var().idx()));
+                let base = Rexp::Nv(NamespaceVar(Namespace::Bool, l.var().idx() + 1));
                 if l.sign() {
                     f(base)
                 } else {

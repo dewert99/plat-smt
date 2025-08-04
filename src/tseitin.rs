@@ -1,9 +1,9 @@
 use crate::collapse::{Collapse, CollapseOut, ExprContext};
-use crate::def_recorder::DefRecorder;
 use crate::exp::Fresh;
 use crate::intern::{Symbol, AND_SYM, BOOL_SORT, IMP_SYM, NOT_SYM, OR_SYM, XOR_SYM};
 use crate::junction::Junction;
 use crate::parser_fragment::{exact_args, index_iter, mandatory_args, ParserFragment};
+use crate::recorder::{ClauseKind, Recorder};
 use crate::solver::{ReuseMem, SolverCollapse};
 use crate::theory::{
     ExplainTheoryArg, Incremental, Reborrow, TheoryArgRaw, TheoryArgT, TheoryWrapper,
@@ -12,9 +12,8 @@ use crate::util::extend_result;
 use crate::{AddSexpError, BLit, BoolExp, Disjunction, ExpLike, SubExp, SuperExp};
 use alloc::vec::Vec;
 use core::cmp::Ordering;
-use core::ops::DerefMut;
 use log::debug;
-use platsat::{core::ExplainTheoryArg as SatExplainTheoryArg, TheoryArg as SatTheoryArg};
+use platsat::{core::ExplainTheoryArg as SatExplainTheoryArg, TheoryArg as SatTheoryArg, Var};
 use platsat::{lbool, Lit};
 use std::mem;
 
@@ -30,20 +29,71 @@ impl<Th: Incremental, R> TheoryWrapper<Th, R> {
     }
 }
 
-pub trait SatExplainTheoryArgT<'a>:
-    TheoryArgT + DerefMut<Target = &'a mut SatExplainTheoryArg>
-{
+pub trait SatExplainTheoryArgT<'a>: TheoryArgT {
+    fn clause_builder(&mut self) -> &mut Vec<Lit>;
 }
 
-impl<'a, M, R: DefRecorder> SatExplainTheoryArgT<'a>
+impl<'a, M, R: Recorder> SatExplainTheoryArgT<'a>
     for TheoryArgRaw<'a, &'a mut SatExplainTheoryArg, M, R>
 {
+    fn clause_builder(&mut self) -> &mut Vec<Lit> {
+        self.sat.clause_builder()
+    }
 }
 
-pub trait SatTheoryArgT<'a>: TheoryArgT + DerefMut<Target = SatTheoryArg<'a>> {
+pub trait SatTheoryArgT<'a>: TheoryArgT {
     type Explain<'b>: SatExplainTheoryArgT<'b, M = Self::M>
     where
         Self: 'b;
+
+    fn sat_mut(&mut self) -> (&mut SatTheoryArg<'a>, &mut Self::R);
+
+    fn sat(&self) -> &SatTheoryArg<'a>;
+
+    fn add_clause_unchecked<I: IntoIterator<Item = Lit>>(&mut self, lits: I)
+    where
+        I::IntoIter: ExactSizeIterator,
+    {
+        let (sat, recorder) = self.sat_mut();
+        let added = sat.add_clause_unchecked(lits);
+        recorder.log_clause(added, ClauseKind::Added)
+    }
+
+    fn value_lit(&self, l: Lit) -> lbool {
+        self.sat().value_lit(l)
+    }
+
+    fn new_var_default(&mut self) -> Var {
+        self.sat_mut().0.new_var_default()
+    }
+
+    fn new_var(&mut self, upol: lbool, dvar: bool) -> Var {
+        self.sat_mut().0.new_var(upol, dvar)
+    }
+
+    fn is_ok(&self) -> bool {
+        self.sat().is_ok()
+    }
+
+    fn model<'b>(&'b self) -> &'b [Lit]
+    where
+        'a: 'b,
+    {
+        self.sat().model()
+    }
+
+    fn raise_conflict_using_builder(&mut self, costly: bool) {
+        let (sat, recorder) = self.sat_mut();
+        sat.raise_conflict_using_builder(costly);
+        recorder.log_clause(
+            sat.explain_arg().clause_builder(),
+            ClauseKind::TheoryConflict(costly),
+        )
+    }
+
+    fn propagate(&mut self, l: Lit) -> bool {
+        self.sat_mut().0.propagate(l)
+    }
 
     fn for_explain(&mut self) -> Self::Explain<'_>;
 
@@ -322,11 +372,19 @@ pub trait SatTheoryArgT<'a>: TheoryArgT + DerefMut<Target = SatTheoryArg<'a>> {
     }
 }
 
-impl<'a, M, R: DefRecorder> SatTheoryArgT<'a> for TheoryArgRaw<'a, SatTheoryArg<'a>, M, R> {
+impl<'a, M, R: Recorder> SatTheoryArgT<'a> for TheoryArgRaw<'a, SatTheoryArg<'a>, M, R> {
     type Explain<'b>
         = TheoryArgRaw<'b, &'b mut SatExplainTheoryArg, M, R>
     where
         Self: 'b;
+
+    fn sat_mut(&mut self) -> (&mut platsat::TheoryArg<'a>, &mut R) {
+        (&mut self.sat, &mut self.incr.recorder)
+    }
+
+    fn sat(&self) -> &SatTheoryArg<'a> {
+        &self.sat
+    }
 
     fn for_explain(&mut self) -> Self::Explain<'_> {
         ExplainTheoryArg {

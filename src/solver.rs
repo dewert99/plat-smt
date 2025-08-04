@@ -1,10 +1,10 @@
 use crate::collapse::{Collapse, CollapseOut, ExprContext};
 use crate::core_ops::Eq;
-use crate::def_recorder::DefRecorder;
 use crate::exp::*;
 use crate::full_theory::{FullTheory, TopLevelCollapse};
 use crate::intern::*;
 use crate::junction::*;
+use crate::recorder::Recorder;
 use crate::theory::{TheoryArg, TheoryWrapper};
 use crate::tseitin::SatTheoryArgT;
 use crate::util::{DefaultHashBuilder, Either};
@@ -44,7 +44,7 @@ pub struct Solver<Euf: FullTheory<R>, R> {
     sat: BatSolver,
 }
 
-impl<Th: FullTheory<R> + Default, R: DefRecorder> Default for Solver<Th, R> {
+impl<Th: FullTheory<R> + Default, R: Recorder> Default for Solver<Th, R> {
     fn default() -> Self {
         let mut res = Solver {
             th: Default::default(),
@@ -108,7 +108,7 @@ pub trait SolverCollapse<T: CollapseOut, M> {
     }
 }
 
-impl<R: DefRecorder, Th: FullTheory<R>, T: CollapseOut, M> SolverCollapse<T, M> for Solver<Th, R>
+impl<R: Recorder, Th: FullTheory<R>, T: CollapseOut, M> SolverCollapse<T, M> for Solver<Th, R>
 where
     Th: TopLevelCollapse<T, M, R>,
 {
@@ -156,7 +156,7 @@ impl<T, S: ReuseMem<T>, B> ReuseMem<T> for SolverWithBound<S, B> {
     }
 }
 
-impl<Th: FullTheory<R>, R: DefRecorder> Solver<Th, R> {
+impl<Th: FullTheory<R>, R: Recorder> Solver<Th, R> {
     pub fn is_ok(&self) -> bool {
         self.sat.is_ok()
     }
@@ -343,7 +343,7 @@ pub struct LevelMarker<M> {
     euf: Option<M>,
 }
 
-impl<Euf: FullTheory<R>, R: DefRecorder> Solver<Euf, R> {
+impl<Euf: FullTheory<R>, R: Recorder> Solver<Euf, R> {
     /// Creates a [`LevelMarker`] which can later be used with [`pop_to_level`](Self::pop_to_level)
     /// to reset the solver to the state it has now
     ///

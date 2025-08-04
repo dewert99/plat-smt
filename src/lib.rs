@@ -22,9 +22,9 @@ mod util;
 
 #[path = "core-ops.rs"]
 mod core_ops;
-pub mod def_recorder;
 mod full_theory;
 mod parser_fragment;
+pub mod recorder;
 pub mod rexp;
 
 use intern::Symbol;
