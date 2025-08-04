@@ -177,7 +177,6 @@ fn test_symbols() {
     let g1 = symbols.gen_sym("gen_sym");
     let g2 = symbols.gen_sym("gen_sym");
     assert_ne!(g1, g2);
-    let x = symbols.resolve(g1);
     assert!(symbols.resolve(g1).starts_with("gen_sym"));
     assert!(symbols.resolve(g2).starts_with("gen_sym"));
     assert_eq!(symbols.resolve(TRUE_SYM), "true")

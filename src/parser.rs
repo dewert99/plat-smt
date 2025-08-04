@@ -1,10 +1,10 @@
-use crate::def_recorder::LoggingDefRecorder;
 use crate::full_buf_read::FullBufRead;
 use crate::full_theory::FunctionAssignmentT;
 use crate::intern::*;
 use crate::outer_solver::{Bound, BoundDefinition, FnSort, Logic, OuterSolver, StartExpCtx};
 use crate::parser::Error::*;
 use crate::parser_core::{ParseError, SexpParser, SexpTerminal, SexpToken, SexpVisitor, SpanRange};
+use crate::recorder::LoggingRecorder;
 use crate::solver::{SolveResult, SolverCollapse, UnsatCoreConjunction};
 use crate::util::{format_args2, parenthesized, powi, DefaultHashBuilder};
 use crate::AddSexpError::*;
@@ -1309,6 +1309,6 @@ fn write_body<'a, W: Write, L: Logic>(
 /// Evaluate `data`, the bytes of an `smt2` file, reporting results to `stdout` and errors to
 /// `stderr`
 pub fn interp_smt2(data: impl FullBufRead, out: impl Write, err: impl Write) {
-    let mut p = Parser::<_, (euf::Euf, euf::EufPf, LoggingDefRecorder, _)>::new(out);
+    let mut p = Parser::<_, (euf::Euf, euf::EufPf, LoggingRecorder, _)>::new(out);
     p.interp_smt2(data, err)
 }

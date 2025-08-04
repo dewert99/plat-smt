@@ -113,14 +113,14 @@ impl<
                 let eq1 = self.collapse(Eq::new_unchecked(res, t.1), acts, ExprContext::Exact);
                 let eq2 = self.collapse(Eq::new_unchecked(res, t.2), acts, ExprContext::Exact);
                 match eq1.to_lit() {
-                    Ok(l) => acts.add_theory_lemma(&[!i, l]),
+                    Ok(l) => acts.add_clause_unchecked([!i, l]),
                     Err(true) => {}
-                    Err(false) => acts.add_theory_lemma(&[!i]),
+                    Err(false) => acts.add_clause_unchecked([!i]),
                 }
                 match eq2.to_lit() {
-                    Ok(l) => acts.add_theory_lemma(&[i, l]),
+                    Ok(l) => acts.add_clause_unchecked([i, l]),
                     Err(true) => {}
-                    Err(false) => acts.add_theory_lemma(&[i]),
+                    Err(false) => acts.add_clause_unchecked([i]),
                 }
                 res
             }

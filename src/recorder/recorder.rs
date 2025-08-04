@@ -1,9 +1,17 @@
 use crate::intern::{DisplayInterned, InternInfo, Symbol};
 use crate::util::{display_sexp, format_args2};
-use crate::ExpLike;
-use log::info;
+use crate::{BoolExp, ExpLike};
+use log::{debug, info};
+use platsat::Lit;
 
-pub trait DefRecorder: Default + 'static {
+pub enum ClauseKind {
+    Sat,
+    Added,
+    TheoryExplain,
+    TheoryConflict(bool),
+}
+
+pub trait Recorder: Default + 'static {
     fn log_def<Exp: ExpLike, Exp2: ExpLike>(
         &mut self,
         val: Exp,
@@ -19,12 +27,14 @@ pub trait DefRecorder: Default + 'static {
         intern: &InternInfo,
     );
     fn log_alias<Exp: ExpLike>(&mut self, alias: Symbol, exp: Exp, intern: &InternInfo);
+
+    fn log_clause(&mut self, clause: &[Lit], kind: ClauseKind);
 }
 
 #[derive(Default)]
-pub struct LoggingDefRecorder;
+pub struct LoggingRecorder;
 
-impl DefRecorder for LoggingDefRecorder {
+impl Recorder for LoggingRecorder {
     #[inline]
     fn log_def<Exp: ExpLike, Exp2: ExpLike>(
         &mut self,
@@ -55,5 +65,18 @@ impl DefRecorder for LoggingDefRecorder {
     #[inline(always)]
     fn log_alias<Exp: ExpLike>(&mut self, alias: Symbol, exp: Exp, intern: &InternInfo) {
         info!("(assert (= {} {exp:?}))", alias.with_intern(intern))
+    }
+    fn log_clause(&mut self, clause: &[Lit], _: ClauseKind) {
+        debug!(
+            "(assert {})",
+            display_sexp(
+                "or",
+                clause.iter().map(|x| format_args2!(
+                    "{:?\
+                    }",
+                    BoolExp::unknown(*x)
+                ))
+            )
+        )
     }
 }

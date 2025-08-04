@@ -1,9 +1,9 @@
 use crate::collapse::ExprContext;
-use crate::def_recorder::DefRecorder;
 use crate::exp::Fresh;
 use crate::full_theory::FullTheory;
 use crate::intern::*;
 use crate::parser_fragment::ParserFragment;
+use crate::recorder::Recorder;
 use crate::solver::{SolverCollapse, SolverWithBound};
 use crate::theory::{TheoryArg, TheoryArgT};
 use crate::util::HashMap;
@@ -26,7 +26,7 @@ pub trait Logic {
 
     type LevelMarker: Clone;
 
-    type R: DefRecorder;
+    type R: Recorder;
     type Theory: FullTheory<Self::R, Exp = Self::Exp, LevelMarker = Self::LevelMarker>
         + for<'a> collapse::Collapse<Self::Exp, TheoryArg<'a, Self::LevelMarker, Self::R>, Self::CM>
         + for<'a> collapse::Collapse<
@@ -43,7 +43,7 @@ pub trait Logic {
 }
 
 impl<
-        R: DefRecorder,
+        R: Recorder,
         M,
         EM,
         CM,
@@ -124,11 +124,11 @@ struct Frame<UExp> {
 ///
 /// ### `(assert (not (= true false)))`
 /// ```
-/// use plat_smt::def_recorder::LoggingDefRecorder;
+/// use plat_smt::recorder::recorder::LoggingRecorder;
 /// use plat_smt::intern::{EQ_SYM, FALSE_SYM, NOT_SYM, TRUE_SYM};
 /// use plat_smt::outer_solver::{StartExpCtx::*, OuterSolver};
 /// use plat_smt::euf::{Euf, EufPf};
-/// let mut solver = OuterSolver::<(Euf, EufPf, LoggingDefRecorder, _)>::default();
+/// let mut solver = OuterSolver::<(Euf, EufPf, LoggingRecorder, _)>::default();
 /// // Use Assert to start since this is an assertion
 /// solver.start_exp(NOT_SYM, None, Assert);
 /// // Afterwards we use Opt to optimize sub expressions by knowing their position in the whole expression
@@ -144,22 +144,22 @@ struct Frame<UExp> {
 ///
 /// ### `(declare-fun f (Bool, Bool) Bool)`
 /// ```
-/// # use plat_smt::def_recorder::LoggingDefRecorder;
+/// # use plat_smt::recorder::recorder::LoggingRecorder;
 /// # use plat_smt::euf::{Euf, EufPf};
 /// use plat_smt::intern::{BOOL_SORT, EQ_SYM, FALSE_SYM, NOT_SYM, TRUE_SYM};
 /// # use plat_smt::outer_solver::{StartExpCtx::*, OuterSolver, Bound, FnSort};
-/// # let mut solver = OuterSolver::<(Euf, EufPf, LoggingDefRecorder, _)>::default();
+/// # let mut solver = OuterSolver::<(Euf, EufPf, LoggingRecorder, _)>::default();
 /// let f_sym = solver.intern_mut().symbols.intern("f");
 /// solver.define(f_sym, Bound::Fn(FnSort::new([BOOL_SORT, BOOL_SORT].into_iter().collect(), BOOL_SORT))).ok().unwrap();
 /// ```
 ///
 /// ### `(assert (not (let ((x (f true false))) (f x x))))`
 /// ```
-/// # use plat_smt::def_recorder::LoggingDefRecorder;
+/// # use plat_smt::recorder::recorder::LoggingRecorder;
 /// # use plat_smt::euf::{Euf, EufPf};
 /// use plat_smt::intern::{BOOL_SORT, EQ_SYM, FALSE_SYM, NOT_SYM, TRUE_SYM};
 /// # use plat_smt::outer_solver::{StartExpCtx::*, OuterSolver, Bound, FnSort};
-/// # let mut solver = OuterSolver::<(Euf, EufPf, LoggingDefRecorder, _)>::default();
+/// # let mut solver = OuterSolver::<(Euf, EufPf, LoggingRecorder, _)>::default();
 /// # let f_sym = solver.intern_mut().symbols.intern("f");
 /// # solver.define(f_sym, Bound::Fn(FnSort::new([BOOL_SORT, BOOL_SORT].into_iter().collect(), BOOL_SORT))).ok().unwrap();
 /// let x_sym = solver.intern_mut().symbols.intern("x");
@@ -186,11 +186,11 @@ struct Frame<UExp> {
 ///
 /// ### `(assert (not (f (! (f true false) :named x) x)))`
 /// ```
-/// # use plat_smt::def_recorder::LoggingDefRecorder;
+/// # use plat_smt::recorder::recorder::LoggingRecorder;
 /// # use plat_smt::euf::{Euf, EufPf};
 /// use plat_smt::intern::{BOOL_SORT, EQ_SYM, FALSE_SYM, NOT_SYM, TRUE_SYM};
 /// # use plat_smt::outer_solver::{StartExpCtx::*, OuterSolver, Bound, FnSort};
-/// # let mut solver = OuterSolver::<(Euf, EufPf, LoggingDefRecorder, _)>::default();
+/// # let mut solver = OuterSolver::<(Euf, EufPf, LoggingRecorder, _)>::default();
 /// # let f_sym = solver.intern_mut().symbols.intern("f");
 /// # solver.define(f_sym, Bound::Fn(FnSort::new([BOOL_SORT, BOOL_SORT].into_iter().collect(), BOOL_SORT))).ok().unwrap();
 /// let x_sym = solver.intern_mut().symbols.intern("x");

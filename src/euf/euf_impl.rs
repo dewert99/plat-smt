@@ -3,16 +3,16 @@ use super::euf::{litvec, BoolClass, EClass, Euf, Exp, FunctionInfoIter, PushInfo
 use super::explain::Justification;
 use crate::collapse::{Collapse, CollapseOut, ExprContext};
 use crate::core_ops::{Distinct, DistinctPf, Eq, EqPf, ItePf};
-use crate::def_recorder::DefRecorder;
 use crate::exp::Fresh;
 use crate::full_theory::FullTheory;
 use crate::intern::{DisplayInterned, InternInfo, Symbol, BOOL_SORT, DISTINCT_SYM};
 use crate::outer_solver::Bound;
 use crate::parser_core::SexpTerminal;
 use crate::parser_fragment::{index_iter, ParserFragment, PfResult};
+use crate::recorder::Recorder;
 use crate::rexp::{rexp_debug, AsRexp, Namespace, NamespaceVar, Rexp};
 use crate::solver::{SolverCollapse, SolverWithBound};
-use crate::tseitin::{BoolOpPf, SatTheoryArgT};
+use crate::tseitin::{BoolOpPf, SatExplainTheoryArgT, SatTheoryArgT};
 use crate::util::{pairwise_sym, HashMap};
 use crate::{AddSexpError, BoolExp, Conjunction, HasSort, Solver, Sort, SubExp, SuperExp};
 use alloc::borrow::Cow;
@@ -83,7 +83,7 @@ impl Into<Cow<'static, str>> for Never {
     }
 }
 
-impl<R: DefRecorder> FullTheory<R> for Euf {
+impl<R: Recorder> FullTheory<R> for Euf {
     type Exp = Exp;
     fn init_function_info(&mut self) {
         self.init_function_info()
@@ -188,7 +188,8 @@ impl Euf {
                 }
                 (Err(b1), Err(b2)) => {
                     if b1 != b2 {
-                        acts.raise_conflict(&[], false);
+                        acts.for_explain().clause_builder().clear();
+                        acts.raise_conflict_using_builder(false)
                     }
                 }
                 (Ok(b1), Ok(b2)) => {
@@ -388,7 +389,7 @@ type EufSolver<R> = SolverWithBound<Solver<Euf, R>, HashMap<Symbol, Bound<Exp>>>
 #[derive(Default)]
 pub struct UFnPf;
 
-impl<R: DefRecorder> ParserFragment<Exp, EufSolver<R>, EufMarker> for UFnPf {
+impl<R: Recorder> ParserFragment<Exp, EufSolver<R>, EufMarker> for UFnPf {
     fn supports(&self, _: Symbol) -> bool {
         true
     }
@@ -446,7 +447,7 @@ impl<R: DefRecorder> ParserFragment<Exp, EufSolver<R>, EufMarker> for UFnPf {
 #[derive(Default)]
 pub struct EgraphPf<I>(I);
 
-impl<R: DefRecorder, E: SubExp<Exp, MS> + Copy, M, MS, I: ParserFragment<E, EufSolver<R>, M>>
+impl<R: Recorder, E: SubExp<Exp, MS> + Copy, M, MS, I: ParserFragment<E, EufSolver<R>, M>>
     ParserFragment<E, EufSolver<R>, (M, MS)> for EgraphPf<I>
 {
     fn supports(&self, s: Symbol) -> bool {
