@@ -86,7 +86,7 @@ enum Error {
         actual: SolveResult,
         expected: SolveResult,
     },
-    NoCore,
+    NoUnsat,
     ProduceCoreFalse,
     NoModel,
     ProduceModelFalse,
@@ -138,7 +138,7 @@ impl DisplayInterned for Error {
                 actual,
                 expected,
             } => write!(fmt, "(check-sat) returned {actual:?} but should have returned {expected:?} based on last (set-info :status)"),
-            NoCore => write!(fmt, "The last command was not `check-sat-assuming` that returned `unsat`"),
+            NoUnsat => write!(fmt, "The last command was not `check-sat-assuming` that returned `unsat`"),
             ProduceCoreFalse => write!(fmt, "The option `:produce-unsat-cores` must be set to true"),
             NoModel => write!(fmt, "The last command was not `check-sat-assuming` that returned `sat`"),
             ProduceModelFalse => write!(fmt, "The option `:produce-models` must be set to true"),
@@ -271,6 +271,7 @@ enum_str! {Smt2Command{
     "set-option" => SetOption(2),
     "echo" => Echo(1),
     "exit" => Exit(0),
+    "get-interpolants" => GetInterpolants(0),
 }}
 
 macro_rules! enum_option {
@@ -326,7 +327,7 @@ enum_option! {SetOption{
     "print-success" => PrintSuccess(bool),
 }}
 
-#[derive(Default)]
+#[derive(Default, Copy, Clone)]
 enum State {
     Unsat,
     Model,
@@ -829,7 +830,7 @@ impl<W: Write, L: Logic> Parser<W, L> {
             }
             Smt2Command::GetUnsatCore => {
                 let State::Unsat = &self.state else {
-                    return Err(NoCore);
+                    return Err(NoUnsat);
                 };
                 if !self.options.produces_unsat_cores {
                     return Err(ProduceCoreFalse);
@@ -1033,6 +1034,18 @@ impl<W: Write, L: Logic> Parser<W, L> {
                 writeln!(self.writer, "{s}");
                 rest.finish()?;
             }
+            Smt2Command::GetInterpolants => {
+                let (State::Unsat, Some(pre_solve_level)) =
+                    (self.state, self.command_level_marker.clone())
+                else {
+                    return Err(NoUnsat);
+                };
+                let interpolant = self
+                    .core
+                    .solver_mut()
+                    .interpolant(pre_solve_level, &mut self.named_assertions.conj);
+                let _interpolant = interpolant.ok_or(UnsupportedP("interpolants"))?;
+            }
             _ => return self.parse_destructive_command(name, rest),
         }
         Ok(())
@@ -1127,12 +1140,7 @@ impl<W: Write, L: Logic> Parser<W, L> {
             }
             Smt2Command::CheckSat => {
                 self.old_named_assertions = self.named_assertions.push();
-                let res = self
-                    .core
-                    .solver_mut()
-                    .check_sat_assuming_preserving_trail(self.named_assertions.parts().0);
-                self.set_state(res)?;
-                writeln!(self.writer, "{}", res.as_lower_str())
+                self.check_sat()?;
             }
             Smt2Command::CheckSatAssuming => {
                 let SexpToken::List(mut l) = rest.next()? else {
@@ -1149,12 +1157,7 @@ impl<W: Write, L: Logic> Parser<W, L> {
                 self.command_level_marker = Some(self.core.solver_mut().create_level());
                 self.named_assertions
                     .extend(conj.into_iter().map(|(b, s)| (b, s)));
-                let res = self
-                    .core
-                    .solver_mut()
-                    .check_sat_assuming_preserving_trail(self.named_assertions.parts().0);
-                self.set_state(res)?;
-                writeln!(self.writer, "{}", res.as_lower_str())
+                self.check_sat()?;
             }
             Smt2Command::Push => {
                 let n = rest.try_next_parse()?.unwrap_or(1);
@@ -1221,6 +1224,16 @@ impl<W: Write, L: Logic> Parser<W, L> {
         if matches!(self.state, State::Base) {
             self.command_level_marker = Some(self.core.solver_mut().create_level());
         }
+        Ok(())
+    }
+
+    fn check_sat(&mut self) -> Result<()> {
+        let res = self
+            .core
+            .solver_mut()
+            .check_sat_assuming_preserving_trail(self.named_assertions.parts().0);
+        self.set_state(res)?;
+        writeln!(self.writer, "{}", res.as_lower_str());
         Ok(())
     }
 
