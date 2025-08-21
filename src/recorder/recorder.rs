@@ -1,9 +1,14 @@
+use crate::full_theory::FullTheory;
 use crate::intern::{DisplayInterned, InternInfo, Symbol};
+use crate::solver::LevelMarker;
 use crate::util::{display_sexp, format_args2};
-use crate::{BoolExp, ExpLike};
+use crate::{BoolExp, Conjunction, ExpLike, Solver};
+use core::convert::Infallible;
 use log::{debug, info};
+use platsat::theory::ClauseRef;
 use platsat::Lit;
 
+#[derive(Debug)]
 pub enum ClauseKind {
     Sat,
     Added,
@@ -12,6 +17,8 @@ pub enum ClauseKind {
 }
 
 pub trait Recorder: Default + 'static {
+    type Interpolant<'a>;
+
     fn log_def<Exp: ExpLike, Exp2: ExpLike>(
         &mut self,
         val: Exp,
@@ -29,12 +36,26 @@ pub trait Recorder: Default + 'static {
     fn log_alias<Exp: ExpLike>(&mut self, alias: Symbol, exp: Exp, intern: &InternInfo);
 
     fn log_clause(&mut self, clause: &[Lit], kind: ClauseKind);
+
+    fn on_gc_start(&mut self) {}
+
+    fn on_final_lit_explanation(&mut self, _lit: Lit, _reason: ClauseRef) {}
+
+    fn interpolant<'a, Th: FullTheory<Self>>(
+        _solver: &'a mut Solver<Th, Self>,
+        _pre_solve_marker: LevelMarker<Th::LevelMarker>,
+        _assumptions: &Conjunction,
+    ) -> Option<Self::Interpolant<'a>> {
+        None
+    }
 }
 
 #[derive(Default)]
 pub struct LoggingRecorder;
 
 impl Recorder for LoggingRecorder {
+    type Interpolant<'a> = Infallible;
+
     #[inline]
     fn log_def<Exp: ExpLike, Exp2: ExpLike>(
         &mut self,

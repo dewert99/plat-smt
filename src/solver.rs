@@ -14,6 +14,7 @@ use internal_iterator::{InternalIterator, IteratorExt};
 use log::{debug, trace};
 use no_std_compat::prelude::v1::*;
 use perfect_derive::perfect_derive;
+use platsat::theory::ClauseRef;
 use platsat::{lbool, Callbacks, Lit, SolverInterface, SolverOpts};
 use std::fmt::Debug;
 
@@ -32,7 +33,7 @@ pub enum Approx {
 }
 
 #[derive(Default)]
-struct NoCb;
+pub(crate) struct NoCb;
 impl Callbacks for NoCb {}
 type BatSolver = platsat::Solver<NoCb>;
 
@@ -41,7 +42,7 @@ type BatSolver = platsat::Solver<NoCb>;
 /// It allows constructing and asserting expressions [`Exp`] within the solver
 pub struct Solver<Euf: FullTheory<R>, R> {
     pub(crate) th: TheoryWrapper<Euf, R>,
-    sat: BatSolver,
+    pub(crate) sat: BatSolver,
 }
 
 impl<Th: FullTheory<R> + Default, R: Recorder> Default for Solver<Th, R> {
@@ -265,6 +266,14 @@ impl<Th: FullTheory<R>, R: Recorder> Solver<Th, R> {
         res
     }
 
+    pub(crate) fn analyze_final_conflict(&mut self) {
+        self.sat.analyze_final_conflict(&mut self.th)
+    }
+
+    pub(crate) fn clauses(&self) -> impl DoubleEndedIterator<Item = ClauseRef> + '_ {
+        self.sat.clauses()
+    }
+
     /// Restores the state after calling `raw_check_sat_assuming`
     pub fn pop_model(&mut self) {
         self.sat.pop_model(&mut self.th);
@@ -332,6 +341,14 @@ impl<Th: FullTheory<R>, R: Recorder> Solver<Th, R> {
 
     pub fn set_sat_options(&mut self, options: SolverOpts) -> core::result::Result<(), ()> {
         self.sat.set_options(options)
+    }
+
+    pub fn interpolant(
+        &mut self,
+        pre_solve_level: LevelMarker<Th::LevelMarker>,
+        assumptions: &mut Conjunction,
+    ) -> Option<R::Interpolant<'_>> {
+        R::interpolant(self, pre_solve_level, assumptions)
     }
 }
 
@@ -404,7 +421,7 @@ impl<T> UnsatCoreInfo<T> {
 
 #[perfect_derive(Default)]
 pub struct UnsatCoreConjunction<T> {
-    conj: Conjunction,
+    pub(crate) conj: Conjunction,
     info: UnsatCoreInfo<T>,
 }
 

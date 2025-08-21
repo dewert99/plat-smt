@@ -124,6 +124,22 @@ impl BitOr<BoolExp> for Disjunction {
     }
 }
 
+impl<const IS_AND: bool> Junction<IS_AND> {
+    pub fn create_level(&self) -> usize {
+        if self.absorbing {
+            usize::MAX
+        } else {
+            self.lits.len()
+        }
+    }
+
+    pub fn pop_to_level(&mut self, marker: usize) {
+        if marker != usize::MAX {
+            self.lits.truncate(marker)
+        }
+    }
+}
+
 #[cfg(test)]
 mod test {
     use super::*;

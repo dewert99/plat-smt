@@ -3,7 +3,7 @@ use plat_smt::empty_theory::{EmptyTheory, EmptyTheoryPf};
 use plat_smt::euf::{Euf, EufPf};
 use plat_smt::interp_smt2;
 use plat_smt::outer_solver::Logic;
-use plat_smt::recorder::LoggingRecorder;
+use plat_smt::recorder::{InterpolantRecorder, LoggingRecorder};
 use rstest::rstest;
 use std::any::type_name;
 use std::fs::{remove_file, File};
@@ -76,12 +76,12 @@ fn test_file<L: Logic>(mut file: PathBuf) {
 
 #[rstest]
 fn test_euf(#[files("tests/smt2/**/*.smt2")] file: PathBuf) {
-    test_file::<(Euf, EufPf, LoggingRecorder, _)>(file)
+    test_file::<(Euf, EufPf, InterpolantRecorder, _)>(file)
 }
 
 #[rstest]
 fn test_no_euf(#[files("tests/smt2/no_euf/**/*.smt2")] file: PathBuf) {
-    test_file::<(EmptyTheory, EmptyTheoryPf, LoggingRecorder, _)>(file)
+    test_file::<(EmptyTheory, EmptyTheoryPf, InterpolantRecorder, _)>(file)
 }
 
 fn test_sequential(init_command: &str, split_command: &str, exact: bool) {

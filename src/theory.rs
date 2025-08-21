@@ -7,7 +7,7 @@ use log::debug;
 use no_std_compat::prelude::v1::*;
 use perfect_derive::perfect_derive;
 use platsat::core::ExplainTheoryArg as SatExplainTheoryArg;
-use platsat::theory::Theory as SatTheory;
+use platsat::theory::{ClauseRef, Theory as SatTheory};
 use platsat::{Lit, TheoryArg as SatTheoryArg};
 use std::ops::{Deref, DerefMut};
 // The implementation of push/pop is somewhat unexpected
@@ -389,6 +389,14 @@ impl<
     #[inline]
     fn on_new_clause(&mut self, clause: &[Lit]) {
         self.arg.recorder.log_clause(clause, ClauseKind::Sat)
+    }
+
+    fn on_start_gc(&mut self) {
+        self.arg.recorder.on_gc_start()
+    }
+
+    fn on_final_lit_explanation(&mut self, lit: Lit, reason: ClauseRef) {
+        self.arg.recorder.on_final_lit_explanation(lit, reason)
     }
 }
 
