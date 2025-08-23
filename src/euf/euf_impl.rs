@@ -4,7 +4,7 @@ use super::explain::Justification;
 use crate::collapse::{Collapse, CollapseOut, ExprContext};
 use crate::core_ops::{Distinct, DistinctPf, Eq, EqPf, ItePf};
 use crate::exp::Fresh;
-use crate::full_theory::FullTheory;
+use crate::full_theory::{FnSort, FullTheory};
 use crate::intern::{DisplayInterned, InternInfo, Symbol, BOOL_SORT, DISTINCT_SYM};
 use crate::outer_solver::Bound;
 use crate::parser_core::SexpTerminal;
@@ -85,6 +85,8 @@ impl Into<Cow<'static, str>> for Never {
 
 impl<R: Recorder> FullTheory<R> for Euf {
     type Exp = Exp;
+
+    type FnSort = FnSort;
     fn init_function_info(&mut self) {
         self.init_function_info()
     }
@@ -384,7 +386,7 @@ impl<'a, I: Iterator<Item = Exp>, A: SatTheoryArgT<'a, M = PushInfo>> Collapse<U
     }
 }
 
-type EufSolver<R> = SolverWithBound<Solver<Euf, R>, HashMap<Symbol, Bound<Exp>>>;
+type EufSolver<R> = SolverWithBound<Solver<Euf, R>, HashMap<Symbol, Bound<Exp, FnSort>>>;
 
 #[derive(Default)]
 pub struct UFnPf;

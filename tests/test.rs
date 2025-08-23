@@ -1,6 +1,11 @@
 use log::info;
+use plat_smt::empty_theory::{EmptyTheory, EmptyTheoryPf};
+use plat_smt::euf::{Euf, EufPf};
 use plat_smt::interp_smt2;
+use plat_smt::outer_solver::Logic;
+use plat_smt::recorder::LoggingRecorder;
 use rstest::rstest;
+use std::any::type_name;
 use std::fs::{remove_file, File};
 use std::io::{BufWriter, Read};
 use std::path::{Path, PathBuf};
@@ -35,10 +40,9 @@ impl<W: std::io::Write> std::fmt::Write for WrapWrite<W> {
     }
 }
 
-#[rstest]
-fn test(#[files("tests/smt2/**/*.smt2")] mut file: PathBuf) {
+fn test_file<L: Logic>(mut file: PathBuf) {
     init_logger();
-    info!("Starting test {:?}", file);
+    info!("Starting test {:?} using {}", file, type_name::<Euf>());
     let bless = std::env::var("BLESS").as_deref() == Ok("true");
     if bless {
         println!("BLESS")
@@ -49,7 +53,7 @@ fn test(#[files("tests/smt2/**/*.smt2")] mut file: PathBuf) {
         let stdout_file = File::create(&file).unwrap();
         file.set_extension("stderr");
         let stderr_file = File::create(&file).unwrap();
-        interp_smt2(
+        interp_smt2::<L>(
             &*smt2_data,
             WrapWrite(BufWriter::new(stdout_file)),
             WrapWrite(BufWriter::new(stderr_file)),
@@ -64,10 +68,20 @@ fn test(#[files("tests/smt2/**/*.smt2")] mut file: PathBuf) {
         let stderr_expected = String::from_utf8(read_path(&file)).unwrap();
         let mut stdout_actual = String::new();
         let mut stderr_actual = String::new();
-        interp_smt2(&*smt2_data, &mut stdout_actual, &mut stderr_actual);
+        interp_smt2::<L>(&*smt2_data, &mut stdout_actual, &mut stderr_actual);
         assert_eq!(stderr_actual, stderr_expected);
         assert_eq!(stdout_actual, stdout_expected);
     }
+}
+
+#[rstest]
+fn test_euf(#[files("tests/smt2/**/*.smt2")] file: PathBuf) {
+    test_file::<(Euf, EufPf, LoggingRecorder, _)>(file)
+}
+
+#[rstest]
+fn test_no_euf(#[files("tests/smt2/no_euf/**/*.smt2")] file: PathBuf) {
+    test_file::<(EmptyTheory, EmptyTheoryPf, LoggingRecorder, _)>(file)
 }
 
 fn test_sequential(init_command: &str, split_command: &str, exact: bool) {
@@ -104,7 +118,7 @@ fn test_sequential(init_command: &str, split_command: &str, exact: bool) {
             .read_to_end(&mut expect_out)
             .unwrap();
     }
-    interp_smt2(&*file_buf, &mut out, &mut err);
+    interp_smt2::<(Euf, EufPf, LoggingRecorder, _)>(&*file_buf, &mut out, &mut err);
     assert_eq!(&err, "");
     if exact {
         assert_eq!(&out, from_utf8(&expect_out).unwrap());
@@ -159,7 +173,7 @@ mod test_smtlib_benchmarks {
                     .unwrap()
                     .read_to_end(&mut file_buf)
                     .unwrap();
-                interp_smt2(&*file_buf, &mut out, &mut err);
+                interp_smt2::<(Euf, EufPf, LoggingRecorder, _)>(&*file_buf, &mut out, &mut err);
                 let yices_out = yices_child.wait_with_output().unwrap();
                 assert_eq!(&err, "");
                 assert_eq!(&out, from_utf8(&yices_out.stdout).unwrap());
@@ -190,7 +204,7 @@ mod test_smtlib_benchmarks {
                 base_file.rewind().unwrap();
                 let mut scrambled_file = File::create("tmp.smt2").unwrap();
                 let mut output_file = File::create("tmp.rsmt2").unwrap();
-                interp_smt2(&*file_buf, &mut out, &mut err);
+                interp_smt2::<(Euf, EufPf, LoggingRecorder, _)>(&*file_buf, &mut out, &mut err);
                 assert_eq!(&err, "");
                 file_buf.truncate(base_len);
                 match &*out {
@@ -203,7 +217,11 @@ mod test_smtlib_benchmarks {
                         assert!(scrambler_out.stderr.is_empty() && scrambler_out.status.success());
                         let scrambled = scrambler_out.stdout;
                         out.clear();
-                        interp_smt2(&*scrambled, &mut out, &mut err);
+                        interp_smt2::<(Euf, EufPf, LoggingRecorder, _)>(
+                            &*scrambled,
+                            &mut out,
+                            &mut err,
+                        );
                         assert_eq!(&err, "");
                         scrambled_file.write_all(&*scrambled).unwrap();
                         drop(scrambled_file);
@@ -227,7 +245,11 @@ mod test_smtlib_benchmarks {
                         assert!(scrambler_out.stderr.is_empty() && scrambler_out.status.success());
                         let scrambled = scrambler_out.stdout;
                         out.clear();
-                        interp_smt2(&*scrambled, &mut out, &mut err);
+                        interp_smt2::<(Euf, EufPf, LoggingRecorder, _)>(
+                            &*scrambled,
+                            &mut out,
+                            &mut err,
+                        );
                         assert_eq!(&err, "");
                         scrambled_file.write_all(&*scrambled).unwrap();
                         drop(scrambled_file);
