@@ -14,20 +14,22 @@ use crate::{
 use alloc::vec::Vec;
 use hashbrown::hash_map::Entry;
 use log::info;
-use smallvec::SmallVec;
 use std::iter;
 
-#[allow(type_alias_bounds)]
-type WrapSolver<L: Logic> =
-    SolverWithBound<Solver<L::Theory, L::R>, HashMap<Symbol, Bound<L::Exp>>>;
+pub use crate::full_theory::{FnSort, MaybeFnSort};
 
-pub trait Logic {
+#[allow(type_alias_bounds)]
+type WrapSolver<L: Logic> = SolverWithBound<Solver<L::Theory, L::R>, HashMap<Symbol, BoundL<L>>>;
+
+pub trait Logic: Sized {
     type Exp: SuperExp<BoolExp, Self::EM> + ExpLike;
+
+    type FnSort: MaybeFnSort;
 
     type LevelMarker: Clone;
 
     type R: Recorder;
-    type Theory: FullTheory<Self::R, Exp = Self::Exp, LevelMarker = Self::LevelMarker>
+    type Theory: FullTheory<Self::R, Exp = Self::Exp, FnSort = Self::FnSort, LevelMarker = Self::LevelMarker>
         + for<'a> collapse::Collapse<Self::Exp, TheoryArg<'a, Self::LevelMarker, Self::R>, Self::CM>
         + for<'a> collapse::Collapse<
             Fresh<Self::Exp>,
@@ -50,12 +52,17 @@ impl<
         Th: FullTheory<R>
             + for<'a> collapse::Collapse<Th::Exp, TheoryArg<'a, Th::LevelMarker, R>, CM>
             + for<'a> collapse::Collapse<Fresh<Th::Exp>, TheoryArg<'a, Th::LevelMarker, R>, CM>,
-        P: ParserFragment<Th::Exp, SolverWithBound<Solver<Th, R>, HashMap<Symbol, Bound<Th::Exp>>>, M>,
+        P: ParserFragment<
+            Th::Exp,
+            SolverWithBound<Solver<Th, R>, HashMap<Symbol, Bound<Th::Exp, Th::FnSort>>>,
+            M,
+        >,
     > Logic for (Th, P, R, (M, EM, CM))
 where
     Th::Exp: SuperExp<BoolExp, EM>,
 {
     type Exp = Th::Exp;
+    type FnSort = Th::FnSort;
     type LevelMarker = Th::LevelMarker;
     type R = R;
     type Theory = Th;
@@ -67,39 +74,14 @@ where
 }
 
 #[derive(Clone)]
-pub struct FnSort {
-    args: SmallVec<[Sort; 5]>,
-    ret: Sort,
-}
-
-impl FnSort {
-    pub fn new(args: SmallVec<[Sort; 5]>, ret: Sort) -> Self {
-        FnSort { args, ret }
-    }
-
-    pub fn try_new<E>(args: impl Iterator<Item = Result<Sort, E>>, ret: Sort) -> Result<Self, E> {
-        Ok(FnSort {
-            args: args.collect::<Result<_, E>>()?,
-            ret,
-        })
-    }
-
-    pub fn args(&self) -> &[Sort] {
-        &self.args
-    }
-
-    pub fn ret(&self) -> Sort {
-        self.ret
-    }
-}
-
-#[derive(Clone)]
-pub enum Bound<Exp> {
+pub enum Bound<Exp, Fn = FnSort> {
     /// An uninterpreted function with the given sort
-    Fn(FnSort),
+    Fn(Fn),
     /// A constant with the given value
     Const(Exp),
 }
+
+pub type BoundL<L> = Bound<<L as Logic>::Exp, <L as Logic>::FnSort>;
 
 /// Requirements on the `Exp` created
 #[derive(Debug, Copy, Clone)]
@@ -116,6 +98,11 @@ struct Frame<UExp> {
     f: Symbol,
     expected: Option<Sort>,
     stack_len: u32,
+}
+
+pub enum DefineError<L: Logic> {
+    Exists(BoundL<L>),
+    Unsupported,
 }
 
 /// Wrapper around solver more conducive to building up expressions such as from parsing or compiling
@@ -147,7 +134,7 @@ struct Frame<UExp> {
 /// # use plat_smt::recorder::recorder::LoggingRecorder;
 /// # use plat_smt::euf::{Euf, EufPf};
 /// use plat_smt::intern::{BOOL_SORT, EQ_SYM, FALSE_SYM, NOT_SYM, TRUE_SYM};
-/// # use plat_smt::outer_solver::{StartExpCtx::*, OuterSolver, Bound, FnSort};
+/// # use plat_smt::outer_solver::{StartExpCtx::*, OuterSolver, Bound, FnSort };
 /// # let mut solver = OuterSolver::<(Euf, EufPf, LoggingRecorder, _)>::default();
 /// let f_sym = solver.intern_mut().symbols.intern("f");
 /// solver.define(f_sym, Bound::Fn(FnSort::new([BOOL_SORT, BOOL_SORT].into_iter().collect(), BOOL_SORT))).ok().unwrap();
@@ -237,20 +224,25 @@ impl<L: Logic> Default for OuterSolver<L> {
 }
 
 impl<L: Logic> OuterSolver<L> {
-    fn optimize_binding(&mut self, name: Symbol, b: Bound<L::Exp>) -> Bound<L::Exp> {
-        match &b {
-            Bound::Fn(FnSort { args, ret }) if args.is_empty() => {
-                let exp = match Fresh::<L::Exp>::new(name, *ret) {
-                    Ok(fresh) => self.inner.collapse(fresh),
-                    _ => return b,
-                };
-                self.solver_mut().open(
-                    |_, acts| acts.log_def(exp, name, iter::empty::<L::Exp>()),
-                    (),
-                );
-                Bound::Const(exp)
+    fn optimize_binding(&mut self, name: Symbol, b: Bound<L::Exp>) -> Result<BoundL<L>, ()> {
+        match b {
+            Bound::Fn(f) => {
+                if f.args().is_empty() {
+                    match Fresh::<L::Exp>::new(name, f.as_fn_sort().ret()) {
+                        Ok(fresh) => {
+                            let exp = self.inner.collapse(fresh);
+                            self.solver_mut().open(
+                                |_, acts| acts.log_def(exp, name, iter::empty::<L::Exp>()),
+                                (),
+                            );
+                            return Ok(Bound::Const(exp));
+                        }
+                        _ => {}
+                    };
+                }
+                Ok(Bound::Fn(L::FnSort::try_new(f)?))
             }
-            _ => b,
+            Bound::Const(c) => Ok(Bound::Const(c)),
         }
     }
 
@@ -260,11 +252,7 @@ impl<L: Logic> OuterSolver<L> {
     /// ## Waring
     /// Defining a symbol as an uninterpreted function and later redefining it as a different
     /// uninterpreted function may lead to unexpected behaviour
-    pub fn raw_define(
-        &mut self,
-        symbol: Symbol,
-        bound: Option<Bound<L::Exp>>,
-    ) -> Option<Bound<L::Exp>> {
+    pub fn raw_define(&mut self, symbol: Symbol, bound: Option<BoundL<L>>) -> Option<BoundL<L>> {
         if let Some(bound) = bound {
             self.inner.bound.insert(symbol, bound)
         } else {
@@ -274,11 +262,13 @@ impl<L: Logic> OuterSolver<L> {
 
     /// Defines `symbol` to be `bound`,
     /// if it is already defined the old definition kept and Err(`bound`)
-    pub fn define(&mut self, symbol: Symbol, bound: Bound<L::Exp>) -> Result<(), Bound<L::Exp>> {
-        let bound = self.optimize_binding(symbol, bound);
+    pub fn define(&mut self, symbol: Symbol, bound: Bound<L::Exp>) -> Result<(), DefineError<L>> {
+        let bound = self
+            .optimize_binding(symbol, bound)
+            .map_err(|()| DefineError::Unsupported)?;
         let entry = self.inner.bound.entry(symbol);
         match entry {
-            Entry::Occupied(_) => Err(bound),
+            Entry::Occupied(_) => Err(DefineError::Exists(bound)),
             Entry::Vacant(vac) => {
                 if let Bound::Const(e) = bound {
                     self.inner
@@ -313,7 +303,7 @@ impl<L: Logic> OuterSolver<L> {
             .filter(|&k| k != TRUE_SYM && k != FALSE_SYM)
     }
 
-    pub fn definition(&self, sym: Symbol) -> Option<&Bound<L::Exp>> {
+    pub fn definition(&self, sym: Symbol) -> Option<&BoundL<L>> {
         self.inner.bound.get(&sym)
     }
 
@@ -444,7 +434,7 @@ impl<L: Logic> OuterSolver<L> {
                 ),
                 Bound::Fn(s) => f(
                     sym,
-                    BoundDefinition::Fn(s, solver.th.get_function_info(sym)),
+                    BoundDefinition::Fn(s.as_fn_sort(), solver.th.get_function_info(sym)),
                     solver.intern(),
                 ),
             }

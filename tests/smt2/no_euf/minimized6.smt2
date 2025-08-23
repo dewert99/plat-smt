@@ -9,6 +9,3 @@
 (check-sat)
 (pop)
 (pop)
-(push)
-(push)
-(push)

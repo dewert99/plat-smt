@@ -22,6 +22,7 @@ mod util;
 
 #[path = "core-ops.rs"]
 mod core_ops;
+pub mod empty_theory;
 mod full_theory;
 mod parser_fragment;
 pub mod recorder;

@@ -1,14 +1,15 @@
 use crate::full_buf_read::FullBufRead;
 use crate::full_theory::FunctionAssignmentT;
 use crate::intern::*;
-use crate::outer_solver::{Bound, BoundDefinition, FnSort, Logic, OuterSolver, StartExpCtx};
+use crate::outer_solver::{
+    Bound, BoundDefinition, BoundL, DefineError, FnSort, Logic, OuterSolver, StartExpCtx,
+};
 use crate::parser::Error::*;
 use crate::parser_core::{ParseError, SexpParser, SexpTerminal, SexpToken, SexpVisitor, SpanRange};
-use crate::recorder::LoggingRecorder;
 use crate::solver::{SolveResult, SolverCollapse, UnsatCoreConjunction};
 use crate::util::{format_args2, parenthesized, powi, DefaultHashBuilder};
 use crate::AddSexpError::*;
-use crate::{euf, solver, AddSexpError, BoolExp, HasSort, SubExp, SuperExp};
+use crate::{solver, AddSexpError, BoolExp, HasSort, SubExp, SuperExp};
 use core::fmt::Arguments;
 use hashbrown::HashMap;
 use internal_iterator::InternalIterator;
@@ -69,6 +70,7 @@ enum Error {
     Shadow(Symbol),
     NamedShadow(Symbol),
     InvalidSort,
+    UnsupportedSort(Sort),
     InvalidExp,
     InvalidCommand,
     InvalidOption,
@@ -120,6 +122,7 @@ impl DisplayInterned for Error {
             Shadow(s) => write!(fmt, "the identifier `{}` shadows a global constant", s.with_intern(i)),
             NamedShadow(s) => write!(fmt, "the :named identifier `{}` is already in scope", s.with_intern(i)),
             InvalidSort => write!(fmt, "unexpected token when parsing sort"),
+            UnsupportedSort(s) => write!(fmt, "unsupported sort `{}`", s.with_intern(i)),
             InvalidExp => write!(fmt, "unexpected token when parsing expression"),
             InvalidCommand => write!(fmt, "unexpected token when parsing command"),
             InvalidOption => write!(fmt, "unexpected token when parsing option"),
@@ -344,7 +347,7 @@ struct Parser<W: Write, L: Logic> {
     /// Used to remove global variable during `(pop)`
     global_stack: Vec<Symbol>,
     /// List of let bound variable with the old value they are shadowing
-    let_bound_stack: Vec<(Symbol, Option<Bound<L::Exp>>)>,
+    let_bound_stack: Vec<(Symbol, Option<BoundL<L>>)>,
     /// A symbol we are currently defining (it cannot be used with :named even though it's not bound
     /// yet
     currently_defining: Option<Symbol>,
@@ -703,9 +706,7 @@ impl<W: Write, L: Logic> Parser<W, L> {
         if self.currently_defining == Some(s) {
             return Err(NamedShadow(s));
         }
-        if self.core.define(s, Bound::Const(exp)).is_err() {
-            return Err(NamedShadow(s));
-        }
+        self.define(s, Bound::Const(exp), NamedShadow)?;
         rest.finish()?;
         self.global_stack.push(s);
         Ok(span)
@@ -744,10 +745,10 @@ impl<W: Write, L: Logic> Parser<W, L> {
     }
 
     fn parse_sort<R: FullBufRead>(&mut self, token: SexpToken<R>) -> Result<Sort> {
-        match token {
+        let res = match token {
             SexpToken::Terminal(SexpTerminal::Symbol(s)) => {
                 let s = self.core.intern_mut().symbols.intern(s);
-                self.create_sort(s, &[])
+                self.create_sort(s, &[])?
             }
             SexpToken::List(mut l) => {
                 let name = match l.next().ok_or(InvalidSort)?? {
@@ -757,10 +758,14 @@ impl<W: Write, L: Logic> Parser<W, L> {
                     _ => return Err(InvalidSort),
                 };
                 let params = l.map(|x| self.parse_sort(x?)).collect::<Result<Vec<_>>>()?;
-                self.create_sort(name, &params)
+                self.create_sort(name, &params)?
             }
-            _ => Err(InvalidSort),
+            _ => return Err(InvalidSort),
+        };
+        if !L::Exp::can_have_sort(res) {
+            return Err(UnsupportedSort(res));
         }
+        Ok(res)
     }
 
     fn reset_state(&mut self) {
@@ -1219,6 +1224,19 @@ impl<W: Write, L: Logic> Parser<W, L> {
         Ok(())
     }
 
+    fn define(
+        &mut self,
+        name: Symbol,
+        val: Bound<L::Exp>,
+        shadow: impl Fn(Symbol) -> Error,
+    ) -> Result<()> {
+        match self.core.define(name, val) {
+            Ok(_) => Ok(()),
+            Err(DefineError::Unsupported) => Err(UnsupportedP("functions")),
+            Err(DefineError::Exists(_)) => Err(shadow(name)),
+        }
+    }
+
     fn define_const<R: FullBufRead>(
         &mut self,
         name: Symbol,
@@ -1237,7 +1255,7 @@ impl<W: Write, L: Logic> Parser<W, L> {
     }
 
     fn insert_bound(&mut self, name: Symbol, val: Bound<L::Exp>) -> Result<()> {
-        self.core.define(name, val).map_err(|_| Shadow(name))?;
+        self.define(name, val, Shadow)?;
         self.global_stack.push(name);
         Ok(())
     }
@@ -1308,7 +1326,7 @@ fn write_body<'a, W: Write, L: Logic>(
 
 /// Evaluate `data`, the bytes of an `smt2` file, reporting results to `stdout` and errors to
 /// `stderr`
-pub fn interp_smt2(data: impl FullBufRead, out: impl Write, err: impl Write) {
-    let mut p = Parser::<_, (euf::Euf, euf::EufPf, LoggingRecorder, _)>::new(out);
+pub fn interp_smt2<L: Logic>(data: impl FullBufRead, out: impl Write, err: impl Write) {
+    let mut p = Parser::<_, L>::new(out);
     p.interp_smt2(data, err)
 }
