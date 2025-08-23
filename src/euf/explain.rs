@@ -7,7 +7,7 @@ use std::ops::{Deref, DerefMut};
 
 use super::egraph::{SymbolLang, EQ_OP};
 use super::euf::EClass;
-use crate::approx_bitset::{ApproxBitSet, IdSet};
+use crate::euf::approx_bitset::{ApproxBitSet, IdSet};
 use crate::util::{minmax, DefaultHashBuilder};
 use hashbrown::hash_map::Entry;
 use hashbrown::{HashMap, HashSet};

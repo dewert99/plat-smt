@@ -4,8 +4,9 @@
 extern crate alloc;
 extern crate no_std_compat as std;
 
-mod approx_bitset;
 mod collapse;
+
+#[cfg(feature = "euf")]
 pub mod euf;
 mod exp;
 mod full_buf_read;
