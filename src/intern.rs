@@ -1,4 +1,5 @@
 use crate::util::DefaultHashBuilder;
+use core::hash::Hash;
 use core::num::NonZeroU32;
 use hashbrown::hash_table::Entry;
 use hashbrown::HashTable;
@@ -11,6 +12,18 @@ pub struct Symbol(pub(crate) NonZeroU32);
 
 #[derive(Copy, Clone, Eq, PartialEq, Hash, Ord, PartialOrd, Debug)]
 pub struct Sort(NonZeroU32);
+
+impl From<NonZeroU32> for Sort {
+    fn from(value: NonZeroU32) -> Self {
+        Sort(value)
+    }
+}
+
+impl Into<NonZeroU32> for Sort {
+    fn into(self) -> NonZeroU32 {
+        self.0
+    }
+}
 
 const BASE_SYMBOLS: &[&str] = &[
     "Bool", "true", "false", "and", "or", "not", "=>", "xor", "ite", "if", "=", "distinct", "let",
@@ -182,15 +195,32 @@ fn test_symbols() {
     assert_eq!(symbols.resolve(TRUE_SYM), "true")
 }
 
-pub struct SortInfo {
-    sort_args: Vec<Sort>,
+pub struct RecInfo<T> {
+    sort_args: Vec<T>,
     sorts: Vec<(Symbol, u32)>,
-    map: HashTable<(Symbol, u32, u32, Sort)>,
+    map: HashTable<(Symbol, u32, u32, T)>,
     hasher: DefaultHashBuilder,
 }
 
-impl SortInfo {
-    pub fn intern(&mut self, name: Symbol, args: &[Sort]) -> Sort {
+pub trait RecInfoArg: Hash + Eq + Copy {
+    fn new(x: NonZeroU32) -> Self;
+
+    fn inner(self) -> NonZeroU32;
+
+    fn default_rec_info() -> RecInfo<Self> {
+        RecInfo {
+            sort_args: vec![],
+            sorts: vec![(Symbol(NonZeroU32::new(1).unwrap()), 0)],
+            map: Default::default(),
+            hasher: Default::default(),
+        }
+    }
+}
+
+pub type SortInfo = RecInfo<Sort>;
+
+impl<T: RecInfoArg> RecInfo<T> {
+    pub fn intern(&mut self, name: Symbol, args: &[T]) -> T {
         let hash = self.hasher.hash_one((name, args));
         match self.map.entry(
             hash,
@@ -213,24 +243,37 @@ impl SortInfo {
                 if self.sort_args.len() > u32::MAX as usize {
                     panic!("Too many sort args");
                 }
-                let res = Sort(NonZeroU32::new(res as u32).unwrap());
+                let res = T::new(NonZeroU32::new(res as u32).unwrap());
                 vac.insert((name, old_len as u32, self.sort_args.len() as u32, res));
                 self.sorts.push((name, self.sort_args.len() as u32));
                 res
             }
         }
     }
-
-    pub fn resolve(&self, s: Sort) -> (Symbol, &[Sort]) {
-        let idx = s.0.get() as usize;
+    pub fn resolve(&self, s: T) -> (Symbol, &[T]) {
+        let idx = s.inner().get() as usize;
         let name = self.sorts[idx].0;
         let children = &self.sort_args[self.sorts[idx - 1].1 as usize..self.sorts[idx].1 as usize];
         (name, children)
     }
 }
 
-impl Default for SortInfo {
+impl<T: RecInfoArg> Default for RecInfo<T> {
     fn default() -> Self {
+        T::default_rec_info()
+    }
+}
+
+impl RecInfoArg for Sort {
+    fn new(x: NonZeroU32) -> Self {
+        Sort(x)
+    }
+
+    fn inner(self) -> NonZeroU32 {
+        self.0
+    }
+
+    fn default_rec_info() -> RecInfo<Self> {
         let mut res = SortInfo {
             sort_args: vec![],
             sorts: vec![(Symbol(NonZeroU32::new(1).unwrap()), 0)],

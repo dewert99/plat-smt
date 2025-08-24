@@ -57,7 +57,7 @@ pub struct IncrementalArgData<M, R> {
     total_level: u32,
     push_log: Vec<PushInfo<M>>,
     pub(crate) junction_buf: Vec<Lit>,
-    intern: InternInfo,
+    pub(crate) intern: InternInfo,
     pub(crate) recorder: R,
 }
 

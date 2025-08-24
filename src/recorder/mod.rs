@@ -1,3 +1,4 @@
+mod definition_recorder;
 mod interpolant_recorder;
 pub mod recorder;
 mod slice_vec;

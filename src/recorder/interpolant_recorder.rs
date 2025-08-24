@@ -1,14 +1,15 @@
 use crate::full_theory::FullTheory;
 use crate::intern::{InternInfo, Symbol};
+use crate::recorder::definition_recorder::DefinitionRecorder;
 use crate::recorder::slice_vec::SliceVec;
-use crate::recorder::{ClauseKind, LoggingRecorder, Recorder};
+use crate::recorder::{ClauseKind, Recorder};
 use crate::solver::LevelMarker;
-use crate::util::{DebugIter, HashMap};
-use crate::{Conjunction, ExpLike, Solver};
+use crate::util::{DebugIter, DisplayFn, HashMap};
+use crate::{BoolExp, Conjunction, ExpLike, Solver};
 use alloc::vec::Vec;
 use bytemuck::must_cast;
-use core::fmt::{Debug, Formatter};
-use log::{debug, trace};
+use core::fmt::Debug;
+use log::{info, trace};
 use platsat::theory::ClauseRef;
 use platsat::{lbool, Lit};
 
@@ -43,12 +44,6 @@ impl ClauseProofElement {
     }
 }
 
-impl Debug for ClauseProofElement {
-    fn fmt(&self, f: &mut Formatter<'_>) -> core::fmt::Result {
-        write!(f, "{:?} (pivot {:?})", self.clause_ref(), self.pivot)
-    }
-}
-
 #[derive(Default)]
 pub struct InterpolantRecorder {
     state: State,
@@ -58,6 +53,7 @@ pub struct InterpolantRecorder {
     clause_refs: HashMap<ClauseRef, u32>,
     tseiten_clauses: Vec<ClauseRef>,
     clause_proofs: SliceVec<ClauseProofElement>,
+    defs: DefinitionRecorder,
 }
 
 impl InterpolantRecorder {
@@ -66,6 +62,24 @@ impl InterpolantRecorder {
         *r = self.clause_proofs.len() as u32;
         self.clause_proofs.push(&[]);
         Some(())
+    }
+
+    fn display_last_proof<'a>(&'a self, intern: &'a InternInfo) -> impl Debug + use<'a> {
+        let proof = self.clause_proofs.iter().last().unwrap();
+        DebugIter(proof.iter().map(move |x| {
+            DisplayFn(|f| {
+                if x.pivot != Lit::UNDEF {
+                    write!(
+                        f,
+                        "{:?} (pivot {})",
+                        x.clause_ref(),
+                        self.defs.display_exp(BoolExp::unknown(x.pivot), intern)
+                    )
+                } else {
+                    Debug::fmt(&x.clause_ref(), f)
+                }
+            })
+        }))
     }
 }
 
@@ -79,7 +93,7 @@ impl Recorder for InterpolantRecorder {
         arg: impl Iterator<Item = Exp2> + Clone,
         intern: &InternInfo,
     ) {
-        LoggingRecorder.log_def(val, f, arg, intern)
+        self.defs.log_def(val, f, arg, intern)
     }
 
     fn log_def_exp<Exp: ExpLike, Exp2: ExpLike>(
@@ -88,11 +102,11 @@ impl Recorder for InterpolantRecorder {
         def: Exp2,
         intern: &InternInfo,
     ) {
-        LoggingRecorder.log_def_exp(val, def, intern)
+        self.defs.log_def_exp(val, def, intern);
     }
 
     fn log_alias<Exp: ExpLike>(&mut self, alias: Symbol, exp: Exp, intern: &InternInfo) {
-        LoggingRecorder.log_alias(alias, exp, intern)
+        self.defs.log_alias(alias, exp, intern)
     }
 
     fn log_clause(&mut self, clause: &[Lit], kind: ClauseKind) {
@@ -155,17 +169,24 @@ impl Recorder for InterpolantRecorder {
             solver.th.arg.recorder.clause_proofs.push(&[]);
             solver.simplify();
             solver.analyze_final_conflict();
-            debug!(
-                "final: {:?} by {:?}",
-                DebugIter(&assumptions.lits.iter().map(|&x| !x)),
+            info!(
+                "\n{}",
                 solver
                     .th
                     .arg
                     .recorder
-                    .clause_proofs
-                    .iter()
-                    .next_back()
-                    .unwrap()
+                    .defs
+                    .dump_global_defs(&solver.th.arg.intern)
+            );
+            info!(
+                "final: {} by {:?}",
+                solver
+                    .th
+                    .arg
+                    .recorder
+                    .defs
+                    .display_clause(assumptions.lits.iter().map(|&x| !x), solver.intern()),
+                solver.th.arg.recorder.display_last_proof(solver.intern())
             );
 
             // analyze each learned clause
@@ -183,7 +204,13 @@ impl Recorder for InterpolantRecorder {
                             *v = (recorder.tseiten_clauses.len() + recorder.clause_proofs.len())
                                 as u32;
                             recorder.tseiten_clauses.push(*k);
-                            debug!("{k:?}: {:?} by tseiten", sat.resolve_clause_ref(*k))
+                            let c = sat.resolve_clause_ref(*k);
+                            info!(
+                                "{k:?}: {} by tseiten",
+                                recorder
+                                    .defs
+                                    .display_clause(c.iter().copied(), &acts.incr.intern)
+                            );
                         }
                     }
                     for proof_elt in recorder.clause_proofs.iter_mut().flatten() {
@@ -224,14 +251,15 @@ fn analyze_clause<Th: FullTheory<InterpolantRecorder>>(
     solver.simplify();
     solver.analyze_final_conflict();
     let c = &solver.th.arg.recorder.clauses[i];
-    let proof = solver
-        .th
-        .arg
-        .recorder
-        .clause_proofs
-        .iter()
-        .next_back()
-        .unwrap();
-    debug!("{cr:?}: {c:?} by {proof:?}");
+    let proof = solver.th.arg.recorder.display_last_proof(solver.intern());
+    info!(
+        "{cr:?}: {} by {proof:?}",
+        solver
+            .th
+            .arg
+            .recorder
+            .defs
+            .display_clause(c.iter().copied(), solver.intern())
+    );
     Some(())
 }
