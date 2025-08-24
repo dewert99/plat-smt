@@ -4,9 +4,9 @@ use core::ops::ControlFlow;
 use internal_iterator::InternalIterator;
 use no_std_compat::prelude::v1::*;
 
-pub(crate) struct DebugIter<'a, I>(pub &'a I);
+pub(crate) struct DebugIter<I>(pub I);
 
-impl<'a, I: Iterator + Clone> Debug for DebugIter<'a, I>
+impl<I: Iterator + Clone> Debug for DebugIter<I>
 where
     I::Item: Debug,
 {
@@ -19,6 +19,12 @@ where
 pub struct DisplayFn<F: Fn(&mut Formatter) -> core::fmt::Result>(pub F);
 
 impl<F: Fn(&mut Formatter) -> core::fmt::Result> Display for DisplayFn<F> {
+    fn fmt(&self, f: &mut Formatter<'_>) -> core::fmt::Result {
+        self.0(f)
+    }
+}
+
+impl<F: Fn(&mut Formatter) -> core::fmt::Result> Debug for DisplayFn<F> {
     fn fmt(&self, f: &mut Formatter<'_>) -> core::fmt::Result {
         self.0(f)
     }

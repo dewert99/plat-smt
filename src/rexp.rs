@@ -4,7 +4,7 @@ use crate::util::display_sexp;
 use core::fmt::{Display, Formatter};
 
 #[non_exhaustive]
-#[derive(Copy, Clone)]
+#[derive(Copy, Clone, Hash, Eq, PartialEq)]
 pub enum Namespace {
     Bool,
     Uninterpreted,
@@ -32,7 +32,7 @@ impl Display for Namespace {
     }
 }
 
-#[derive(Copy, Clone)]
+#[derive(Copy, Clone, Hash, Eq, PartialEq)]
 pub struct NamespaceVar(pub Namespace, pub u32);
 
 impl Display for NamespaceVar {
@@ -49,6 +49,15 @@ impl Display for NamespaceVar {
 pub enum Rexp<'a> {
     Nv(NamespaceVar),
     Call(Symbol, &'a [Rexp<'a>]),
+}
+
+impl<'a> Rexp<'a> {
+    pub(crate) fn unwrap_nv(self) -> NamespaceVar {
+        match self {
+            Rexp::Nv(nv) => nv,
+            _ => panic!("expected {self} to be a single fresh variable"),
+        }
+    }
 }
 
 impl<'a> Display for Rexp<'a> {

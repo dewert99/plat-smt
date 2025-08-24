@@ -437,7 +437,7 @@ struct MergeContext<'a, A> {
 impl<'a, 'b, A: SatTheoryArgT<'b>> MergeContext<'a, A> {
     fn propagate(&mut self, lits: &[Lit], b: bool) {
         let lits = lits.iter().map(|l| *l ^ !b);
-        debug!("EUF propagates {:?}", DebugIter(&lits));
+        debug!("EUF propagates {:?}", DebugIter(lits.clone()));
         for lit in lits {
             self.acts.propagate(lit);
         }
