@@ -15,8 +15,7 @@ use crate::solver::{SolverCollapse, SolverWithBound};
 use crate::tseitin::{BoolOpPf, SatExplainTheoryArgT, SatTheoryArgT};
 use crate::util::{pairwise_sym, HashMap};
 use crate::{AddSexpError, BoolExp, Conjunction, HasSort, Solver, Sort, SubExp, SuperExp};
-use alloc::borrow::Cow;
-use core::fmt::{Debug, Formatter};
+use core::fmt::Formatter;
 use plat_egg::raw::Language;
 use plat_egg::Id;
 use platsat::Lit;
@@ -71,15 +70,6 @@ impl HasSort for UExp {
     }
     fn can_have_sort(s: Sort) -> bool {
         s != BOOL_SORT
-    }
-}
-
-#[derive(Debug)]
-pub enum Never {}
-
-impl Into<Cow<'static, str>> for Never {
-    fn into(self) -> Cow<'static, str> {
-        match self {}
     }
 }
 

@@ -297,7 +297,7 @@ pub struct InternInfo {
 pub trait DisplayInterned {
     fn fmt(&self, i: &InternInfo, f: &mut Formatter<'_>) -> std::fmt::Result;
 
-    fn with_intern(self, i: &InternInfo) -> WithIntern<Self>
+    fn with_intern(self, i: &InternInfo) -> WithIntern<'_, Self>
     where
         Self: Sized,
     {

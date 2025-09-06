@@ -4,6 +4,7 @@ use crate::solver::LevelMarker;
 use crate::util::{display_sexp, format_args2};
 use crate::{BoolExp, Conjunction, ExpLike, Solver};
 use core::convert::Infallible;
+use core::fmt::Display;
 use log::{debug, info};
 use platsat::theory::ClauseRef;
 use platsat::Lit;
@@ -17,7 +18,7 @@ pub enum ClauseKind {
 }
 
 pub trait Recorder: Default + 'static {
-    type Interpolant<'a>;
+    type Interpolant<'a>: Display;
 
     fn log_def<Exp: ExpLike, Exp2: ExpLike>(
         &mut self,
@@ -41,10 +42,33 @@ pub trait Recorder: Default + 'static {
 
     fn on_final_lit_explanation(&mut self, _lit: Lit, _reason: ClauseRef) {}
 
+    type BoolBufMarker: Copy;
+
+    fn intern_bools(&mut self, bools: impl Iterator<Item = BoolExp>) -> Self::BoolBufMarker;
+
+    fn try_intern_bools<E>(
+        &mut self,
+        mut bools: impl Iterator<Item = Result<BoolExp, E>>,
+    ) -> Result<Self::BoolBufMarker, E> {
+        let mut status = Ok(());
+        let res = self.intern_bools(bools.by_ref().map_while(|x| match x {
+            Ok(x) => Some(x),
+            Err(e) => {
+                status = Err(e);
+                None
+            }
+        }));
+        status?;
+        bools.try_for_each(|x| x.map(|_| ()))?;
+        Ok(res)
+    }
+
     fn interpolant<'a, Th: FullTheory<Self>>(
         _solver: &'a mut Solver<Th, Self>,
         _pre_solve_marker: LevelMarker<Th::LevelMarker>,
         _assumptions: &Conjunction,
+        _a: Self::BoolBufMarker,
+        _b: Self::BoolBufMarker,
     ) -> Option<Self::Interpolant<'a>> {
         None
     }
@@ -100,4 +124,8 @@ impl Recorder for LoggingRecorder {
             )
         )
     }
+
+    type BoolBufMarker = ();
+
+    fn intern_bools(&mut self, _: impl Iterator<Item = BoolExp>) -> Self::BoolBufMarker {}
 }
