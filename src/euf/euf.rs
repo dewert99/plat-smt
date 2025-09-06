@@ -698,7 +698,7 @@ impl Euf {
         }
     }
 
-    pub(super) fn get_function_info(&self, s: Symbol) -> FunctionInfoIter {
+    pub(super) fn get_function_info(&self, s: Symbol) -> FunctionInfoIter<'_> {
         let iter = self.function_info.get(s).iter();
         FunctionInfoIter {
             pairs: iter,

@@ -47,7 +47,7 @@ impl<Exp2> ExprContext<Exp2> {
         }
     }
 
-    pub fn with_intern(self, intern: &InternInfo) -> ExprContext<WithIntern<Exp2>>
+    pub fn with_intern(self, intern: &InternInfo) -> ExprContext<WithIntern<'_, Exp2>>
     where
         Exp2: DisplayInterned,
     {

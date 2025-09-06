@@ -1,6 +1,8 @@
-use crate::intern::{DisplayInterned, InternInfo, RecInfo, RecInfoArg, Symbol};
+use crate::intern::{
+    DisplayInterned, InternInfo, RecInfo, RecInfoArg, Symbol, FALSE_SYM, TRUE_SYM,
+};
 use crate::recorder::{ClauseKind, Recorder};
-use crate::rexp::{NamespaceVar, Rexp};
+use crate::rexp::{AsRexp, NamespaceVar, Rexp};
 use crate::util::{display_sexp, DisplayFn, HashMap};
 use crate::{BoolExp, ExpLike};
 use alloc::vec::Vec;
@@ -30,7 +32,6 @@ impl Into<usize> for DefExp {
     }
 }
 
-#[derive(Default)]
 pub struct DefinitionRecorder {
     defs: RecInfo<DefExp>,
     buf: Vec<DefExp>,
@@ -39,13 +40,33 @@ pub struct DefinitionRecorder {
     uses: DefaultVec<Saturating<u8>, DefExp>,
 }
 
+pub const FALSE_DEF_EXP: DefExp = DefExp(NonZeroU32::new(1).unwrap());
+pub const TRUE_DEF_EXP: DefExp = DefExp(NonZeroU32::new(2).unwrap());
+
+impl Default for DefinitionRecorder {
+    fn default() -> Self {
+        let mut res = DefinitionRecorder {
+            defs: Default::default(),
+            buf: Default::default(),
+            aliases: Default::default(),
+            var_defs: Default::default(),
+            uses: Default::default(),
+        };
+        let f = res.defs.intern(FALSE_SYM, &[]);
+        debug_assert_eq!(f, FALSE_DEF_EXP);
+        let t = res.defs.intern(TRUE_SYM, &[]);
+        debug_assert_eq!(t, TRUE_DEF_EXP);
+        res
+    }
+}
+
 impl DefinitionRecorder {
-    fn intern_rexp(&mut self, r: &Rexp<'_>) {
+    fn intern_rexp_h(&mut self, r: &Rexp<'_>) {
         match r {
             Rexp::Nv(nv) => self.buf.push(*self.var_defs.get(nv).unwrap()),
             Rexp::Call(s, args) => {
                 let buf_len = self.buf.len();
-                args.iter().for_each(|r| self.intern_rexp(r));
+                args.iter().for_each(|r| self.intern_rexp_h(r));
                 let res = self.defs.intern(*s, &self.buf[buf_len..]);
                 self.buf.truncate(buf_len);
                 self.buf.push(res);
@@ -53,9 +74,16 @@ impl DefinitionRecorder {
         }
     }
 
-    pub fn intern_exp<E: ExpLike>(&mut self, exp: E) -> DefExp {
-        exp.as_rexp(|rexp| self.intern_rexp(&rexp));
+    pub fn intern_exp<E: AsRexp>(&mut self, exp: E) -> DefExp {
+        exp.as_rexp(|rexp| self.intern_rexp_h(&rexp));
         self.buf.pop().unwrap()
+    }
+
+    pub fn intern_call(&mut self, name: Symbol, children: &[DefExp]) -> DefExp {
+        self.defs.intern(name, children)
+    }
+    pub fn resolve(&self, def: DefExp) -> (Symbol, &[DefExp]) {
+        self.defs.resolve(def)
     }
 
     fn finish_usages(&mut self, last: DefExp) {
@@ -99,12 +127,31 @@ impl DefinitionRecorder {
         DisplayGlobalDefs(self, max_def_exp, intern)
     }
 
-    fn display_def<'a>(&'a self, def_exp: DefExp, interner: &'a InternInfo) -> DisplayDefExp<'a> {
+    pub fn display_def<'a>(
+        &'a self,
+        def_exp: DefExp,
+        interner: &'a InternInfo,
+    ) -> DisplayDefExp<'a> {
         DisplayDefExp {
             def_exp,
             recorder: self,
             interner,
             uses: self.uses.get(def_exp),
+        }
+    }
+
+    pub fn display_stand_alone_def<'a>(
+        &'a mut self,
+        def_exp: DefExp,
+        interner: &'a InternInfo,
+    ) -> DisplayStandAloneDefExp<'a> {
+        self.uses.clear();
+        *self.uses.get_mut(def_exp) = Saturating(2);
+        self.finish_usages(def_exp);
+        DisplayStandAloneDefExp {
+            def_exp,
+            recorder: self,
+            interner,
         }
     }
 
@@ -149,7 +196,7 @@ impl Recorder for DefinitionRecorder {
         arg: impl Iterator<Item = Exp2> + Clone,
         _: &InternInfo,
     ) {
-        arg.for_each(|exp| exp.as_rexp(|rexp| self.intern_rexp(&rexp)));
+        arg.for_each(|exp| exp.as_rexp(|rexp| self.intern_rexp_h(&rexp)));
         let res = self.defs.intern(f, &self.buf);
         self.buf.clear();
         let nv = val.as_rexp(|rexp| rexp.unwrap_nv());
@@ -168,6 +215,10 @@ impl Recorder for DefinitionRecorder {
     }
 
     fn log_clause(&mut self, _: &[Lit], _: ClauseKind) {}
+
+    type BoolBufMarker = ();
+
+    fn intern_bools(&mut self, _: impl Iterator<Item = BoolExp>) -> Self::BoolBufMarker {}
 }
 
 #[derive(Copy, Clone)]
@@ -255,5 +306,48 @@ impl<'a> Display for DisplayRexp<'a> {
                 Display::fmt(&disp, f)
             }
         }
+    }
+}
+
+#[derive(Copy, Clone)]
+pub struct DisplayStandAloneDefExp<'a> {
+    def_exp: DefExp,
+    recorder: &'a DefinitionRecorder,
+    interner: &'a InternInfo,
+}
+
+impl<'a> Display for DisplayStandAloneDefExp<'a> {
+    fn fmt(&self, f: &mut Formatter<'_>) -> core::fmt::Result {
+        let mut end_parens = 0;
+        for i in 1..self.def_exp.0.get() {
+            let def_exp = DefExp(NonZeroU32::new(i).unwrap());
+            let uses = self.recorder.uses.get(def_exp);
+            if uses.0 > 1 {
+                writeln!(
+                    f,
+                    "(let @d{} {}",
+                    i,
+                    DisplayDefExp {
+                        def_exp,
+                        recorder: self.recorder,
+                        interner: self.interner,
+                        uses: Saturating(0)
+                    }
+                )?;
+                end_parens += 1;
+            }
+        }
+        let indent = if end_parens == 0 { "" } else { "  " };
+        write!(
+            f,
+            "{indent}{}{:)<end_parens$}",
+            DisplayDefExp {
+                def_exp: self.def_exp,
+                recorder: self.recorder,
+                interner: self.interner,
+                uses: Saturating(0)
+            },
+            ""
+        )
     }
 }

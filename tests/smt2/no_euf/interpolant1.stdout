@@ -1,0 +1,4 @@
+unsat
+(or r r)
+(let @d10 (not r)
+  (or @d10 @d10))

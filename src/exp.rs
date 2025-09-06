@@ -227,6 +227,12 @@ impl BitXor<bool> for BoolExp {
     }
 }
 
+impl AsRexp for Var {
+    fn as_rexp<R>(&self, f: impl for<'a> FnOnce(Rexp<'a>) -> R) -> R {
+        f(Rexp::Nv(NamespaceVar(Namespace::Bool, self.idx() + 1)))
+    }
+}
+
 impl AsRexp for BoolExp {
     fn as_rexp<R>(&self, f: impl FnOnce(Rexp<'_>) -> R) -> R {
         match self.to_lit() {

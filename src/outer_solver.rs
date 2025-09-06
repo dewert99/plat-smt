@@ -28,7 +28,9 @@ pub trait Logic: Sized {
 
     type LevelMarker: Clone;
 
-    type R: Recorder;
+    type BoolBufMarker: Copy;
+
+    type R: Recorder<BoolBufMarker = Self::BoolBufMarker>;
     type Theory: FullTheory<Self::R, Exp = Self::Exp, FnSort = Self::FnSort, LevelMarker = Self::LevelMarker>
         + for<'a> collapse::Collapse<Self::Exp, TheoryArg<'a, Self::LevelMarker, Self::R>, Self::CM>
         + for<'a> collapse::Collapse<
@@ -64,6 +66,8 @@ where
     type Exp = Th::Exp;
     type FnSort = Th::FnSort;
     type LevelMarker = Th::LevelMarker;
+
+    type BoolBufMarker = R::BoolBufMarker;
     type R = R;
     type Theory = Th;
     type Parser = P;
@@ -460,6 +464,16 @@ impl<L: Logic> OuterSolver<L> {
 
     pub fn solver_mut(&mut self) -> &mut Solver<L::Theory, L::R> {
         &mut self.inner.solver
+    }
+
+    pub fn solver_mut_with_def<'a>(
+        &'a mut self,
+    ) -> (
+        &'a mut Solver<L::Theory, L::R>,
+        impl Fn(Symbol) -> Option<&'a BoundL<L>>,
+    ) {
+        let definition = |x| self.inner.bound.get(&x);
+        (&mut self.inner.solver, definition)
     }
 
     pub fn intern(&self) -> &InternInfo {

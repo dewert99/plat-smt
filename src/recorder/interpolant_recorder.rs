@@ -1,17 +1,20 @@
 use crate::full_theory::FullTheory;
-use crate::intern::{InternInfo, Symbol};
-use crate::recorder::definition_recorder::DefinitionRecorder;
+use crate::intern::{InternInfo, Symbol, AND_SYM, OR_SYM};
+use crate::recorder::definition_recorder::{
+    DefExp, DefinitionRecorder, DisplayStandAloneDefExp, FALSE_DEF_EXP, TRUE_DEF_EXP,
+};
 use crate::recorder::slice_vec::SliceVec;
 use crate::recorder::{ClauseKind, Recorder};
 use crate::solver::LevelMarker;
-use crate::util::{DebugIter, DisplayFn, HashMap};
+use crate::util::{display_sexp, DebugIter, DisplayFn, HashMap};
 use crate::{BoolExp, Conjunction, ExpLike, Solver};
 use alloc::vec::Vec;
 use bytemuck::must_cast;
 use core::fmt::Debug;
-use log::{info, trace};
+use default_vec2::BitSet;
+use log::{debug, info, trace};
 use platsat::theory::ClauseRef;
-use platsat::{lbool, Lit};
+use platsat::{lbool, Lit, TheoryArg};
 
 #[derive(Copy, Clone, Default, Eq, PartialEq, Debug)]
 enum State {
@@ -54,6 +57,113 @@ pub struct InterpolantRecorder {
     tseiten_clauses: Vec<ClauseRef>,
     clause_proofs: SliceVec<ClauseProofElement>,
     defs: DefinitionRecorder,
+    lit_buf: Vec<Lit>,
+    a_only_defs: BitSet<DefExp>,
+    visited: BitSet<DefExp>,
+    def_stack: Vec<DefExp>,
+}
+
+#[derive(Copy, Clone)]
+enum ClauseProofResolveState {
+    True,
+    False,
+    Single,
+    And,
+    Or,
+}
+
+impl ClauseProofResolveState {
+    fn init(def: DefExp, stack: &mut Vec<DefExp>) -> ClauseProofResolveState {
+        if def == TRUE_DEF_EXP {
+            ClauseProofResolveState::True
+        } else if def == FALSE_DEF_EXP {
+            ClauseProofResolveState::False
+        } else {
+            stack.push(def);
+            ClauseProofResolveState::Single
+        }
+    }
+
+    fn add_on(
+        &mut self,
+        def: DefExp,
+        is_and: bool,
+        stack: &mut Vec<DefExp>,
+        defs: &mut DefinitionRecorder,
+        stack_len: usize,
+    ) {
+        match (*self, is_and) {
+            (ClauseProofResolveState::True, false) | (ClauseProofResolveState::False, true) => {}
+            (_, false) if def == TRUE_DEF_EXP => {
+                stack.truncate(stack_len);
+                *self = ClauseProofResolveState::True;
+            }
+            (_, true) if def == FALSE_DEF_EXP => {
+                stack.truncate(stack_len);
+                *self = ClauseProofResolveState::False;
+            }
+            (_, false) if def == FALSE_DEF_EXP => {}
+            (_, true) if def == TRUE_DEF_EXP => {}
+            (ClauseProofResolveState::True, true) | (ClauseProofResolveState::False, false) => {
+                stack.push(def);
+                *self = ClauseProofResolveState::Single;
+            }
+            (ClauseProofResolveState::Single, _) => {
+                stack.push(def);
+                *self = if is_and {
+                    ClauseProofResolveState::And
+                } else {
+                    ClauseProofResolveState::Or
+                };
+            }
+            (ClauseProofResolveState::And, true) | (ClauseProofResolveState::Or, false) => {
+                stack.push(def);
+            }
+            (ClauseProofResolveState::And, false) | (ClauseProofResolveState::Or, true) => {
+                let old_op = if is_and { OR_SYM } else { AND_SYM };
+                let children = &stack[stack_len..];
+                let combined = defs.intern_call(old_op, children);
+                stack.truncate(stack_len);
+                stack.push(combined);
+                stack.push(def);
+                *self = if is_and {
+                    ClauseProofResolveState::And
+                } else {
+                    ClauseProofResolveState::Or
+                };
+            }
+        }
+        debug_assert!(match *self {
+            ClauseProofResolveState::True | ClauseProofResolveState::False =>
+                stack.len() == stack_len,
+            ClauseProofResolveState::Single => stack.len() == stack_len + 1,
+            ClauseProofResolveState::And | ClauseProofResolveState::Or =>
+                stack.len() > stack_len + 1,
+        });
+    }
+
+    fn finish(
+        self,
+        stack: &mut Vec<DefExp>,
+        defs: &mut DefinitionRecorder,
+        stack_len: usize,
+    ) -> DefExp {
+        match self {
+            ClauseProofResolveState::True => TRUE_DEF_EXP,
+            ClauseProofResolveState::False => FALSE_DEF_EXP,
+            ClauseProofResolveState::Single => stack.pop().unwrap(),
+            ClauseProofResolveState::And | ClauseProofResolveState::Or => {
+                let old_op = match self {
+                    ClauseProofResolveState::And => AND_SYM,
+                    _ => OR_SYM,
+                };
+                let children = &stack[stack_len..];
+                let combined = defs.intern_call(old_op, children);
+                stack.truncate(stack_len);
+                combined
+            }
+        }
+    }
 }
 
 impl InterpolantRecorder {
@@ -81,10 +191,84 @@ impl InterpolantRecorder {
             })
         }))
     }
+
+    fn set_def_exps_in_a(&mut self, (start, end): (usize, usize), in_a: bool, intern: &InternInfo) {
+        self.def_stack.clear();
+        self.visited.clear();
+        self.def_stack.extend(
+            self.lit_buf[start..end]
+                .iter()
+                .map(|l| self.defs.intern_exp(l.var())),
+        );
+        while let Some(x) = self.def_stack.pop() {
+            if !self.visited.contains_mut(x) {
+                trace!(
+                    "setting {} in a to be {}",
+                    self.defs.display_def(x, intern),
+                    in_a
+                );
+                self.visited.set(x, true);
+                self.a_only_defs.set(x, in_a);
+                self.def_stack.extend_from_slice(self.defs.resolve(x).1)
+            }
+        }
+    }
+
+    fn find_interpolant(&mut self, sat: &TheoryArg, intern: &InternInfo) -> DefExp {
+        self.def_stack.clear();
+        let max_idx = self.tseiten_clauses.len() + self.clause_proofs.len() - 1;
+        for tseiten in self.tseiten_clauses.iter().rev() {
+            let tseiten = sat.resolve_clause_ref(*tseiten);
+            let def_len = self.def_stack.len();
+            for &l in tseiten {
+                if !self.a_only_defs.contains(self.defs.intern_exp(l.var())) {
+                    self.def_stack
+                        .push(self.defs.intern_exp(BoolExp::unknown(l)));
+                }
+            }
+            let added = &self.def_stack[def_len..];
+            let partial_interpolant = if added.len() == tseiten.len() {
+                TRUE_DEF_EXP
+            } else if let &[] = added {
+                TRUE_DEF_EXP
+            } else if let &[l] = added {
+                l
+            } else {
+                self.defs.intern_call(OR_SYM, added)
+            };
+            self.def_stack.truncate(def_len);
+            self.def_stack.push(partial_interpolant);
+        }
+        for proof in self.clause_proofs.iter().rev() {
+            let def_len = self.def_stack.len();
+            let (first, rest) = proof.split_first().unwrap();
+            let def = self.def_stack[max_idx - first.clause as usize];
+            let mut state = ClauseProofResolveState::init(def, &mut self.def_stack);
+            for elt in rest {
+                let pivot_def = self.defs.intern_exp(elt.pivot.var());
+                let is_and = !self.a_only_defs.contains(pivot_def);
+                let def = self.def_stack[max_idx - elt.clause as usize];
+                state.add_on(def, is_and, &mut self.def_stack, &mut self.defs, def_len);
+            }
+            let res = state.finish(&mut self.def_stack, &mut self.defs, def_len);
+            debug_assert_eq!(self.def_stack.len(), def_len);
+            self.def_stack.push(res);
+        }
+        debug!(
+            "partial interpolants: {}",
+            display_sexp(
+                "",
+                self.def_stack
+                    .iter()
+                    .map(|&d| self.defs.display_def(d, intern))
+            )
+        );
+        self.def_stack.pop().unwrap()
+    }
 }
 
 impl Recorder for InterpolantRecorder {
-    type Interpolant<'a> = ();
+    type Interpolant<'a> = DisplayStandAloneDefExp<'a>;
 
     fn log_def<Exp: ExpLike, Exp2: ExpLike>(
         &mut self,
@@ -133,10 +317,20 @@ impl Recorder for InterpolantRecorder {
         };
     }
 
+    type BoolBufMarker = (usize, usize);
+
+    fn intern_bools(&mut self, bools: impl Iterator<Item = BoolExp>) -> Self::BoolBufMarker {
+        let start_len = self.lit_buf.len();
+        self.lit_buf.extend(bools.filter_map(|x| x.to_lit().ok()));
+        (start_len, self.lit_buf.len())
+    }
+
     fn interpolant<'a, Th: FullTheory<Self>>(
         solver: &'a mut Solver<Th, Self>,
         pre_solve_marker: LevelMarker<Th::LevelMarker>,
         assumptions: &Conjunction,
+        a: Self::BoolBufMarker,
+        b: Self::BoolBufMarker,
     ) -> Option<Self::Interpolant<'a>> {
         if State::Final != solver.th.arg.recorder.state {
             solver.th.arg.recorder.state = State::Proving;
@@ -222,8 +416,33 @@ impl Recorder for InterpolantRecorder {
                 (),
             );
         };
-        // create interpolant
-        None
+        solver.th.arg.recorder.a_only_defs.clear();
+        solver
+            .th
+            .arg
+            .recorder
+            .set_def_exps_in_a(a, true, &solver.th.arg.intern);
+        solver
+            .th
+            .arg
+            .recorder
+            .set_def_exps_in_a(b, false, &solver.th.arg.intern);
+        let res = solver.open(
+            |_, arg| {
+                arg.incr
+                    .recorder
+                    .find_interpolant(&arg.sat, &arg.incr.intern)
+            },
+            FALSE_DEF_EXP,
+        );
+        Some(
+            solver
+                .th
+                .arg
+                .recorder
+                .defs
+                .display_stand_alone_def(res, &solver.th.arg.intern),
+        )
     }
 }
 

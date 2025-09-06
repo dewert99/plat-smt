@@ -2,10 +2,12 @@ use crate::full_buf_read::FullBufRead;
 use crate::full_theory::FunctionAssignmentT;
 use crate::intern::*;
 use crate::outer_solver::{
-    Bound, BoundDefinition, BoundL, DefineError, FnSort, Logic, OuterSolver, StartExpCtx,
+    Bound, BoundDefinition, BoundL, DefineError, FnSort, Logic, MaybeFnSort, OuterSolver,
+    StartExpCtx,
 };
 use crate::parser::Error::*;
 use crate::parser_core::{ParseError, SexpParser, SexpTerminal, SexpToken, SexpVisitor, SpanRange};
+use crate::recorder::Recorder;
 use crate::solver::{SolveResult, SolverCollapse, UnsatCoreConjunction};
 use crate::util::{format_args2, parenthesized, powi, DefaultHashBuilder};
 use crate::AddSexpError::*;
@@ -271,7 +273,7 @@ enum_str! {Smt2Command{
     "set-option" => SetOption(2),
     "echo" => Echo(1),
     "exit" => Exit(0),
-    "get-interpolants" => GetInterpolants(0),
+    "get-interpolants" => GetInterpolants(2),
 }}
 
 macro_rules! enum_option {
@@ -808,6 +810,48 @@ impl<W: Write, L: Logic> Parser<W, L> {
         }
     }
 
+    fn parse_interpolant_arg<R: FullBufRead>(
+        &mut self,
+        rest: &mut CountingParser<R>,
+    ) -> Result<L::BoolBufMarker> {
+        let (solver, def) = self.core.solver_mut_with_def();
+        let sym_to_bool_exp = |s: Symbol| match def(s) {
+            None => Err(AddSexp(s.into(), Unbound)),
+            Some(Bound::Const(exp)) => exp.downcast().ok_or(AssertBool(exp.sort())),
+            Some(Bound::Fn(f)) => Err(AddSexp(
+                s.into(),
+                MissingArgument {
+                    actual: 0,
+                    expected: f.as_fn_sort().args().len(),
+                },
+            )),
+        };
+        match rest.next()? {
+            SexpToken::Terminal(SexpTerminal::Symbol(s)) => {
+                let exp = sym_to_bool_exp(solver.th.arg.intern.symbols.intern(s));
+                solver.th.arg.recorder.try_intern_bools(iter::once(exp))
+            }
+            SexpToken::List(mut l) => {
+                let SexpToken::Terminal(SexpTerminal::Symbol("and")) =
+                    l.next().ok_or(InvalidCommand)??
+                else {
+                    return Err(InvalidCommand);
+                };
+                solver
+                    .th
+                    .arg
+                    .recorder
+                    .try_intern_bools(l.zip_map(iter::repeat(()), |res, ()| match res? {
+                        SexpToken::Terminal(SexpTerminal::Symbol(s)) => {
+                            sym_to_bool_exp(solver.th.arg.intern.symbols.intern(s))
+                        }
+                        _ => Err(InvalidCommand),
+                    }))
+            }
+            _ => Err(InvalidCommand),
+        }
+    }
+
     fn parse_command_h<R: FullBufRead>(
         &mut self,
         name: Smt2Command,
@@ -1040,11 +1084,16 @@ impl<W: Write, L: Logic> Parser<W, L> {
                 else {
                     return Err(NoUnsat);
                 };
-                let interpolant = self
-                    .core
-                    .solver_mut()
-                    .interpolant(pre_solve_level, &mut self.named_assertions.conj);
-                let _interpolant = interpolant.ok_or(UnsupportedP("interpolants"))?;
+                let a = self.parse_interpolant_arg(&mut rest)?;
+                let b = self.parse_interpolant_arg(&mut rest)?;
+                let interpolant = self.core.solver_mut().interpolant(
+                    pre_solve_level,
+                    &mut self.named_assertions.conj,
+                    a,
+                    b,
+                );
+                let interpolant = interpolant.ok_or(UnsupportedP("interpolants"))?;
+                writeln!(self.writer, "{interpolant}");
             }
             _ => return self.parse_destructive_command(name, rest),
         }
