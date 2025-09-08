@@ -5,7 +5,8 @@ use crate::recorder::definition_recorder::{
 };
 use crate::recorder::slice_vec::SliceVec;
 use crate::recorder::{ClauseKind, Recorder};
-use crate::solver::LevelMarker;
+use crate::solver::LevelMarker as SolverMarker;
+use crate::theory::Incremental;
 use crate::util::{display_sexp, DebugIter, DisplayFn, HashMap};
 use crate::{BoolExp, Conjunction, ExpLike, Solver};
 use alloc::vec::Vec;
@@ -14,7 +15,7 @@ use core::fmt::Debug;
 use default_vec2::BitSet;
 use log::{debug, info, trace};
 use platsat::theory::ClauseRef;
-use platsat::{lbool, Lit, TheoryArg};
+use platsat::{lbool, Lit, SolverInterface, TheoryArg};
 
 #[derive(Copy, Clone, Default, Eq, PartialEq, Debug)]
 enum State {
@@ -45,6 +46,12 @@ impl ClauseProofElement {
     fn clause_ref(&self) -> ClauseRef {
         must_cast(self.clause)
     }
+}
+
+#[derive(Copy, Clone)]
+pub struct LevelMarker {
+    def_marker: <DefinitionRecorder as Incremental>::LevelMarker,
+    clause_len: u32,
 }
 
 #[derive(Default)]
@@ -267,6 +274,33 @@ impl InterpolantRecorder {
     }
 }
 
+impl Incremental for InterpolantRecorder {
+    type LevelMarker = LevelMarker;
+
+    fn create_level(&self) -> Self::LevelMarker {
+        LevelMarker {
+            def_marker: self.defs.create_level(),
+            clause_len: self.clauses.len_idx() as u32,
+        }
+    }
+
+    fn pop_to_level(&mut self, marker: Self::LevelMarker, clear_lits: bool) {
+        match self.state {
+            State::Solving => {
+                self.defs.pop_to_level(marker.def_marker, clear_lits);
+                self.clauses.truncate(marker.clause_len as usize);
+            }
+            _ => {}
+        }
+    }
+
+    fn clear(&mut self) {
+        debug_assert!(matches!(self.state, State::Solving));
+        self.defs.clear();
+        self.clauses.clear();
+    }
+}
+
 impl Recorder for InterpolantRecorder {
     type Interpolant<'a> = DisplayStandAloneDefExp<'a>;
 
@@ -327,14 +361,14 @@ impl Recorder for InterpolantRecorder {
 
     fn interpolant<'a, Th: FullTheory<Self>>(
         solver: &'a mut Solver<Th, Self>,
-        pre_solve_marker: LevelMarker<Th::LevelMarker>,
+        pre_solve_marker: SolverMarker<Th::LevelMarker, LevelMarker>,
         assumptions: &Conjunction,
         a: Self::BoolBufMarker,
         b: Self::BoolBufMarker,
     ) -> Option<Self::Interpolant<'a>> {
         if State::Final != solver.th.arg.recorder.state {
             solver.th.arg.recorder.state = State::Proving;
-            solver.pop_model();
+            solver.sat.pop_model(&mut solver.th);
             // reset solver to before original solve
             solver.pop_to_level(pre_solve_marker.clone());
             let mut levels = Vec::with_capacity(solver.th.arg.recorder.clauses.len());
@@ -444,12 +478,18 @@ impl Recorder for InterpolantRecorder {
                 .display_stand_alone_def(res, &solver.th.arg.intern),
         )
     }
+
+    fn exit_solved_state(&mut self) {
+        self.state = State::Solving;
+        self.tseiten_clauses.clear();
+        self.clause_proofs.clear();
+    }
 }
 
 fn analyze_clause<Th: FullTheory<InterpolantRecorder>>(
     solver: &mut Solver<Th, InterpolantRecorder>,
     i: usize,
-    level_before: LevelMarker<Th::LevelMarker>,
+    level_before: SolverMarker<Th::LevelMarker, LevelMarker>,
 ) -> Option<()> {
     let cr = solver.clauses().last().unwrap();
     solver.th.arg.recorder.start_new_clause_proof(cr)?;

@@ -1,0 +1,17 @@
+unsat
+(or r r)
+sat
+(
+ (define-fun a1 () Bool true)
+ (define-fun a2 () Bool true)
+ (define-fun a3 () Bool false)
+ (define-fun b1s () Bool false)
+ (define-fun b1w () Bool true)
+ (define-fun b2 () Bool true)
+ (define-fun p () Bool false)
+ (define-fun q () Bool true)
+ (define-fun r () Bool true)
+ (define-fun s () Bool false)
+)
+unsat
+(and (or s (not r)) (or r r))

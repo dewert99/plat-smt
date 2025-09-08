@@ -3,10 +3,10 @@ use plat_smt::empty_theory::{EmptyTheory, EmptyTheoryPf};
 use plat_smt::euf::{Euf, EufPf};
 use plat_smt::interp_smt2;
 use plat_smt::outer_solver::Logic;
-use plat_smt::recorder::{InterpolantRecorder, LoggingRecorder};
+use plat_smt::recorder::InterpolantRecorder;
 use rstest::rstest;
 use std::any::type_name;
-use std::fs::{remove_file, File};
+use std::fs::{remove_file, File, ReadDir};
 use std::io::{BufWriter, Read};
 use std::path::{Path, PathBuf};
 use std::str::from_utf8;
@@ -84,6 +84,10 @@ fn test_no_euf(#[files("tests/smt2/no_euf/**/*.smt2")] file: PathBuf) {
     test_file::<(EmptyTheory, EmptyTheoryPf, InterpolantRecorder, _)>(file)
 }
 
+fn iter_direct(path: &str) -> ReadDir {
+    Path::new(path).read_dir().unwrap()
+}
+
 fn test_sequential(init_command: &str, split_command: &str, exact: bool) {
     init_logger();
     let mut out = String::new();
@@ -91,10 +95,8 @@ fn test_sequential(init_command: &str, split_command: &str, exact: bool) {
     let mut expect_out = Vec::new();
     let mut file_buf = Vec::new();
     file_buf.extend_from_slice(init_command.as_bytes());
-    let path = Path::new("tests/smt2");
-    let mut paths: Vec<_> = path
-        .read_dir()
-        .unwrap()
+    let mut paths: Vec<_> = iter_direct("tests/smt2")
+        .chain(iter_direct("tests/smt2/no_euf"))
         .filter_map(|x| {
             let path = x.ok()?.path();
             if path.extension() == Some("smt2".as_ref()) {
@@ -118,7 +120,7 @@ fn test_sequential(init_command: &str, split_command: &str, exact: bool) {
             .read_to_end(&mut expect_out)
             .unwrap();
     }
-    interp_smt2::<(Euf, EufPf, LoggingRecorder, _)>(&*file_buf, &mut out, &mut err);
+    interp_smt2::<(Euf, EufPf, InterpolantRecorder, _)>(&*file_buf, &mut out, &mut err);
     assert_eq!(&err, "");
     if exact {
         assert_eq!(&out, from_utf8(&expect_out).unwrap());
@@ -143,6 +145,7 @@ fn test_sequential_push_pop() {
 #[cfg(not(debug_assertions))]
 mod test_smtlib_benchmarks {
     use super::*;
+    use plat_smt::recorder::LoggingRecorder;
     use std::io::{stderr, Seek, Write};
     use std::process::{Command, Stdio};
     use walkdir::WalkDir;

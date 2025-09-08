@@ -32,7 +32,7 @@ impl<T, I> SliceVec<T, I> {
         self.indices.len() - 1
     }
 
-    pub fn len_idx(self) -> I
+    pub fn len_idx(&self) -> I
     where
         I: From<usize>,
     {

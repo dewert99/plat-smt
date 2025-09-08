@@ -338,11 +338,11 @@ enum State {
     Init,
 }
 
-struct LevelMarker<M> {
+struct LevelMarker<L: Logic> {
     sort: u32,
     bound: u32,
     named_assert: u32,
-    solver: solver::LevelMarker<M>,
+    solver: solver::LevelMarker<L::LevelMarker, L::RLevelMarker>,
 }
 
 struct Parser<W: Write, L: Logic> {
@@ -364,11 +364,11 @@ struct Parser<W: Write, L: Logic> {
     named_assertions: UnsatCoreConjunction<SpanRange>,
     // see above
     old_named_assertions: u32,
-    push_info: Vec<LevelMarker<L::LevelMarker>>,
+    push_info: Vec<LevelMarker<L>>,
     core: OuterSolver<L>,
     writer: PrintSuccessWriter<W>,
     state: State,
-    command_level_marker: Option<solver::LevelMarker<L::LevelMarker>>,
+    command_level_marker: Option<solver::LevelMarker<L::LevelMarker, L::RLevelMarker>>,
     options: Options,
     last_status_info: Option<SolveResult>,
 }

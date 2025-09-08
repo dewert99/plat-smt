@@ -277,9 +277,11 @@ impl<Th: FullTheory<R>, R: Recorder> Solver<Th, R> {
     /// Restores the state after calling `raw_check_sat_assuming`
     pub fn pop_model(&mut self) {
         self.sat.pop_model(&mut self.th);
+        self.th.arg.recorder.exit_solved_state();
     }
 
     pub fn clear(&mut self) {
+        self.th.arg.recorder.clear();
         self.sat.reset();
         self.th.clear();
         self.open(|th, acts| th.init(acts), ());
@@ -345,7 +347,7 @@ impl<Th: FullTheory<R>, R: Recorder> Solver<Th, R> {
 
     pub fn interpolant(
         &mut self,
-        pre_solve_level: LevelMarker<Th::LevelMarker>,
+        pre_solve_level: LevelMarker<Th::LevelMarker, R::LevelMarker>,
         assumptions: &mut Conjunction,
         a: R::BoolBufMarker,
         b: R::BoolBufMarker,
@@ -357,9 +359,10 @@ impl<Th: FullTheory<R>, R: Recorder> Solver<Th, R> {
 /// Marker of the state of a [`Solver`] which can be created by [`Solver::create_level`] and later
 /// used by [`Solver::pop_to_level`]
 #[derive(Clone)]
-pub struct LevelMarker<M> {
+pub struct LevelMarker<M, R> {
     sat: platsat::core::CheckPoint,
     euf: Option<M>,
+    recorder: R,
 }
 
 impl<Euf: FullTheory<R>, R: Recorder> Solver<Euf, R> {
@@ -367,17 +370,19 @@ impl<Euf: FullTheory<R>, R: Recorder> Solver<Euf, R> {
     /// to reset the solver to the state it has now
     ///
     /// This also calls [`simplify`](Self::simplify) to simplify the state of the solver
-    pub fn create_level(&mut self) -> LevelMarker<Euf::LevelMarker> {
+    pub fn create_level(&mut self) -> LevelMarker<Euf::LevelMarker, R::LevelMarker> {
         self.simplify();
         trace!("Push sat model: {:?}", self.sat.raw_model());
         LevelMarker {
             sat: self.sat.checkpoint(),
             euf: self.is_ok().then(|| self.th.create_level()),
+            recorder: self.th.arg.recorder.create_level(),
         }
     }
 
     /// Resets the solver to the state it had when `marker` was created by [`create_level`](Self::create_level)
-    pub fn pop_to_level(&mut self, marker: LevelMarker<Euf::LevelMarker>) {
+    pub fn pop_to_level(&mut self, marker: LevelMarker<Euf::LevelMarker, R::LevelMarker>) {
+        self.th.arg.recorder.pop_to_level(marker.recorder, true);
         self.th.restore_trail_len(marker.sat.trail_len());
         self.sat.restore_checkpoint(marker.sat);
         trace!("Pop sat model: {:?}", self.sat.raw_model());

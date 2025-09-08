@@ -1,0 +1,4 @@
+unsat
+(and (or r r) (or s (not r)))
+unsat
+(or r r)

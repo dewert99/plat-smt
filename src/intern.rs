@@ -207,14 +207,7 @@ pub trait RecInfoArg: Hash + Eq + Copy {
 
     fn inner(self) -> NonZeroU32;
 
-    fn default_rec_info() -> RecInfo<Self> {
-        RecInfo {
-            sort_args: vec![],
-            sorts: vec![(Symbol(NonZeroU32::new(1).unwrap()), 0)],
-            map: Default::default(),
-            hasher: Default::default(),
-        }
-    }
+    fn init_rec_info(_init: &mut RecInfo<Self>) {}
 }
 
 pub type SortInfo = RecInfo<Sort>;
@@ -256,11 +249,53 @@ impl<T: RecInfoArg> RecInfo<T> {
         let children = &self.sort_args[self.sorts[idx - 1].1 as usize..self.sorts[idx].1 as usize];
         (name, children)
     }
+
+    pub(crate) fn create_level(&self) -> u32 {
+        self.sorts.len() as u32
+    }
+
+    pub(crate) fn pop_to_level(&mut self, level_info: u32) {
+        let mut last_idx = self.sorts[level_info as usize - 1].1;
+        for (name, idx) in self.sorts.drain(level_info as usize..) {
+            let args = &self.sort_args[last_idx as usize..idx as usize];
+            let hash = self.hasher.hash_one((name, args));
+            match self.map.entry(
+                hash,
+                |&(sym, start, end, _)| {
+                    (sym, &self.sort_args[start as usize..end as usize]) == (name, args)
+                },
+                |&(sym, start, end, _)| {
+                    self.hasher
+                        .hash_one((sym, &self.sort_args[start as usize..end as usize]))
+                },
+            ) {
+                Entry::Occupied(occ) => occ.remove(),
+                _ => unreachable!(),
+            };
+            last_idx = idx;
+        }
+        self.sort_args
+            .truncate(self.sorts.last().unwrap().1 as usize)
+    }
+
+    pub fn clear(&mut self) {
+        self.sorts.truncate(1);
+        self.sort_args.clear();
+        self.map.clear();
+        T::init_rec_info(self);
+    }
 }
 
 impl<T: RecInfoArg> Default for RecInfo<T> {
     fn default() -> Self {
-        T::default_rec_info()
+        let mut res = RecInfo {
+            sort_args: vec![],
+            sorts: vec![(Symbol(NonZeroU32::new(1).unwrap()), 0)],
+            map: Default::default(),
+            hasher: Default::default(),
+        };
+        T::init_rec_info(&mut res);
+        res
     }
 }
 
@@ -273,18 +308,11 @@ impl RecInfoArg for Sort {
         self.0
     }
 
-    fn default_rec_info() -> RecInfo<Self> {
-        let mut res = SortInfo {
-            sort_args: vec![],
-            sorts: vec![(Symbol(NonZeroU32::new(1).unwrap()), 0)],
-            map: Default::default(),
-            hasher: Default::default(),
-        };
+    fn init_rec_info(init: &mut RecInfo<Self>) {
         for (i, &(name, args)) in BASE_SORTS.iter().enumerate() {
-            let s = res.intern(name, args);
+            let s = init.intern(name, args);
             assert_eq!(s.0.get(), i as u32 + 1);
         }
-        res
     }
 }
 
