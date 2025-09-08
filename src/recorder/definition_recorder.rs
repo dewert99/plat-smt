@@ -3,6 +3,7 @@ use crate::intern::{
 };
 use crate::recorder::{ClauseKind, Recorder};
 use crate::rexp::{AsRexp, NamespaceVar, Rexp};
+use crate::theory::Incremental;
 use crate::util::{display_sexp, DisplayFn, HashMap};
 use crate::{BoolExp, ExpLike};
 use alloc::vec::Vec;
@@ -11,10 +12,14 @@ use core::convert::Infallible;
 use core::fmt::{Display, Formatter};
 use core::num::{NonZeroU32, Saturating};
 use default_vec2::DefaultVec;
+use log::info;
 use platsat::Lit;
 
 #[derive(Copy, Clone, Eq, PartialEq, Hash, Ord, PartialOrd, Debug)]
 pub struct DefExp(NonZeroU32);
+
+pub const FALSE_DEF_EXP: DefExp = DefExp(NonZeroU32::new(1).unwrap());
+pub const TRUE_DEF_EXP: DefExp = DefExp(NonZeroU32::new(2).unwrap());
 
 impl RecInfoArg for DefExp {
     fn new(x: NonZeroU32) -> Self {
@@ -24,6 +29,13 @@ impl RecInfoArg for DefExp {
     fn inner(self) -> NonZeroU32 {
         self.0
     }
+
+    fn init_rec_info(init: &mut RecInfo<Self>) {
+        let f = init.intern(FALSE_SYM, &[]);
+        debug_assert_eq!(f, FALSE_DEF_EXP);
+        let t = init.intern(TRUE_SYM, &[]);
+        debug_assert_eq!(t, TRUE_DEF_EXP);
+    }
 }
 
 impl Into<usize> for DefExp {
@@ -32,38 +44,33 @@ impl Into<usize> for DefExp {
     }
 }
 
+#[derive(Default)]
 pub struct DefinitionRecorder {
     defs: RecInfo<DefExp>,
     buf: Vec<DefExp>,
     aliases: HashMap<DefExp, Symbol>,
+    alias_log: Vec<DefExp>,
     var_defs: HashMap<NamespaceVar, DefExp>,
+    var_log: Vec<NamespaceVar>,
     uses: DefaultVec<Saturating<u8>, DefExp>,
 }
 
-pub const FALSE_DEF_EXP: DefExp = DefExp(NonZeroU32::new(1).unwrap());
-pub const TRUE_DEF_EXP: DefExp = DefExp(NonZeroU32::new(2).unwrap());
-
-impl Default for DefinitionRecorder {
-    fn default() -> Self {
-        let mut res = DefinitionRecorder {
-            defs: Default::default(),
-            buf: Default::default(),
-            aliases: Default::default(),
-            var_defs: Default::default(),
-            uses: Default::default(),
-        };
-        let f = res.defs.intern(FALSE_SYM, &[]);
-        debug_assert_eq!(f, FALSE_DEF_EXP);
-        let t = res.defs.intern(TRUE_SYM, &[]);
-        debug_assert_eq!(t, TRUE_DEF_EXP);
-        res
-    }
+#[derive(Copy, Clone)]
+pub struct LevelMarker {
+    def_maker: u32,
+    alias_len: u32,
+    var_len: u32,
 }
 
 impl DefinitionRecorder {
     fn intern_rexp_h(&mut self, r: &Rexp<'_>) {
         match r {
-            Rexp::Nv(nv) => self.buf.push(*self.var_defs.get(nv).unwrap()),
+            Rexp::Nv(nv) => self.buf.push(
+                *self
+                    .var_defs
+                    .get(nv)
+                    .unwrap_or_else(|| panic!("Missing {nv}")),
+            ),
             Rexp::Call(s, args) => {
                 let buf_len = self.buf.len();
                 args.iter().for_each(|r| self.intern_rexp_h(r));
@@ -184,6 +191,42 @@ impl DefinitionRecorder {
             clause.map(|l| self.display_exp(BoolExp::unknown(l), interner)),
         )
     }
+
+    fn define_nv(&mut self, nv: NamespaceVar, def_exp: DefExp) {
+        let old = self.var_defs.insert(nv, def_exp);
+        debug_assert_eq!(old, None);
+        self.var_log.push(nv);
+    }
+}
+
+impl Incremental for DefinitionRecorder {
+    type LevelMarker = LevelMarker;
+
+    fn create_level(&self) -> Self::LevelMarker {
+        LevelMarker {
+            def_maker: self.defs.create_level(),
+            alias_len: self.alias_log.len() as u32,
+            var_len: self.var_log.len() as u32,
+        }
+    }
+
+    fn pop_to_level(&mut self, marker: Self::LevelMarker, _: bool) {
+        self.defs.pop_to_level(marker.def_maker);
+        for alias in self.alias_log.drain(marker.alias_len as usize..) {
+            self.aliases.remove(&alias);
+        }
+        for var in self.var_log.drain(marker.var_len as usize..) {
+            self.var_defs.remove(&var);
+        }
+    }
+
+    fn clear(&mut self) {
+        self.defs.clear();
+        self.alias_log.clear();
+        self.aliases.clear();
+        self.var_log.clear();
+        self.var_defs.clear();
+    }
 }
 
 impl Recorder for DefinitionRecorder {
@@ -194,24 +237,26 @@ impl Recorder for DefinitionRecorder {
         val: Exp,
         f: Symbol,
         arg: impl Iterator<Item = Exp2> + Clone,
-        _: &InternInfo,
+        intern: &InternInfo,
     ) {
-        arg.for_each(|exp| exp.as_rexp(|rexp| self.intern_rexp_h(&rexp)));
+        arg.clone()
+            .for_each(|exp| exp.as_rexp(|rexp| self.intern_rexp_h(&rexp)));
         let res = self.defs.intern(f, &self.buf);
         self.buf.clear();
         let nv = val.as_rexp(|rexp| rexp.unwrap_nv());
-        self.var_defs.insert(nv, res);
+        self.define_nv(nv, res);
     }
 
     fn log_def_exp<Exp: ExpLike, Exp2: ExpLike>(&mut self, val: Exp, def: Exp2, _: &InternInfo) {
         let res = self.intern_exp(def);
         let nv = val.as_rexp(|rexp| rexp.unwrap_nv());
-        self.var_defs.insert(nv, res);
+        self.define_nv(nv, res);
     }
 
     fn log_alias<Exp: ExpLike>(&mut self, alias: Symbol, exp: Exp, _: &InternInfo) {
         let res = self.intern_exp(exp);
         self.aliases.insert(res, alias);
+        self.alias_log.push(res);
     }
 
     fn log_clause(&mut self, _: &[Lit], _: ClauseKind) {}

@@ -1,6 +1,7 @@
 use crate::full_theory::FullTheory;
 use crate::intern::{DisplayInterned, InternInfo, Symbol};
 use crate::solver::LevelMarker;
+use crate::theory::Incremental;
 use crate::util::{display_sexp, format_args2};
 use crate::{BoolExp, Conjunction, ExpLike, Solver};
 use core::convert::Infallible;
@@ -17,7 +18,7 @@ pub enum ClauseKind {
     TheoryConflict(bool),
 }
 
-pub trait Recorder: Default + 'static {
+pub trait Recorder: Default + Incremental + 'static {
     type Interpolant<'a>: Display;
 
     fn log_def<Exp: ExpLike, Exp2: ExpLike>(
@@ -65,17 +66,29 @@ pub trait Recorder: Default + 'static {
 
     fn interpolant<'a, Th: FullTheory<Self>>(
         _solver: &'a mut Solver<Th, Self>,
-        _pre_solve_marker: LevelMarker<Th::LevelMarker>,
+        _pre_solve_marker: LevelMarker<Th::LevelMarker, Self::LevelMarker>,
         _assumptions: &Conjunction,
         _a: Self::BoolBufMarker,
         _b: Self::BoolBufMarker,
     ) -> Option<Self::Interpolant<'a>> {
         None
     }
+
+    fn exit_solved_state(&mut self) {}
 }
 
 #[derive(Default)]
 pub struct LoggingRecorder;
+
+impl Incremental for LoggingRecorder {
+    type LevelMarker = ();
+
+    fn create_level(&self) -> Self::LevelMarker {}
+
+    fn pop_to_level(&mut self, _: Self::LevelMarker, _: bool) {}
+
+    fn clear(&mut self) {}
+}
 
 impl Recorder for LoggingRecorder {
     type Interpolant<'a> = Infallible;

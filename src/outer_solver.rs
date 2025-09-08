@@ -28,9 +28,6 @@ pub trait Logic: Sized {
 
     type LevelMarker: Clone;
 
-    type BoolBufMarker: Copy;
-
-    type R: Recorder<BoolBufMarker = Self::BoolBufMarker>;
     type Theory: FullTheory<Self::R, Exp = Self::Exp, FnSort = Self::FnSort, LevelMarker = Self::LevelMarker>
         + for<'a> collapse::Collapse<Self::Exp, TheoryArg<'a, Self::LevelMarker, Self::R>, Self::CM>
         + for<'a> collapse::Collapse<
@@ -38,6 +35,12 @@ pub trait Logic: Sized {
             TheoryArg<'a, Self::LevelMarker, Self::R>,
             Self::CM,
         >;
+
+    type BoolBufMarker: Copy;
+
+    type RLevelMarker: Clone;
+
+    type R: Recorder<BoolBufMarker = Self::BoolBufMarker, LevelMarker = Self::RLevelMarker>;
     type Parser: ParserFragment<Self::Exp, WrapSolver<Self>, Self::M>;
 
     type EM;
@@ -67,9 +70,12 @@ where
     type FnSort = Th::FnSort;
     type LevelMarker = Th::LevelMarker;
 
-    type BoolBufMarker = R::BoolBufMarker;
-    type R = R;
     type Theory = Th;
+
+    type BoolBufMarker = R::BoolBufMarker;
+
+    type RLevelMarker = R::LevelMarker;
+    type R = R;
     type Parser = P;
     type EM = EM;
     type CM = CM;
