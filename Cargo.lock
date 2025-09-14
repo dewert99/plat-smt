@@ -457,11 +457,12 @@ dependencies = [
 [[package]]
 name = "platsat"
 version = "0.5.0"
-source = "git+https://github.com/dewert99/platsat?branch=main#f4b5ff075330bb296fd86d43a9d0bd1607379e42"
+source = "git+https://github.com/dewert99/platsat?branch=main#625601beee6275b8d090f3381bfd5e46bd764681"
 dependencies = [
  "bytemuck",
  "default-vec2",
  "internal-iterator",
+ "log",
  "no-std-compat",
 ]
 

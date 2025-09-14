@@ -6,7 +6,7 @@ edition = "2021"
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
-platsat = { git = "https://github.com/dewert99/platsat", branch = "main", default-features = false}
+platsat = { git = "https://github.com/dewert99/platsat", branch = "main", default-features = false, features = ["logging"]}
 plat-egg = { git = "https://github.com/dewert99/plat-egg", branch = "main", default-features = false, optional = true}
 default-vec2 = "0.1.3"
 rustc-hash = { version = "1.1.0", default-features = false}
