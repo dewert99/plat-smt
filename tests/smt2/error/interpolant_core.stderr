@@ -1,0 +1,4 @@
+`get-unsat-core` must be called before `get-interpolants` at 10:2
+(get-unsat-core)
+ ^
+

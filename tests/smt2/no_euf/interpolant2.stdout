@@ -1,7 +1,7 @@
 unsat
 (and (or r r) (or s (not r)))
-(let @d10 (not r)
+(let (@d10 (not r))
   (or @d10 (or @d10 (not s))))
 (or r r)
-(let @d10 (not r)
+(let (@d10 (not r))
   (or @d10 @d10 @d10))

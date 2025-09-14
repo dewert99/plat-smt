@@ -89,6 +89,7 @@ enum Error {
         expected: SolveResult,
     },
     NoUnsat,
+    InterpolantCore,
     ProduceCoreFalse,
     NoModel,
     ProduceModelFalse,
@@ -141,6 +142,7 @@ impl DisplayInterned for Error {
                 expected,
             } => write!(fmt, "(check-sat) returned {actual:?} but should have returned {expected:?} based on last (set-info :status)"),
             NoUnsat => write!(fmt, "The last command was not `check-sat-assuming` that returned `unsat`"),
+            InterpolantCore => write!(fmt, "`get-unsat-core` must be called before `get-interpolants`"),
             ProduceCoreFalse => write!(fmt, "The option `:produce-unsat-cores` must be set to true"),
             NoModel => write!(fmt, "The last command was not `check-sat-assuming` that returned `sat`"),
             ProduceModelFalse => write!(fmt, "The option `:produce-models` must be set to true"),
@@ -332,6 +334,7 @@ enum_option! {SetOption{
 #[derive(Default, Copy, Clone)]
 enum State {
     Unsat,
+    UnsatInterpolant,
     Model,
     Base,
     #[default]
@@ -874,6 +877,9 @@ impl<W: Write, L: Logic> Parser<W, L> {
             }
             Smt2Command::GetUnsatCore => {
                 let State::Unsat = &self.state else {
+                    if let State::UnsatInterpolant = &self.state {
+                        return Err(InterpolantCore);
+                    }
                     return Err(NoUnsat);
                 };
                 if !self.options.produces_unsat_cores {
@@ -1079,7 +1085,7 @@ impl<W: Write, L: Logic> Parser<W, L> {
                 rest.finish()?;
             }
             Smt2Command::GetInterpolants => {
-                let (State::Unsat, Some(pre_solve_level)) =
+                let (State::Unsat | State::UnsatInterpolant, Some(pre_solve_level)) =
                     (self.state, self.command_level_marker.clone())
                 else {
                     return Err(NoUnsat);
@@ -1093,6 +1099,7 @@ impl<W: Write, L: Logic> Parser<W, L> {
                     b,
                 );
                 let interpolant = interpolant.ok_or(UnsupportedP("interpolants"))?;
+                self.state = State::UnsatInterpolant;
                 writeln!(self.writer, "{interpolant}");
             }
             _ => return self.parse_destructive_command(name, rest),

@@ -237,7 +237,7 @@ impl InterpolantRecorder {
             let partial_interpolant = if added.len() == tseiten.len() {
                 TRUE_DEF_EXP
             } else if let &[] = added {
-                TRUE_DEF_EXP
+                FALSE_DEF_EXP
             } else if let &[l] = added {
                 l
             } else {
