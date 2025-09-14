@@ -1,0 +1,4 @@
+unsat
+r
+(let (@d12 (not r))
+  (or @d12 @d12))

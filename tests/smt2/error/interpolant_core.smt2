@@ -6,6 +6,5 @@
 (assert (! (=> q (not r)) :named b1))
 (assert (! (=> (not q) (not r)) :named b2))
 (check-sat)
-(get-unsat-core)
 (get-interpolants (and a1 a2) (and b1 b2))
-(get-interpolants (and b1 b2) (and a1 a2))
+(get-unsat-core)
