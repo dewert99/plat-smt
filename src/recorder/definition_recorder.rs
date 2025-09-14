@@ -12,7 +12,6 @@ use core::convert::Infallible;
 use core::fmt::{Display, Formatter};
 use core::num::{NonZeroU32, Saturating};
 use default_vec2::DefaultVec;
-use log::info;
 use platsat::Lit;
 
 #[derive(Copy, Clone, Eq, PartialEq, Hash, Ord, PartialOrd, Debug)]
@@ -237,7 +236,7 @@ impl Recorder for DefinitionRecorder {
         val: Exp,
         f: Symbol,
         arg: impl Iterator<Item = Exp2> + Clone,
-        intern: &InternInfo,
+        _: &InternInfo,
     ) {
         arg.clone()
             .for_each(|exp| exp.as_rexp(|rexp| self.intern_rexp_h(&rexp)));
