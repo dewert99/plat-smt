@@ -12,6 +12,7 @@ use core::convert::Infallible;
 use core::fmt::{Display, Formatter};
 use core::num::{NonZeroU32, Saturating};
 use default_vec2::DefaultVec;
+use log::debug;
 use platsat::Lit;
 
 #[derive(Copy, Clone, Eq, PartialEq, Hash, Ord, PartialOrd, Debug)]
@@ -114,7 +115,7 @@ impl DefinitionRecorder {
     }
 
     /// Creates aliases for expressions and returns a struct that can be displayed to see the
-    /// definitions
+    /// definitions.
     #[must_use]
     pub fn dump_global_defs<'a>(&'a mut self, intern: &'a InternInfo) -> DisplayGlobalDefs<'a> {
         self.uses.clear();
@@ -193,8 +194,20 @@ impl DefinitionRecorder {
 
     fn define_nv(&mut self, nv: NamespaceVar, def_exp: DefExp) {
         let old = self.var_defs.insert(nv, def_exp);
-        debug_assert_eq!(old, None);
+        debug!("{nv} = {def_exp:?}");
+        if let Some(old) = old {
+            if old != def_exp {
+                panic!("Trying to reassign {nv} from {old:?} to {def_exp:?}")
+            }
+        }
         self.var_log.push(nv);
+    }
+
+    pub(crate) fn resolve_nv(&self, nv: NamespaceVar) -> DefExp {
+        *self
+            .var_defs
+            .get(&nv)
+            .unwrap_or_else(|| panic!("missing nv {nv}"))
     }
 }
 
@@ -231,7 +244,7 @@ impl Incremental for DefinitionRecorder {
 impl Recorder for DefinitionRecorder {
     type Interpolant<'a> = Infallible;
 
-    fn log_def<Exp: ExpLike, Exp2: ExpLike>(
+    fn log_def<Exp: ExpLike, Exp2: AsRexp>(
         &mut self,
         val: Exp,
         f: Symbol,
@@ -246,7 +259,7 @@ impl Recorder for DefinitionRecorder {
         self.define_nv(nv, res);
     }
 
-    fn log_def_exp<Exp: ExpLike, Exp2: ExpLike>(&mut self, val: Exp, def: Exp2, _: &InternInfo) {
+    fn log_def_exp<Exp: ExpLike, Exp2: AsRexp>(&mut self, val: Exp, def: Exp2, _: &InternInfo) {
         let res = self.intern_exp(def);
         let nv = val.as_rexp(|rexp| rexp.unwrap_nv());
         self.define_nv(nv, res);

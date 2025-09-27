@@ -1,0 +1,11 @@
+unsat
+(= l (f w))
+(not (= (f w) z))
+(not (= l (f w)))
+(= (f w) z)
+(= l (f (g q)))
+(not (= (f (g q)) z))
+(not (= l (f (g q))))
+(= (f (g q)) z)
+(and (= p r) (or (= l z) (not (= n t)) (not (= v x))))
+(or (not (= (g q) s)) (not (= m (f o))) (not (= u (f w))))

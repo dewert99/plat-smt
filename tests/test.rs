@@ -11,11 +11,24 @@ use std::io::{BufWriter, Read};
 use std::path::{Path, PathBuf};
 use std::str::from_utf8;
 
-fn read_path(p: &Path) -> Vec<u8> {
-    let mut res = Vec::new();
-    if let Ok(mut f) = File::open(p) {
-        f.read_to_end(&mut res).unwrap();
+fn read_path_into(path: &mut PathBuf, extension: &str, dst: &mut Vec<u8>) {
+    #[cfg(feature = "test_add_more_mid_search_equalities")]
+    {
+        path.set_extension(format!("mid_search_eq_{extension}"));
+        if let Ok(mut f) = File::open(&path) {
+            f.read_to_end(dst).unwrap();
+            return;
+        }
     }
+    path.set_extension(extension);
+    if let Ok(mut f) = File::open(&path) {
+        f.read_to_end(dst).unwrap();
+    }
+}
+
+fn read_path(path: &mut PathBuf, extension: &str) -> Vec<u8> {
+    let mut res = Vec::new();
+    read_path_into(path, extension, &mut res);
     res
 }
 
@@ -47,7 +60,7 @@ fn test_file<L: Logic>(mut file: PathBuf) {
     if bless {
         println!("BLESS")
     }
-    let smt2_data = read_path(&file);
+    let smt2_data = read_path(&mut file, "smt2");
     if bless {
         file.set_extension("stdout");
         let stdout_file = File::create(&file).unwrap();
@@ -62,10 +75,8 @@ fn test_file<L: Logic>(mut file: PathBuf) {
         file.set_extension("stdout");
         remove_empty(&file);
     } else {
-        file.set_extension("stdout");
-        let stdout_expected = String::from_utf8(read_path(&file)).unwrap();
-        file.set_extension("stderr");
-        let stderr_expected = String::from_utf8(read_path(&file)).unwrap();
+        let stdout_expected = String::from_utf8(read_path(&mut file, "stdout")).unwrap();
+        let stderr_expected = String::from_utf8(read_path(&mut file, "stderr")).unwrap();
         let mut stdout_actual = String::new();
         let mut stderr_actual = String::new();
         interp_smt2::<L>(&*smt2_data, &mut stdout_actual, &mut stderr_actual);
@@ -109,16 +120,10 @@ fn test_sequential(init_command: &str, split_command: &str, exact: bool) {
     paths.sort_unstable();
     for mut path in paths {
         info!("Adding file {:?}", path);
-        File::open(&path)
-            .unwrap()
-            .read_to_end(&mut file_buf)
-            .unwrap();
+        read_path_into(&mut path, "smt2", &mut file_buf);
         file_buf.extend_from_slice(split_command.as_bytes());
         path.set_extension("stdout");
-        File::open(&path)
-            .unwrap()
-            .read_to_end(&mut expect_out)
-            .unwrap();
+        read_path_into(&mut path, "stdout", &mut expect_out);
     }
     interp_smt2::<(Euf, EufPf, InterpolantRecorder, _)>(&*file_buf, &mut out, &mut err);
     assert_eq!(&err, "");

@@ -47,12 +47,19 @@ impl UExp {
     }
 }
 
+pub(super) fn id_to_nv(id: Id) -> NamespaceVar {
+    NamespaceVar(Namespace::Uninterpreted, usize::from(id) as u32)
+}
+
+impl AsRexp for Id {
+    fn as_rexp<R>(&self, f: impl for<'a> FnOnce(Rexp<'a>) -> R) -> R {
+        f(Rexp::Nv(id_to_nv(*self)))
+    }
+}
+
 impl AsRexp for UExp {
     fn as_rexp<R>(&self, f: impl for<'a> FnOnce(Rexp<'a>) -> R) -> R {
-        f(Rexp::Nv(NamespaceVar(
-            Namespace::Uninterpreted,
-            usize::from(self.id) as u32,
-        )))
+        self.id.as_rexp(f)
     }
 }
 
@@ -195,7 +202,7 @@ impl Euf {
                 }
             },
             (Exp::Right(u1), Exp::Right(u2)) => {
-                let _ = self.union(acts, u1.id, u2.id, Justification::NOOP);
+                self.union(acts, u1.id, u2.id, Justification::NOOP);
             }
             _ => unreachable!(),
         }
@@ -209,7 +216,7 @@ impl Euf {
     ) {
         if let Some(id1) = self.check_id_for_lit(b1) {
             if let Some(id2) = self.check_id_for_lit(b2) {
-                let _ = self.union(acts, id1, id2, Justification::NOOP);
+                self.union(acts, id1, id2, Justification::NOOP);
             } else {
                 self.lit.add_id_to_lit(id1, b2, true)
             }
@@ -290,12 +297,15 @@ impl<'a, 'b, A: SatTheoryArgT<'a, M = PushInfo>> Collapse<Distinct<'b, Exp>, A, 
         for exp in exps {
             let id = self.id_for_exp(*exp, acts, false);
             let mut added = false;
-            self.egraph
+            let id = self
+                .egraph
                 .add(distinct_sym.into(), Children::from_slice(&[id]), |_, _| {
                     added = true;
                     EClass::Singleton(!b)
                 });
-            if !added {
+            if added {
+                acts.log_def(UExp::new(id, BOOL_SORT), distinct_sym, [*exp].into_iter());
+            } else {
                 return acts.collapse_const(false, ctx);
             }
         }

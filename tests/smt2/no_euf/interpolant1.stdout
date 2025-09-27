@@ -1,5 +1,4 @@
 unsat
 (b2 b1 a2 a1)
-(or r r)
-(let (@d10 (not r))
-  (or @d10 @d10))
+r
+(not r)

@@ -17,7 +17,7 @@ pub trait HasSort {
 }
 
 pub trait ExpLike:
-    Copy + Debug + DisplayInterned + AsRexp + HasSort + Eq + Hash + Ord + CollapseOut<Out = Self>
+    Copy + DisplayInterned + AsRexp + HasSort + Eq + Hash + Ord + CollapseOut<Out = Self>
 {
 }
 
@@ -227,9 +227,13 @@ impl BitXor<bool> for BoolExp {
     }
 }
 
+pub fn var_to_nv(v: Var) -> NamespaceVar {
+    NamespaceVar(Namespace::Bool, v.idx() + 1)
+}
+
 impl AsRexp for Var {
     fn as_rexp<R>(&self, f: impl for<'a> FnOnce(Rexp<'a>) -> R) -> R {
-        f(Rexp::Nv(NamespaceVar(Namespace::Bool, self.idx() + 1)))
+        f(Rexp::Nv(var_to_nv(*self)))
     }
 }
 

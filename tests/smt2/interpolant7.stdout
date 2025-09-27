@@ -1,0 +1,5 @@
+unsat
+(and (= i1 j1) (= i2 j2))
+(and (= i2 k2) (not (= j1 k1)))
+(or (not (= i1 j1)) (not (= i2 j2)))
+(or (= j1 k1) (not (= i2 k2)))

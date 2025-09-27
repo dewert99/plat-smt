@@ -1,0 +1,5 @@
+unsat
+(and (= (f p) a) (or q (not p)))
+(or (not (= q p)) (= c a))
+(let (@d32 (= d c))
+  (and (or q (not p)) @d32 (and @d32 (or (not q) p))))

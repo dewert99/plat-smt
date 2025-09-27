@@ -1,5 +1,6 @@
 use crate::intern::{InternInfo, Symbol};
-use crate::recorder::{ClauseKind, Recorder};
+use crate::recorder::{ClauseKind, DefExp, InterpolateArg, Recorder};
+use crate::rexp::AsRexp;
 use crate::tseitin::SatTheoryArgT;
 use crate::ExpLike;
 use core::fmt::{Debug, Formatter};
@@ -125,7 +126,11 @@ pub trait TheoryArgT {
 
     fn recorder_mut(&mut self) -> (&InternInfo, &mut Self::R);
 
-    fn log_def<Exp: ExpLike, Exp2: ExpLike>(
+    fn should_explain_conflict_final(&mut self) -> bool {
+        self.recorder_mut().1.should_explain_conflict_final()
+    }
+
+    fn log_def<Exp: ExpLike, Exp2: AsRexp>(
         &mut self,
         val: Exp,
         f: Symbol,
@@ -135,7 +140,7 @@ pub trait TheoryArgT {
         recorder.log_def(val, f, arg, intern)
     }
 
-    fn log_def_exp<Exp: ExpLike, Exp2: ExpLike>(&mut self, val: Exp, def: Exp2) {
+    fn log_def_exp<Exp: ExpLike, Exp2: AsRexp>(&mut self, val: Exp, def: Exp2) {
         let (intern, recorder) = self.recorder_mut();
         recorder.log_def_exp(val, def, intern)
     }
@@ -225,6 +230,15 @@ pub trait Theory<Arg, ExplainArg> {
     /// `acts.clause_builder()` comes pre-initialized with `p` as its first element to satisfy
     /// [`BatTheory::explain_propagation_clause`]'s requirements
     fn explain_propagation(&mut self, p: Lit, acts: &mut ExplainArg, is_final: bool);
+
+    fn interpolate_clause(
+        &mut self,
+        _acts: &mut Arg,
+        _clause: impl Fn(&Arg) -> &[Lit],
+        _interpolate_arg: impl Fn(&mut Arg) -> InterpolateArg,
+    ) -> DefExp {
+        todo!()
+    }
 }
 
 impl<

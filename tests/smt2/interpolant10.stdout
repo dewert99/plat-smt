@@ -1,0 +1,8 @@
+unsat
+(p b)
+(not (= d a))
+(= d a)
+(not (= d a))
+(= d a)
+(or (not (= d c)) (not (= b a)))
+(and (= d c) (= b a))

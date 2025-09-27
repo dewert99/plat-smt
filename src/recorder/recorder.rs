@@ -1,5 +1,6 @@
 use crate::full_theory::FullTheory;
 use crate::intern::{DisplayInterned, InternInfo, Symbol};
+use crate::rexp::AsRexp;
 use crate::solver::LevelMarker;
 use crate::theory::Incremental;
 use crate::util::{display_sexp, format_args2};
@@ -21,7 +22,7 @@ pub enum ClauseKind {
 pub trait Recorder: Default + Incremental + 'static {
     type Interpolant<'a>: Display;
 
-    fn log_def<Exp: ExpLike, Exp2: ExpLike>(
+    fn log_def<Exp: ExpLike, Exp2: AsRexp>(
         &mut self,
         val: Exp,
         f: Symbol,
@@ -29,12 +30,7 @@ pub trait Recorder: Default + Incremental + 'static {
         intern: &InternInfo,
     );
 
-    fn log_def_exp<Exp: ExpLike, Exp2: ExpLike>(
-        &mut self,
-        val: Exp,
-        def: Exp2,
-        intern: &InternInfo,
-    );
+    fn log_def_exp<Exp: ExpLike, Exp2: AsRexp>(&mut self, val: Exp, def: Exp2, intern: &InternInfo);
     fn log_alias<Exp: ExpLike>(&mut self, alias: Symbol, exp: Exp, intern: &InternInfo);
 
     fn log_clause(&mut self, clause: &[Lit], kind: ClauseKind);
@@ -42,6 +38,10 @@ pub trait Recorder: Default + Incremental + 'static {
     fn on_gc_start(&mut self) {}
 
     fn on_final_lit_explanation(&mut self, _lit: Lit, _reason: ClauseRef) {}
+
+    fn should_explain_conflict_final(&self) -> bool {
+        false
+    }
 
     type BoolBufMarker: Copy;
 
@@ -94,7 +94,7 @@ impl Recorder for LoggingRecorder {
     type Interpolant<'a> = Infallible;
 
     #[inline]
-    fn log_def<Exp: ExpLike, Exp2: ExpLike>(
+    fn log_def<Exp: ExpLike, Exp2: AsRexp>(
         &mut self,
         val: Exp,
         f: Symbol,
@@ -109,7 +109,7 @@ impl Recorder for LoggingRecorder {
     }
 
     #[inline(always)]
-    fn log_def_exp<Exp: ExpLike, Exp2: ExpLike>(
+    fn log_def_exp<Exp: ExpLike, Exp2: AsRexp>(
         &mut self,
         val: Exp,
         def: Exp2,
