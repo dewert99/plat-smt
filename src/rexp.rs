@@ -1,7 +1,7 @@
 use crate::intern::{resolve_or_fail, Symbol};
 
 use crate::util::display_sexp;
-use core::fmt::{Display, Formatter};
+use core::fmt::{Debug, Display, Formatter};
 
 #[non_exhaustive]
 #[derive(Copy, Clone, Hash, Eq, PartialEq)]
@@ -71,7 +71,7 @@ impl<'a> Display for Rexp<'a> {
     }
 }
 
-pub trait AsRexp {
+pub trait AsRexp: Debug {
     fn as_rexp<R>(&self, f: impl for<'a> FnOnce(Rexp<'a>) -> R) -> R;
 }
 

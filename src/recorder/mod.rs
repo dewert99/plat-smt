@@ -3,5 +3,6 @@ mod interpolant_recorder;
 pub mod recorder;
 mod slice_vec;
 
-pub use interpolant_recorder::InterpolantRecorder;
+pub use definition_recorder::{DefExp, DefinitionRecorder, FALSE_DEF_EXP, TRUE_DEF_EXP};
+pub use interpolant_recorder::{InterpolantRecorder, InterpolateArg};
 pub use recorder::{ClauseKind, LoggingRecorder, Recorder};

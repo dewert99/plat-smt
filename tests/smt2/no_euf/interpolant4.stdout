@@ -1,5 +1,5 @@
 unsat
-(or r r)
+r
 sat
 (
  (define-fun a1 () Bool true)
@@ -14,4 +14,4 @@ sat
  (define-fun s () Bool false)
 )
 unsat
-(and (or s (not r)) (or r r))
+(and r (or s (not r)))

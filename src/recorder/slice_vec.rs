@@ -1,7 +1,10 @@
 use crate::std::prelude::v1::vec;
+use crate::util::DebugIter;
 use alloc::vec::Vec;
+use core::fmt::{Debug, Formatter};
 use core::marker::PhantomData;
 use core::ops::{Index, IndexMut};
+use perfect_derive::perfect_derive;
 
 pub struct SliceVec<T, I = usize> {
     elements: Vec<T>,
@@ -77,6 +80,7 @@ impl<T, I> SliceVec<T, I> {
 
 macro_rules! impl_traits {
     (& $($m:ident)?, $Iter:ident, $split_off:ident) => {
+        #[perfect_derive(Clone)]
         pub struct $Iter<'a, T> {
             indices: &'a [usize],
             elts: &'a $($m)? [T],
@@ -144,5 +148,11 @@ impl<T, I: Into<usize>> IndexMut<I> for SliceVec<T, I> {
     fn index_mut(&mut self, index: I) -> &mut Self::Output {
         let index = index.into();
         &mut self.elements[self.indices[index]..self.indices[index + 1]]
+    }
+}
+
+impl<T: Debug, I> Debug for SliceVec<T, I> {
+    fn fmt(&self, f: &mut Formatter<'_>) -> core::fmt::Result {
+        DebugIter(self.iter()).fmt(f)
     }
 }

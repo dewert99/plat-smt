@@ -20,6 +20,7 @@ const N: usize = 4;
 pub type Children = SmallVec<[Id; N]>;
 use super::euf::EClass;
 use crate::intern::EQ_SYM;
+use crate::recorder::{DefExp, InterpolateArg};
 pub use smallvec::smallvec as children;
 
 const SYMMETRY_SHIFT: u32 = u32::BITS - 1;
@@ -337,6 +338,16 @@ impl EGraph<EClass> {
         );
         explain.explain_equivalence(id1, id2);
         explain.used_congruence()
+    }
+
+    pub(crate) fn explanation_interpolant(
+        &mut self,
+        id0: Id,
+        id1: Id,
+        mut interp: InterpolateArg<'_>,
+    ) -> DefExp {
+        let mut explain = self.explain.promote_for_interpolant(&self.inner);
+        explain.explanation_interpolant(id0, id1, &mut interp)
     }
 
     pub fn dump_classes(&self) -> impl Debug + '_ {

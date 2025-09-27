@@ -15,6 +15,7 @@ use log::{debug, trace};
 use perfect_derive::perfect_derive;
 use plat_egg::raw::RawEGraph;
 use plat_egg::{raw::Language, Id};
+use smallvec::SmallVec;
 
 // either a `Lit` that represents the equality
 // or a hash an explanation of the equality
@@ -108,16 +109,16 @@ impl EqIds {
         self.map.clear();
         self.requests.clear();
     }
+}
 
-    pub fn check_node_is_eq(&self, node: &SymbolLang) -> Option<[Id; 2]> {
-        if node.op() == EQ_OP {
-            match node.children() {
-                &[id1, id2] => Some([id1, id2]),
-                _ => unreachable!("equality without two children {node:?}",),
-            }
-        } else {
-            None
+pub fn check_node_is_eq(node: &SymbolLang) -> Option<[Id; 2]> {
+    if node.op() == EQ_OP {
+        match node.children() {
+            &[id1, id2] => Some([id1, id2]),
+            _ => unreachable!("equality without two children {node:?}",),
         }
+    } else {
+        None
     }
 }
 
@@ -146,6 +147,9 @@ mod ejust {
     }
 }
 
+use crate::exp::var_to_nv;
+use crate::intern::{AND_SYM, EQ_SYM, NOT_SYM, OR_SYM};
+use crate::recorder::{DefExp, InterpolateArg};
 pub(crate) use ejust::Justification as EJustification;
 
 impl Justification {
@@ -200,17 +204,21 @@ pub struct Explain {
     deferred_explanations_set: HashSet<(Id, Id), DefaultHashBuilder>,
 }
 
-pub(crate) struct ExplainState<'a, X> {
+pub(crate) struct ExplainStateInner<'a, X> {
     explain: &'a mut Explain,
-    out: &'a mut Vec<Lit>,
+    used_congruence: bool,
     raw: X,
+}
+
+pub(crate) struct ExplainState<'a, X> {
+    explain: ExplainStateInner<'a, X>,
+    out: &'a mut Vec<Lit>,
     // unions in union_info before base_unions are proved at the base decision level
     base_unions: u32,
     // unions in union_info before last_unions are proved at an earlier
     // decision level than the current one
     last_unions: u32,
     eq_ids: &'a mut EqIds,
-    used_congruence: bool,
 }
 
 impl Explain {
@@ -243,6 +251,16 @@ impl Explain {
         self.assoc_unions[usize::from(old_root)] = assoc_union;
     }
 
+    pub(crate) fn promote_for_interpolant<X>(&mut self, raw: X) -> ExplainStateInner<'_, X> {
+        self.stack.clear();
+        self.deferred_explanations.clear();
+        ExplainStateInner {
+            explain: self,
+            raw,
+            used_congruence: false,
+        }
+    }
+
     pub(crate) fn promote<'a, X>(
         &'a mut self,
         raw: X,
@@ -251,21 +269,17 @@ impl Explain {
         last_unions: u32,
         eq_ids: &'a mut EqIds,
     ) -> ExplainState<'a, X> {
-        self.stack.clear();
-        self.deferred_explanations.clear();
         ExplainState {
-            explain: self,
-            raw,
+            explain: self.promote_for_interpolant(raw),
             base_unions,
             out,
             eq_ids,
             last_unions,
-            used_congruence: false,
         }
     }
 }
 
-impl<'a, X> Deref for ExplainState<'a, X> {
+impl<'a, X> Deref for ExplainStateInner<'a, X> {
     type Target = Explain;
 
     fn deref(&self) -> &Self::Target {
@@ -273,18 +287,58 @@ impl<'a, X> Deref for ExplainState<'a, X> {
     }
 }
 
-impl<'a, X> DerefMut for ExplainState<'a, X> {
+impl<'a, X> DerefMut for ExplainStateInner<'a, X> {
     fn deref_mut(&mut self) -> &mut Self::Target {
         self.explain
     }
 }
 
-impl<'x>
-    ExplainState<'x, &'x RawEGraph<SymbolLang, EClass, plat_egg::raw::semi_persistent1::UndoLog>>
-{
-    pub(crate) fn used_congruence(&self) -> bool {
-        self.used_congruence
+impl<'a, X> Deref for ExplainState<'a, X> {
+    type Target = ExplainStateInner<'a, X>;
+
+    fn deref(&self) -> &Self::Target {
+        &self.explain
     }
+}
+
+impl<'a, X> DerefMut for ExplainState<'a, X> {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.explain
+    }
+}
+
+struct InterpCtx {
+    right_a: bool,
+    is_i: bool,
+    last_shared: DefExp,
+    first_shared: Option<DefExp>,
+}
+
+impl InterpCtx {
+    fn new(last_shared: DefExp, left_a: bool, right_a: bool) -> Self {
+        InterpCtx {
+            last_shared,
+            right_a,
+            is_i: !left_a,
+            first_shared: None,
+        }
+    }
+
+    fn add_shared(&mut self, shared: DefExp) {
+        self.last_shared = shared;
+        if self.first_shared == None {
+            self.is_i = !self.right_a;
+            self.first_shared = Some(shared)
+        }
+    }
+}
+
+impl<'x>
+    ExplainStateInner<
+        'x,
+        &'x RawEGraph<SymbolLang, EClass, plat_egg::raw::semi_persistent1::UndoLog>,
+    >
+{
     // Requires `left` != `right`
     // `result.1` is true when the `old_root` from `result.0` corresponds to left
     fn max_assoc_union_gen<S: IdSet>(
@@ -364,13 +418,13 @@ impl<'x>
         }
         let this_flip = *flip;
         *flip = false;
-        if let Some([lc0, lc1]) = self.eq_ids.check_node_is_eq(self.raw.id_to_node(left)) {
-            let Some([rc0, rc1]) = self.eq_ids.check_node_is_eq(self.raw.id_to_node(right)) else {
+        if let Some([lc0, lc1]) = check_node_is_eq(self.raw.id_to_node(left)) {
+            let Some([rc0, rc1]) = check_node_is_eq(self.raw.id_to_node(right)) else {
                 unreachable!("congruent nodes don't match");
             };
             // if we're trying to prove why (= x x) = (= y z) by congruence
             // we would normally prove x = y and x = z, but since all reflexive equalities are
-            // equivalent at level 0, we can instead prove why (= y y) = (= y z) which just requires
+            // true at level 0, we can instead prove why true = (= y z) which just requires
             // proving why y = z
             if lc0 == lc1 {
                 trace!("id{left} = id{right} since id{rc0} = id{rc1}");
@@ -399,6 +453,283 @@ impl<'x>
             self.deferred_explanations
                 .extend(left_children.zip(right_children));
         }
+    }
+
+    fn handle_interpolant_congruence(
+        &mut self,
+        left: Id,
+        right: Id,
+        flip: &mut bool,
+        left_a: &mut bool,
+        right_a: bool,
+        congruence_start: usize,
+        interp: &mut InterpolateArg,
+        b_buf: &mut Vec<(DefExp, DefExp)>,
+        b_buf_len: usize,
+        ctx: &mut InterpCtx,
+    ) {
+        let congruence_mid = self.deferred_explanations.len();
+        self.handle_congruence(left, right, flip);
+        trace!(
+            "Children: {:?}",
+            &self.deferred_explanations[congruence_mid..]
+        );
+        if *left_a != right_a && left != right {
+            for i in congruence_start..congruence_mid {
+                let (left, right) = self.deferred_explanations[i];
+                self.explanation_interpolant_h(left, right, interp, b_buf, *left_a, *left_a);
+            }
+            let mut v = SmallVec::<[DefExp; 4]>::new();
+            for i in congruence_mid..self.deferred_explanations.len() {
+                let (left, right) = self.deferred_explanations[i];
+                let mid =
+                    self.explanation_interpolant_h(left, right, interp, b_buf, *left_a, right_a);
+                v.push(mid);
+            }
+            let f = self.raw.id_to_node(left).op().sym();
+            let mut mid_intern = interp.scope();
+            for id in v {
+                mid_intern.add_def(id);
+            }
+            let mid_def = mid_intern.finish(f);
+            drop(mid_intern);
+            self.deferred_explanations.truncate(congruence_start);
+            Self::handle_interpolant_path_inner(
+                ctx.last_shared,
+                mid_def,
+                interp,
+                ctx.is_i,
+                *left_a,
+                b_buf,
+                b_buf_len,
+            );
+            *left_a = right_a;
+            ctx.add_shared(mid_def);
+        }
+    }
+
+    fn handle_interpolant_path(
+        &mut self,
+        left: DefExp,
+        right: DefExp,
+        interp: &mut InterpolateArg<'_>,
+        is_i: bool,
+        is_a: bool,
+        congruence_start: usize,
+        b_buf: &mut Vec<(DefExp, DefExp)>,
+        b_buf_len: usize,
+    ) {
+        for i in congruence_start..self.deferred_explanations.len() {
+            let (left, right) = self.deferred_explanations[i];
+            self.explanation_interpolant_h(left, right, interp, b_buf, is_a, is_a);
+        }
+        self.deferred_explanations.truncate(congruence_start);
+        Self::handle_interpolant_path_inner(left, right, interp, is_i, is_a, b_buf, b_buf_len);
+    }
+
+    fn handle_interpolant_path_inner(
+        left: DefExp,
+        right: DefExp,
+        interp: &mut InterpolateArg,
+        is_i: bool,
+        is_a: bool,
+        b_buf: &mut Vec<(DefExp, DefExp)>,
+        b_buf_len: usize,
+    ) {
+        trace!("handle_interpolant path i:{is_i} a:{is_a}");
+        match (is_i, is_a) {
+            (false, false) => b_buf.push((left, right)),
+            (true, true) => {
+                let mut interp_j = interp.scope();
+                for (i, j) in b_buf.drain(b_buf_len..) {
+                    let mut interp_eq = interp_j.scope();
+                    interp_eq.add_def(i);
+                    interp_eq.add_def(j);
+                    let eq = interp_eq.finish(EQ_SYM);
+                    interp_eq.add_def(eq);
+                    let neq = interp_eq.finish(NOT_SYM);
+                    drop(interp_eq);
+                    interp_j.add_def(neq);
+                }
+                let mut interp_eq = interp_j.scope();
+                interp_eq.add_def(left);
+                interp_eq.add_def(right);
+                let eq = interp_eq.finish(EQ_SYM);
+                drop(interp_eq);
+                interp_j.add_def(eq);
+                let j = interp_j.finish(OR_SYM);
+                drop(interp_j);
+                interp.add_def(j);
+            }
+            _ => {}
+        }
+    }
+
+    // See https://arxiv.org/pdf/1111.5652 section 4.5
+    // if is_i == Some(true) stores I(left, right) in interp
+    // if is_i == Some(false) extends b_buf with B(left, right)
+    //   and stores ^{I(s) for s in B(left, right)} in interp
+    // if is_i == None, finds the first shared id, returns it, behaves like is_i == Some(!outer_left_a)
+    // until that first shared id and then behaves like is_i == Some(outer_left_a)
+    pub(super) fn explanation_interpolant_h(
+        &mut self,
+        left: Id,
+        right: Id,
+        interp: &mut InterpolateArg<'_>,
+        b_buf: &mut Vec<(DefExp, DefExp)>,
+        outer_left_a: bool,
+        outer_right_a: bool,
+    ) -> DefExp {
+        trace!("Start explanation_interpolant_h {left}({outer_left_a}) {right}({outer_right_a})");
+        let mut ctx = InterpCtx::new(interp.intern_exp(left), outer_left_a, outer_right_a);
+        let old_stack_len = self.stack.len();
+        debug_assert_eq!(self.raw.find(left), self.raw.find(right));
+        let mut args = (left, right);
+        let mut left_congruence = left;
+        let mut flip = false;
+        let last_congruence_len = self.deferred_explanations.len();
+        let b_buf_len = b_buf.len();
+        let mut was_last_a = outer_left_a;
+        loop {
+            let (left, right) = args;
+            args = if left != right {
+                let (assoc_union, left_is_old) = self.max_assoc_union(left, right);
+                let union_info = self.union_info[assoc_union as usize];
+                let just = union_info.just;
+                let (next_left, next_right) = if left_is_old {
+                    (union_info.old_id, union_info.new_id)
+                } else {
+                    (union_info.new_id, union_info.old_id)
+                };
+                // call
+                self.stack.push(StackElem {
+                    next_left,
+                    just,
+                    next_right,
+                    right,
+                });
+                (left, next_left)
+            } else {
+                // return
+                if self.stack.len() <= old_stack_len {
+                    break;
+                }
+
+                let StackElem {
+                    next_left,
+                    just,
+                    next_right,
+                    right,
+                } = self.stack.pop().unwrap();
+
+                left_congruence = match just.expand() {
+                    EJustification::Lit(l) => {
+                        trace!("id{next_left} = id{next_right} by {just:?}");
+                        let cur_a = interp.is_a_only(var_to_nv(l.var()));
+                        self.handle_interpolant_congruence(
+                            left_congruence,
+                            next_left,
+                            &mut flip,
+                            &mut was_last_a,
+                            cur_a,
+                            last_congruence_len,
+                            interp,
+                            b_buf,
+                            b_buf_len,
+                            &mut ctx,
+                        );
+                        if was_last_a != cur_a {
+                            let def = interp.intern_exp(next_left);
+                            self.handle_interpolant_path(
+                                ctx.last_shared,
+                                def,
+                                interp,
+                                ctx.is_i,
+                                was_last_a,
+                                last_congruence_len,
+                                b_buf,
+                                b_buf_len,
+                            );
+                            // we finished a path from last shared to next_left
+                            // it was an a-path if was_last_a_only
+                            ctx.add_shared(def);
+                        }
+                        was_last_a = cur_a;
+                        next_right
+                    }
+                    EJustification::NoOp => {
+                        let was_last_a2 = was_last_a;
+                        self.handle_interpolant_congruence(
+                            left_congruence,
+                            next_left,
+                            &mut flip,
+                            &mut was_last_a,
+                            was_last_a2,
+                            last_congruence_len,
+                            interp,
+                            b_buf,
+                            b_buf_len,
+                            &mut ctx,
+                        );
+                        trace!("id{next_left} = id{next_right} by {just:?}");
+                        next_right
+                    }
+                    EJustification::Congruence(f) => {
+                        trace!("id{next_left} = id{next_right} by congruence {f}");
+                        flip ^= f;
+                        left_congruence
+                    }
+                };
+                // tail call
+                (next_right, right)
+            }
+        }
+        self.handle_interpolant_congruence(
+            left_congruence,
+            right,
+            &mut flip,
+            &mut was_last_a,
+            outer_right_a,
+            last_congruence_len,
+            interp,
+            b_buf,
+            b_buf_len,
+            &mut ctx,
+        );
+        self.handle_interpolant_path(
+            ctx.last_shared,
+            interp.intern_exp(right),
+            interp,
+            ctx.is_i,
+            was_last_a,
+            last_congruence_len,
+            b_buf,
+            b_buf_len,
+        );
+        trace!("End explanation_interpolant_h {left}({outer_left_a}) {right}({outer_right_a})");
+        ctx.first_shared.unwrap_or_else(|| interp.intern_exp(right))
+    }
+
+    pub(super) fn explanation_interpolant(
+        &mut self,
+        left: Id,
+        right: Id,
+        interp: &mut InterpolateArg<'_>,
+    ) -> DefExp {
+        trace!("Start explanation_interpolant {left} {right}");
+        let mut b_buf = Vec::new();
+        self.explanation_interpolant_h(left, right, interp, &mut b_buf, false, false);
+        debug_assert!(b_buf.is_empty());
+        debug_assert!(self.stack.is_empty());
+        interp.finish(AND_SYM)
+    }
+}
+
+impl<'x>
+    ExplainState<'x, &'x RawEGraph<SymbolLang, EClass, plat_egg::raw::semi_persistent1::UndoLog>>
+{
+    pub(crate) fn used_congruence(&self) -> bool {
+        self.used_congruence
     }
 
     fn explain_equivalence_h(&mut self, left: Id, right: Id) {
@@ -535,7 +866,6 @@ impl<'x>
             }
         }
         self.handle_congruence(left_congruence, right, &mut flip);
-        self.stack.clear();
     }
 
     fn add_just(&mut self, just: Lit) {

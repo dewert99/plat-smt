@@ -1,0 +1,4 @@
+unsat
+(= a d)
+(not (= b e))
+(and de (= a c))
