@@ -75,6 +75,14 @@ pub trait Recorder: Default + Incremental + 'static {
     }
 
     fn exit_solved_state(&mut self) {}
+
+    fn allows_mid_search_add<Exp: AsRexp>(
+        &self,
+        _children: impl Iterator<Item = Exp> + Clone,
+        _intern: &InternInfo,
+    ) -> bool {
+        true
+    }
 }
 
 #[derive(Default)]

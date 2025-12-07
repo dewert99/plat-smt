@@ -57,7 +57,7 @@ pub struct DefinitionRecorder {
 
 #[derive(Copy, Clone)]
 pub struct LevelMarker {
-    def_maker: u32,
+    pub(crate) def_maker: u32,
     alias_len: u32,
     var_len: u32,
 }
@@ -162,7 +162,7 @@ impl DefinitionRecorder {
         }
     }
 
-    pub fn display_exp<'a, E: ExpLike>(
+    pub fn display_exp<'a, E: AsRexp>(
         &'a self,
         exp: E,
         interner: &'a InternInfo,

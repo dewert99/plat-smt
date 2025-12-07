@@ -1,5 +1,5 @@
 #![forbid(unsafe_code)]
-use plat_smt::recorder::LoggingRecorder;
+use plat_smt::recorder::{InterpolantRecorder, LoggingRecorder};
 use plat_smt::FullBufRead;
 use std::fs::File;
 use std::io::{empty, stderr, stdin, stdout, Read};
@@ -106,7 +106,7 @@ fn main() {
     } else {
         Either::Right(empty())
     };
-    plat_smt::interp_smt2::<(Th, Pf, LoggingRecorder, _)>(
+    plat_smt::interp_smt2::<(Th, Pf, InterpolantRecorder, _)>(
         FullBufReader::new(reader, buf),
         WrapWrite(stdout()),
         WrapWrite(stderr()),

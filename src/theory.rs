@@ -148,6 +148,14 @@ pub trait TheoryArgT {
         let (intern, recorder) = self.recorder_mut();
         recorder.log_alias(alias, exp, intern)
     }
+
+    fn allows_mid_search_add<Exp: AsRexp>(
+        &mut self,
+        children: impl Iterator<Item = Exp> + Clone,
+    ) -> bool {
+        let (intern, recorder) = self.recorder_mut();
+        recorder.allows_mid_search_add(children, intern)
+    }
 }
 
 impl<'a, S, M, R: Recorder> TheoryArgT for TheoryArgRaw<'a, S, M, R> {
@@ -360,7 +368,7 @@ impl<
     }
 
     fn partial_check(&mut self, acts: &mut SatTheoryArg) {
-        debug!("Starting EUF check");
+        debug!("Starting Theory check");
         let init_len = acts.model().len();
         let mut acts = TheoryArg {
             sat: acts.reborrow(),

@@ -307,7 +307,9 @@ impl<'a, A: SatTheoryArgT<'a, M = PushInfo>> Theory<A, A::Explain<'a>> for Euf {
         while (self.requests_handled as usize) < self.eq_ids.requests.len() {
             let [id0, id1] = self.eq_ids.requests[self.requests_handled as usize];
             self.requests_handled += 1;
-            if self.find(id0) != self.find(id1) {
+            if self.find(id0) != self.find(id1)
+                && acts.allows_mid_search_add([id0, id1].into_iter())
+            {
                 let lit = self.eq_ids.get_or_insert([id0, id1], || {
                     let res = Lit::new(acts.new_var(lbool::UNDEF, false), true);
                     acts.log_def(BoolExp::unknown(res), EQ_SYM, [id0, id1].into_iter());
@@ -407,8 +409,12 @@ impl<'a, A: SatTheoryArgT<'a, M = PushInfo>> Theory<A, A::Explain<'a>> for Euf {
         clause: impl Fn(&A) -> &[Lit],
         interpolate_arg: impl Fn(&mut A) -> InterpolateArg<'_>,
     ) -> DefExp {
-        let Err(Some((id1, id2))) = self.generate_conflict_ids_for_interpolant(acts, clause) else {
-            todo!()
+        let Err(Some((id1, id2))) = self.generate_conflict_ids_for_interpolant(acts, &clause)
+        else {
+            panic!(
+                "Could find conflict for clause {:?} when generating interpolants",
+                clause(acts)
+            )
         };
         self.egraph
             .explanation_interpolant(id1, id2, interpolate_arg(acts))

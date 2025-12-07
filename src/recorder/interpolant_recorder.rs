@@ -1,5 +1,5 @@
 use crate::full_theory::FullTheory;
-use crate::intern::{InternInfo, Symbol, AND_SYM, EQ_SYM, NOT_SYM, OR_SYM};
+use crate::intern::{InternInfo, RecInfoArg, Symbol, AND_SYM, EQ_SYM, NOT_SYM, OR_SYM};
 use crate::recorder::definition_recorder::{
     DefExp, DefinitionRecorder, DisplayStandAloneDefExp, FALSE_DEF_EXP, TRUE_DEF_EXP,
 };
@@ -13,10 +13,13 @@ use crate::{BoolExp, Conjunction, ExpLike, Solver};
 use alloc::vec::Vec;
 use bytemuck::must_cast;
 use core::fmt::Debug;
+use core::num::NonZeroU32;
 use default_vec2::BitSet;
-use log::{debug, info, trace};
+use log::{debug, info, trace, warn};
 use platsat::theory::ClauseRef;
 use platsat::{lbool, Lit, SolverInterface, TheoryArg};
+use std::mem;
+
 #[derive(Copy, Clone, Default, Eq, PartialEq, Debug)]
 enum State {
     #[default]
@@ -71,11 +74,11 @@ pub struct InterpolantRecorder {
     /// Maps clause refs to their proof index (see ClauseProofElement) or MAX if it was not
     /// resolved yet.
     clause_refs: HashMap<ClauseRef, u32>,
-    // Cleared at the start of `find_interpolant`
-    a_only_defs: BitSet<DefExp>,
+    // Cleared at the end of `find_interpolant`
+    a_defs: BitSet<DefExp>,
+    b_defs: BitSet<DefExp>,
     def_stack: Vec<DefExp>,
-    // cleared and only used in `set_def_exps_in_a`
-    visited: BitSet<DefExp>,
+    defs_marker_after_solve: u32,
 }
 
 impl InterpolantRecorder {
@@ -104,25 +107,83 @@ impl InterpolantRecorder {
         }))
     }
 
-    fn set_def_exps_in_a(&mut self, (start, end): (usize, usize), in_a: bool, intern: &InternInfo) {
+    fn set_def_exps_status(
+        &mut self,
+        a: (usize, usize),
+        b: (usize, usize),
+        pre_solve: LevelMarker,
+        intern: &InternInfo,
+    ) -> Result<(), ()> {
+        self.set_def_exps_in(a, true, intern);
+        self.set_def_exps_in(b, false, intern);
+        self.set_mid_solve_def_exps(pre_solve, intern)
+    }
+
+    fn set_mid_solve_def_exps(
+        &mut self,
+        pre_solve: LevelMarker,
+        intern: &InternInfo,
+    ) -> Result<(), ()> {
+        for def in (pre_solve.def_marker.def_maker..self.defs_marker_after_solve)
+            .into_iter()
+            .map(|x| DefExp::new(NonZeroU32::new(x).unwrap()))
+        {
+            let mut in_a = true;
+            let mut in_b = true;
+            for &child in self.defs.resolve(def).1 {
+                let (child_in_a, child_in_b) = self.def_status(child);
+                in_a &= child_in_a;
+                in_b &= child_in_b;
+                if !in_a && !in_b {
+                    warn!(
+                        "{} is a possible mixed term which currently isn't supported",
+                        self.defs.display_stand_alone_def(def, intern)
+                    );
+                    return Err(());
+                }
+            }
+            self.a_defs.set(def, in_a);
+            self.b_defs.set(def, in_b);
+        }
+        Ok(())
+    }
+
+    fn set_def_exps_in(&mut self, (start, end): (usize, usize), in_a: bool, intern: &InternInfo) {
         self.def_stack.clear();
-        self.visited.clear();
+        let defs = if in_a {
+            &mut self.a_defs
+        } else {
+            &mut self.b_defs
+        };
         self.def_stack.extend(
             self.lit_buf[start..end]
                 .iter()
                 .map(|l| self.defs.intern_exp(l.var())),
         );
         while let Some(x) = self.def_stack.pop() {
-            if !self.visited.contains_mut(x) {
+            if !defs.contains_mut(x) {
                 trace!(
-                    "setting {} in a to be {}",
+                    "setting {} in {}",
                     self.defs.display_def(x, intern),
-                    in_a
+                    if in_a { "a" } else { "b" }
                 );
-                self.visited.set(x, true);
-                self.a_only_defs.set(x, in_a);
+                defs.set(x, true);
                 self.def_stack.extend_from_slice(self.defs.resolve(x).1)
             }
+        }
+    }
+
+    fn is_a_only(&self, def: DefExp) -> bool {
+        self.a_defs.contains(def) && !self.b_defs.contains(def)
+    }
+
+    pub fn def_status(&self, def: DefExp) -> (bool, bool) {
+        let a = self.a_defs.contains(def);
+        let b = self.b_defs.contains(def);
+        if !a && !b {
+            (true, true)
+        } else {
+            (a, b)
         }
     }
 
@@ -131,7 +192,8 @@ impl InterpolantRecorder {
             let tseiten = sat.resolve_clause_ref(*tseiten);
             let def_len = self.def_stack.len();
             for &l in tseiten {
-                if !self.a_only_defs.contains(self.defs.intern_exp(l.var())) {
+                let def = self.defs.intern_exp(l.var());
+                if !self.is_a_only(def) {
                     self.def_stack
                         .push(self.defs.intern_exp(BoolExp::unknown(l)));
                 }
@@ -159,7 +221,8 @@ impl InterpolantRecorder {
             let def = self.def_stack[max_idx - first.clause as usize];
             let def_stack_len = self.def_stack.len();
             let mut interp = InterpolateArg {
-                a_only: &self.a_only_defs,
+                a: &self.a_defs,
+                b: &self.b_defs,
                 defs: &mut self.defs,
                 def_stack: &mut self.def_stack,
                 def_stack_len,
@@ -168,7 +231,7 @@ impl InterpolantRecorder {
             let mut is_and = true;
             for elt in rest {
                 let pivot_def = interp.intern_exp(elt.pivot.var());
-                let def_is_and = !interp.a_only.contains(pivot_def);
+                let def_is_and = !interp.is_def_a_only(pivot_def);
                 let def = interp.def_stack[max_idx - elt.clause as usize];
                 if def_is_and != is_and {
                     let so_far = interp.finish(if is_and { AND_SYM } else { OR_SYM });
@@ -221,7 +284,8 @@ impl InterpolantRecorder {
     fn arg(&mut self) -> InterpolateArg<'_> {
         let def_stack_len = self.def_stack.len();
         InterpolateArg {
-            a_only: &self.a_only_defs,
+            a: &self.a_defs,
+            b: &self.b_defs,
             defs: &mut self.defs,
             def_stack: &mut self.def_stack,
             def_stack_len,
@@ -245,7 +309,9 @@ impl Incremental for InterpolantRecorder {
                 self.defs.pop_to_level(marker.def_marker, clear_lits);
                 self.clauses.truncate(marker.clause_len as usize);
             }
-            _ => {}
+            _ => {
+                debug_assert_eq!(clear_lits, false)
+            }
         }
     }
 
@@ -328,10 +394,21 @@ impl Recorder for InterpolantRecorder {
         a: Self::BoolBufMarker,
         b: Self::BoolBufMarker,
     ) -> Option<Self::Interpolant<'a>> {
+        let pre_solve_recorder_marker = pre_solve_marker.recorder;
         if State::Final != solver.th.arg.recorder.state {
-            initialize_interpolant_info(solver, pre_solve_marker, &assumptions);
+            initialize_interpolant_info(solver, pre_solve_marker.clone(), &assumptions);
         };
-        let res = find_interpolant(solver, a, b);
+        let res = if let Ok(res) = find_interpolant(solver, a, b, pre_solve_recorder_marker) {
+            res
+        } else {
+            let lit_buf = mem::take(&mut solver.th.arg.recorder.lit_buf);
+            solver.th.arg.recorder.exit_solved_state();
+            solver.th.arg.recorder.lit_buf = lit_buf;
+            solver.pop_to_level(pre_solve_marker.clone());
+            solver.check_sat_assuming_preserving_trail(assumptions);
+            initialize_interpolant_info(solver, pre_solve_marker, &assumptions);
+            find_interpolant(solver, a, b, pre_solve_recorder_marker).unwrap()
+        };
         Some(
             solver
                 .th
@@ -346,10 +423,39 @@ impl Recorder for InterpolantRecorder {
         self.state = State::Solving;
         self.tseiten_clauses.clear();
         self.clause_proofs.clear();
-        self.lit_buf.clear();
         self.clause_refs.clear();
         self.def_stack.clear();
         self.clause_boundary = 0;
+    }
+
+    fn allows_mid_search_add<Exp: AsRexp>(
+        &self,
+        children: impl Iterator<Item = Exp> + Clone,
+        intern: &InternInfo,
+    ) -> bool {
+        let mut is_a = true;
+        let mut is_b = true;
+        let res = children
+            .clone()
+            .try_for_each(|child| {
+                child.try_for_each_nv(|nv| {
+                    let (child_is_a, child_is_b) = self.def_status(self.defs.resolve_nv(nv));
+                    is_a &= child_is_a;
+                    is_b &= child_is_b;
+                    if !is_a && !is_b {
+                        Err(())
+                    } else {
+                        Ok(())
+                    }
+                })
+            })
+            .is_ok();
+        trace!(
+            "Adding {} is{} allowed",
+            display_sexp("?", children.map(|x| self.defs.display_exp(x, intern))),
+            if res { "" } else { " not" }
+        );
+        res
     }
 }
 
@@ -377,10 +483,14 @@ fn initialize_interpolant_info<Th: FullTheory<InterpolantRecorder>>(
     pre_solve_marker: SolverMarker<Th::LevelMarker, LevelMarker>,
     assumptions: &Conjunction,
 ) {
+    solver.th.arg.recorder.defs_marker_after_solve =
+        solver.th.arg.recorder.defs.create_level().def_maker;
     solver.th.arg.recorder.clause_boundary = solver.th.arg.recorder.clauses.len();
     solver.th.arg.recorder.state = State::Proving;
+    solver.th.arg.recorder.defs_marker_after_solve =
+        solver.th.arg.recorder.defs.create_level().def_maker;
     solver.sat.pop_model(&mut solver.th);
-    solver.pop_to_level(pre_solve_marker.clone());
+    solver.pop_to_level_keep_lits(pre_solve_marker.clone());
     let mut levels = Vec::with_capacity(solver.th.arg.recorder.clauses.len());
     solver.open(
         |_, acts| {
@@ -417,7 +527,7 @@ fn initialize_interpolant_info<Th: FullTheory<InterpolantRecorder>>(
         let _ = analyze_clause(solver, i, level);
     }
 
-    solver.pop_to_level(pre_solve_marker);
+    solver.pop_to_level_keep_lits(pre_solve_marker);
     solver.open(
         |_, acts| {
             let recorder = &mut acts.incr.recorder;
@@ -437,8 +547,8 @@ fn analyze_clause<Th: FullTheory<InterpolantRecorder>>(
     level_before: SolverMarker<Th::LevelMarker, LevelMarker>,
 ) -> Option<()> {
     let cr = solver.clauses().last().unwrap();
+    solver.pop_to_level_keep_lits(level_before);
     solver.th.arg.recorder.start_new_clause_proof(cr)?;
-    solver.pop_to_level(level_before);
     solver.open(
         |_, acts| {
             for l in acts.incr.recorder.clauses[i].iter().copied() {
@@ -487,7 +597,7 @@ fn theory_partial_interpolate<Th: FullTheory<InterpolantRecorder>>(
             FALSE_DEF_EXP,
         );
         solver.th.arg.recorder.def_stack.push(interpolant);
-        solver.pop_to_level(marker.clone());
+        solver.pop_to_level_keep_lits(marker.clone());
     }
 }
 
@@ -495,19 +605,14 @@ fn find_interpolant<Th: FullTheory<InterpolantRecorder>>(
     solver: &mut Solver<Th, InterpolantRecorder>,
     a: (usize, usize),
     b: (usize, usize),
-) -> DefExp {
-    solver.th.arg.recorder.a_only_defs.clear();
+    pre_solve: LevelMarker,
+) -> Result<DefExp, ()> {
     solver.th.arg.recorder.def_stack.clear();
     solver
         .th
         .arg
         .recorder
-        .set_def_exps_in_a(a, true, &solver.th.arg.intern);
-    solver
-        .th
-        .arg
-        .recorder
-        .set_def_exps_in_a(b, false, &solver.th.arg.intern);
+        .set_def_exps_status(a, b, pre_solve, &solver.th.arg.intern)?;
     theory_partial_interpolate(solver);
     solver.open(
         |_, arg| arg.incr.recorder.tseiten_partial_interpolate(&arg.sat),
@@ -526,12 +631,15 @@ fn find_interpolant<Th: FullTheory<InterpolantRecorder>>(
                 .display_def(d, &solver.th.arg.intern))
         )
     );
-    solver.th.arg.recorder.def_stack.pop().unwrap()
+    solver.th.arg.recorder.a_defs.clear();
+    solver.th.arg.recorder.b_defs.clear();
+    Ok(solver.th.arg.recorder.def_stack.pop().unwrap())
 }
 
 /// Allows building [`DefExp`]s
 pub struct InterpolateArg<'a> {
-    a_only: &'a BitSet<DefExp>,
+    a: &'a BitSet<DefExp>,
+    b: &'a BitSet<DefExp>,
     defs: &'a mut DefinitionRecorder,
     def_stack: &'a mut Vec<DefExp>,
     def_stack_len: usize,
@@ -540,7 +648,12 @@ pub struct InterpolateArg<'a> {
 impl<'a> InterpolateArg<'a> {
     /// Check if `d` is only in "a" when interpolating "a" and "b"
     pub fn is_a_only(&self, v: NamespaceVar) -> bool {
-        self.a_only.contains(self.defs.resolve_nv(v))
+        self.is_def_a_only(self.defs.resolve_nv(v))
+    }
+
+    /// Check if `d` is only in "a" when interpolating "a" and "b"
+    fn is_def_a_only(&self, def: DefExp) -> bool {
+        self.a.contains(def) && !self.b.contains(def)
     }
 
     /// Adds `d` to the [`DefExp`] being built
@@ -602,7 +715,8 @@ impl<'a> InterpolateArg<'a> {
     pub fn scope(&mut self) -> InterpolateArg<'_> {
         let def_stack_len = self.def_stack.len();
         InterpolateArg {
-            a_only: &self.a_only,
+            a: &self.a,
+            b: &self.b,
             defs: &mut self.defs,
             def_stack: &mut self.def_stack,
             def_stack_len,

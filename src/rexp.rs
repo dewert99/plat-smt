@@ -58,6 +58,16 @@ impl<'a> Rexp<'a> {
             _ => panic!("expected {self} to be a single fresh variable"),
         }
     }
+
+    pub fn try_for_each_nv<E>(
+        self,
+        f: &mut impl FnMut(NamespaceVar) -> Result<(), E>,
+    ) -> Result<(), E> {
+        match self {
+            Rexp::Nv(nv) => f(nv),
+            Rexp::Call(_, children) => children.iter().try_for_each(|x| x.try_for_each_nv(f)),
+        }
+    }
 }
 
 impl<'a> Display for Rexp<'a> {
@@ -73,6 +83,13 @@ impl<'a> Display for Rexp<'a> {
 
 pub trait AsRexp: Debug {
     fn as_rexp<R>(&self, f: impl for<'a> FnOnce(Rexp<'a>) -> R) -> R;
+
+    fn try_for_each_nv<E>(
+        &self,
+        mut f: impl FnMut(NamespaceVar) -> Result<(), E>,
+    ) -> Result<(), E> {
+        self.as_rexp(|r| r.try_for_each_nv(&mut f))
+    }
 }
 
 macro_rules! rexp_debug {
