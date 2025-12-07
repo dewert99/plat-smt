@@ -362,7 +362,7 @@ impl<Th: FullTheory<R>, R: Recorder> Solver<Th, R> {
 pub struct LevelMarker<M, R> {
     sat: platsat::core::CheckPoint,
     euf: Option<M>,
-    recorder: R,
+    pub(crate) recorder: R,
 }
 
 impl<Euf: FullTheory<R>, R: Recorder> Solver<Euf, R> {
@@ -388,6 +388,20 @@ impl<Euf: FullTheory<R>, R: Recorder> Solver<Euf, R> {
         trace!("Pop sat model: {:?}", self.sat.raw_model());
         if let Some(x) = marker.euf {
             self.th.pop_to_level(x, true);
+        }
+    }
+
+    /// Resets the solver to the state it had when `marker` was created by [`create_level`](Self::create_level)
+    pub fn pop_to_level_keep_lits(
+        &mut self,
+        marker: LevelMarker<Euf::LevelMarker, R::LevelMarker>,
+    ) {
+        self.th.arg.recorder.pop_to_level(marker.recorder, false);
+        self.th.restore_trail_len(marker.sat.trail_len());
+        self.sat.restore_checkpoint_keep_lits(marker.sat);
+        trace!("Pop sat model (keep lits): {:?}", self.sat.raw_model());
+        if let Some(x) = marker.euf {
+            self.th.pop_to_level(x, false);
         }
     }
 }

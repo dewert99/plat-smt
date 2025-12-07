@@ -1,0 +1,3 @@
+unsat
+(not (= b0 d0))
+(not (= c0 e0))
