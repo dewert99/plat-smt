@@ -23,6 +23,7 @@ bytemuck = { version = "1.14.0", default-features = false, features = ["must_cas
 [features]
 default = ["log/release_max_level_warn", "euf"]
 euf = ["plat-egg"]
+interpolant = []
 # Add more equalities mid-search, used for testing
 test_add_more_mid_search_equalities = []
 
