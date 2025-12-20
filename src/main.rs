@@ -1,5 +1,4 @@
 #![forbid(unsafe_code)]
-use plat_smt::recorder::{InterpolantRecorder, LoggingRecorder};
 use plat_smt::FullBufRead;
 use std::fs::File;
 use std::io::{empty, stderr, stdin, stdout, Read};
@@ -9,6 +8,12 @@ use plat_smt::euf::{Euf as Th, EufPf as Pf};
 
 #[cfg(not(feature = "euf"))]
 use plat_smt::empty_theory::{EmptyTheory as Th, EmptyTheoryPf as Pf};
+
+#[cfg(feature = "interpolant")]
+use plat_smt::recorder::InterpolantRecorder as Recorder;
+
+#[cfg(not(feature = "interpolant"))]
+use plat_smt::recorder::LoggingRecorder as Recorder;
 
 enum Either<L, R> {
     Left(L),
@@ -106,7 +111,7 @@ fn main() {
     } else {
         Either::Right(empty())
     };
-    plat_smt::interp_smt2::<(Th, Pf, InterpolantRecorder, _)>(
+    plat_smt::interp_smt2::<(Th, Pf, Recorder, _)>(
         FullBufReader::new(reader, buf),
         WrapWrite(stdout()),
         WrapWrite(stderr()),
