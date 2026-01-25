@@ -25,9 +25,35 @@ impl Into<NonZeroU32> for Sort {
     }
 }
 
+impl Into<usize> for Symbol {
+    fn into(self) -> usize {
+        self.0.get() as usize
+    }
+}
+
+impl Symbol {
+    pub fn is_builtin(&self) -> bool {
+        (self.0.get() as usize) < BASE_SYMBOLS.len() + 1
+    }
+}
+
 const BASE_SYMBOLS: &[&str] = &[
-    "Bool", "true", "false", "and", "or", "not", "=>", "xor", "ite", "if", "=", "distinct", "let",
-    "let*", "!",
+    "Bool",
+    "true",
+    "false",
+    "and",
+    "or",
+    "not",
+    "=>",
+    "xor",
+    "ite",
+    "if",
+    "=",
+    "distinct",
+    "@distinguisher",
+    "let",
+    "let*",
+    "!",
 ];
 
 pub fn resolve_or_fail(s: Symbol) -> &'static str {
@@ -68,6 +94,7 @@ pub const IF_SYM: Symbol = base_symbol("if");
 pub const ITE_SYM: Symbol = base_symbol("ite");
 pub const EQ_SYM: Symbol = base_symbol("=");
 pub const DISTINCT_SYM: Symbol = base_symbol("distinct");
+pub const DISTINGUISHER_SYM: Symbol = base_symbol("@distinguisher");
 pub const LET_SYM: Symbol = base_symbol("let");
 
 pub const LET_STAR_SYM: Symbol = base_symbol("let*");

@@ -349,8 +349,8 @@ impl<Th: FullTheory<R>, R: Recorder> Solver<Th, R> {
         &mut self,
         pre_solve_level: LevelMarker<Th::LevelMarker, R::LevelMarker>,
         assumptions: &mut Conjunction,
-        a: R::BoolBufMarker,
-        b: R::BoolBufMarker,
+        a: R::SymBufMarker,
+        b: R::SymBufMarker,
     ) -> Option<R::Interpolant<'_>> {
         R::interpolant(self, pre_solve_level, assumptions, a, b)
     }

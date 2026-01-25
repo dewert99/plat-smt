@@ -4,7 +4,7 @@ use crate::full_theory::FullTheory;
 use crate::intern::Symbol;
 use crate::outer_solver::Bound;
 use crate::parser_fragment::ParserFragment;
-use crate::recorder::Recorder;
+use crate::recorder::{dep_checker, Recorder};
 use crate::solver::SolverWithBound;
 use crate::theory::{Incremental, Theory};
 use crate::tseitin::SatTheoryArgT;
@@ -112,6 +112,12 @@ impl<R: Recorder> ParserFragment<BoolExp, EmptySolver<R>, EmptyTheoryMarker> for
         _: ExprContext<BoolExp>,
     ) -> Result<BoolExp, AddSexpError> {
         use crate::parser_fragment::AddSexpError::*;
+        solver
+            .solver
+            .th
+            .arg
+            .recorder
+            .dep_checker_act(dep_checker::Reference(f));
         match solver.bound.get(&f) {
             None => Err(Unbound),
             Some(Bound::Const(c)) => {

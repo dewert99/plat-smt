@@ -14,5 +14,5 @@
 (push)
 (assert (! (=> q (not r)) :named b1s))
 (check-sat)
-(get-interpolants (and a1 a2) (and b1s b2))
+(get-interpolants (and a1 a2) (and b1w b1s b2))
 (pop)

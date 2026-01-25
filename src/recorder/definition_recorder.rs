@@ -38,9 +38,9 @@ impl RecInfoArg for DefExp {
     }
 }
 
-impl Into<usize> for DefExp {
-    fn into(self) -> usize {
-        self.0.get() as usize
+impl From<DefExp> for usize {
+    fn from(value: DefExp) -> Self {
+        value.0.get() as usize
     }
 }
 
@@ -91,6 +91,10 @@ impl DefinitionRecorder {
     }
     pub fn resolve(&self, def: DefExp) -> (Symbol, &[DefExp]) {
         self.defs.resolve(def)
+    }
+
+    pub fn get_alias(&self, def: DefExp) -> Option<Symbol> {
+        self.aliases.get(&def).copied()
     }
 
     fn finish_usages(&mut self, last: DefExp) {
@@ -273,9 +277,9 @@ impl Recorder for DefinitionRecorder {
 
     fn log_clause(&mut self, _: &[Lit], _: ClauseKind) {}
 
-    type BoolBufMarker = ();
+    type SymBufMarker = ();
 
-    fn intern_bools(&mut self, _: impl Iterator<Item = BoolExp>) -> Self::BoolBufMarker {}
+    fn intern_syms(&mut self, _: impl Iterator<Item = Symbol>) -> Self::SymBufMarker {}
 }
 
 #[derive(Copy, Clone)]

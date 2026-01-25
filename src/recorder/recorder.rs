@@ -1,5 +1,6 @@
 use crate::full_theory::FullTheory;
 use crate::intern::{DisplayInterned, InternInfo, Symbol};
+use crate::recorder::dep_checker::DepCheckerAction;
 use crate::rexp::AsRexp;
 use crate::solver::LevelMarker;
 use crate::theory::Incremental;
@@ -43,16 +44,16 @@ pub trait Recorder: Default + Incremental + 'static {
         false
     }
 
-    type BoolBufMarker: Copy;
+    type SymBufMarker: Copy;
 
-    fn intern_bools(&mut self, bools: impl Iterator<Item = BoolExp>) -> Self::BoolBufMarker;
+    fn intern_syms(&mut self, syms: impl Iterator<Item = Symbol>) -> Self::SymBufMarker;
 
-    fn try_intern_bools<E>(
+    fn try_intern_syms<E>(
         &mut self,
-        mut bools: impl Iterator<Item = Result<BoolExp, E>>,
-    ) -> Result<Self::BoolBufMarker, E> {
+        mut bools: impl Iterator<Item = Result<Symbol, E>>,
+    ) -> Result<Self::SymBufMarker, E> {
         let mut status = Ok(());
-        let res = self.intern_bools(bools.by_ref().map_while(|x| match x {
+        let res = self.intern_syms(bools.by_ref().map_while(|x| match x {
             Ok(x) => Some(x),
             Err(e) => {
                 status = Err(e);
@@ -68,8 +69,8 @@ pub trait Recorder: Default + Incremental + 'static {
         _solver: &'a mut Solver<Th, Self>,
         _pre_solve_marker: LevelMarker<Th::LevelMarker, Self::LevelMarker>,
         _assumptions: &Conjunction,
-        _a: Self::BoolBufMarker,
-        _b: Self::BoolBufMarker,
+        _a: Self::SymBufMarker,
+        _b: Self::SymBufMarker,
     ) -> Option<Self::Interpolant<'a>> {
         None
     }
@@ -83,6 +84,8 @@ pub trait Recorder: Default + Incremental + 'static {
     ) -> bool {
         true
     }
+
+    fn dep_checker_act(&mut self, _act: impl DepCheckerAction) {}
 }
 
 #[derive(Default)]
@@ -146,7 +149,7 @@ impl Recorder for LoggingRecorder {
         )
     }
 
-    type BoolBufMarker = ();
+    type SymBufMarker = ();
 
-    fn intern_bools(&mut self, _: impl Iterator<Item = BoolExp>) -> Self::BoolBufMarker {}
+    fn intern_syms(&mut self, _: impl Iterator<Item = Symbol>) -> Self::SymBufMarker {}
 }

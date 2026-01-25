@@ -3,8 +3,9 @@ use crate::intern::{InternInfo, RecInfoArg, Symbol, AND_SYM, EQ_SYM, NOT_SYM, OR
 use crate::recorder::definition_recorder::{
     DefExp, DefinitionRecorder, DisplayStandAloneDefExp, FALSE_DEF_EXP, TRUE_DEF_EXP,
 };
+use crate::recorder::dep_checker::{DepChecker, DepCheckerAction};
 use crate::recorder::slice_vec::SliceVec;
-use crate::recorder::{ClauseKind, Recorder};
+use crate::recorder::{dep_checker, ClauseKind, Recorder};
 use crate::rexp::{AsRexp, NamespaceVar};
 use crate::solver::LevelMarker as SolverMarker;
 use crate::theory::Incremental;
@@ -14,11 +15,16 @@ use alloc::vec::Vec;
 use bytemuck::must_cast;
 use core::fmt::Debug;
 use core::num::NonZeroU32;
-use default_vec2::BitSet;
+use default_vec2::StaticFlagVec;
 use log::{debug, info, trace, warn};
 use platsat::theory::ClauseRef;
 use platsat::{lbool, Lit, SolverInterface, TheoryArg};
 use std::mem;
+
+pub(super) const NEITHER: u32 = 0b00;
+pub(super) const A_ONLY: u32 = 0b01;
+pub(super) const B_ONLY: u32 = 0b10;
+pub(super) const BOTH: u32 = 0b11;
 
 #[derive(Copy, Clone, Default, Eq, PartialEq, Debug)]
 enum State {
@@ -56,7 +62,16 @@ impl ClauseProofElement {
 pub struct LevelMarker {
     def_marker: <DefinitionRecorder as Incremental>::LevelMarker,
     clause_len: u32,
+    deps_marker: dep_checker::Marker,
 }
+
+#[derive(Debug)]
+enum ErrorReason {
+    MixedTerm,
+    ComplexAssumption,
+    MissedAssumption,
+}
+use ErrorReason::*;
 
 #[derive(Default)]
 pub struct InterpolantRecorder {
@@ -69,16 +84,18 @@ pub struct InterpolantRecorder {
     // Cleared in `exit_solved_state`
     tseiten_clauses: Vec<ClauseRef>,
     clause_proofs: SliceVec<ClauseProofElement>,
-    lit_buf: Vec<Lit>,
+    sym_buf: Vec<Symbol>,
     clause_boundary: usize,
     /// Maps clause refs to their proof index (see ClauseProofElement) or MAX if it was not
     /// resolved yet.
     clause_refs: HashMap<ClauseRef, u32>,
     // Cleared at the end of `find_interpolant`
-    a_defs: BitSet<DefExp>,
-    b_defs: BitSet<DefExp>,
+    ab_defs: StaticFlagVec<2, DefExp>,
+    ab_syms: StaticFlagVec<2, Symbol>,
     def_stack: Vec<DefExp>,
     defs_marker_after_solve: u32,
+
+    dep_checker: DepChecker,
 }
 
 impl InterpolantRecorder {
@@ -111,80 +128,74 @@ impl InterpolantRecorder {
         &mut self,
         a: (usize, usize),
         b: (usize, usize),
-        pre_solve: LevelMarker,
+        assumptions: &Conjunction,
         intern: &InternInfo,
-    ) -> Result<(), ()> {
-        self.set_def_exps_in(a, true, intern);
-        self.set_def_exps_in(b, false, intern);
-        self.set_mid_solve_def_exps(pre_solve, intern)
+    ) -> Result<(), (DefExp, ErrorReason)> {
+        for &a_sym in &self.sym_buf[a.0..a.1] {
+            self.ab_syms.or_assign(a_sym, A_ONLY)
+        }
+        for &b_sym in &self.sym_buf[b.0..b.1] {
+            self.ab_syms.or_assign(b_sym, B_ONLY)
+        }
+
+        for &a in &assumptions.lits {
+            let def = self.defs.intern_exp(BoolExp::unknown(a));
+            let Some(sym) = self.defs.get_alias(def) else {
+                return Err((def, ComplexAssumption));
+            };
+            if self.ab_syms.get(sym) == NEITHER {
+                return Err((def, MissedAssumption));
+            }
+        }
+
+        self.dep_checker.resolve_syms_in_ab(&mut self.ab_syms);
+
+        self.set_def_status_from_syms(intern)
     }
 
-    fn set_mid_solve_def_exps(
+    fn set_def_status_from_syms(
         &mut self,
-        pre_solve: LevelMarker,
         intern: &InternInfo,
-    ) -> Result<(), ()> {
-        for def in (pre_solve.def_marker.def_maker..self.defs_marker_after_solve)
+    ) -> Result<(), (DefExp, ErrorReason)> {
+        for def in (1..self.defs_marker_after_solve)
             .into_iter()
             .map(|x| DefExp::new(NonZeroU32::new(x).unwrap()))
         {
-            let mut in_a = true;
-            let mut in_b = true;
-            for &child in self.defs.resolve(def).1 {
-                let (child_in_a, child_in_b) = self.def_status(child);
-                in_a &= child_in_a;
-                in_b &= child_in_b;
-                if !in_a && !in_b {
+            let (sym, children) = self.defs.resolve(def);
+            let mut in_ab = if sym.is_builtin() {
+                BOTH
+            } else {
+                self.ab_syms.get(sym)
+            };
+            for &child in children {
+                let child_in_ab = self.ab_defs.get(child);
+                in_ab &= child_in_ab;
+                if in_ab == NEITHER {
                     warn!(
                         "{} is a possible mixed term which currently isn't supported",
                         self.defs.display_stand_alone_def(def, intern)
                     );
-                    return Err(());
+                    return Err((def, MixedTerm));
                 }
             }
-            self.a_defs.set(def, in_a);
-            self.b_defs.set(def, in_b);
+            debug!(
+                "{} is in {}",
+                self.defs.display_stand_alone_def(def, intern),
+                match in_ab {
+                    NEITHER => "neither",
+                    A_ONLY => "a",
+                    B_ONLY => "b",
+                    BOTH => "both",
+                    _ => "???",
+                }
+            );
+            self.ab_defs.set(def, in_ab);
         }
         Ok(())
     }
 
-    fn set_def_exps_in(&mut self, (start, end): (usize, usize), in_a: bool, intern: &InternInfo) {
-        self.def_stack.clear();
-        let defs = if in_a {
-            &mut self.a_defs
-        } else {
-            &mut self.b_defs
-        };
-        self.def_stack.extend(
-            self.lit_buf[start..end]
-                .iter()
-                .map(|l| self.defs.intern_exp(l.var())),
-        );
-        while let Some(x) = self.def_stack.pop() {
-            if !defs.contains_mut(x) {
-                trace!(
-                    "setting {} in {}",
-                    self.defs.display_def(x, intern),
-                    if in_a { "a" } else { "b" }
-                );
-                defs.set(x, true);
-                self.def_stack.extend_from_slice(self.defs.resolve(x).1)
-            }
-        }
-    }
-
     fn is_a_only(&self, def: DefExp) -> bool {
-        self.a_defs.contains(def) && !self.b_defs.contains(def)
-    }
-
-    pub fn def_status(&self, def: DefExp) -> (bool, bool) {
-        let a = self.a_defs.contains(def);
-        let b = self.b_defs.contains(def);
-        if !a && !b {
-            (true, true)
-        } else {
-            (a, b)
-        }
+        self.ab_defs.get(def) == A_ONLY
     }
 
     fn tseiten_partial_interpolate(&mut self, sat: &TheoryArg) {
@@ -221,8 +232,7 @@ impl InterpolantRecorder {
             let def = self.def_stack[max_idx - first.clause as usize];
             let def_stack_len = self.def_stack.len();
             let mut interp = InterpolateArg {
-                a: &self.a_defs,
-                b: &self.b_defs,
+                ab: &self.ab_defs,
                 defs: &mut self.defs,
                 def_stack: &mut self.def_stack,
                 def_stack_len,
@@ -244,6 +254,41 @@ impl InterpolantRecorder {
             drop(interp);
             self.def_stack.push(res);
         }
+    }
+
+    fn finalize_interplant(&mut self, assumptions: &Conjunction, intern: &InternInfo) -> DefExp {
+        debug!(
+            "partial interpolants: {}",
+            display_sexp(
+                "",
+                self.def_stack
+                    .iter()
+                    .map(|&d| self.defs.display_def(d, &intern))
+            )
+        );
+        let base = self.def_stack.pop().unwrap();
+        let ab_syms = mem::take(&mut self.ab_syms);
+        let mut arg = self.arg();
+        arg.add_def(base);
+        for &a in &assumptions.lits {
+            let def = arg.intern_exp(BoolExp::unknown(a));
+            if arg.ab.get(def) == BOTH {
+                let sym = arg.defs.get_alias(def).unwrap();
+                if ab_syms.get(sym) == A_ONLY {
+                    debug!(
+                        "{} is only in a but uses only shared symbols",
+                        arg.defs.display_stand_alone_def(def, intern)
+                    );
+                    arg.add_def(def)
+                }
+            }
+        }
+        let res = arg.finish(AND_SYM);
+        drop(arg);
+        self.ab_syms = ab_syms;
+        self.ab_defs.clear();
+        self.ab_syms.clear();
+        res
     }
 
     fn initialize_tseiten_clauses(&mut self, sat: &TheoryArg, intern: &InternInfo) {
@@ -284,8 +329,7 @@ impl InterpolantRecorder {
     fn arg(&mut self) -> InterpolateArg<'_> {
         let def_stack_len = self.def_stack.len();
         InterpolateArg {
-            a: &self.a_defs,
-            b: &self.b_defs,
+            ab: &self.ab_defs,
             defs: &mut self.defs,
             def_stack: &mut self.def_stack,
             def_stack_len,
@@ -300,6 +344,7 @@ impl Incremental for InterpolantRecorder {
         LevelMarker {
             def_marker: self.defs.create_level(),
             clause_len: self.clauses.len_idx() as u32,
+            deps_marker: self.dep_checker.create_level(),
         }
     }
 
@@ -308,6 +353,8 @@ impl Incremental for InterpolantRecorder {
             State::Solving => {
                 self.defs.pop_to_level(marker.def_marker, clear_lits);
                 self.clauses.truncate(marker.clause_len as usize);
+                self.dep_checker
+                    .pop_to_level(marker.deps_marker, clear_lits);
             }
             _ => {
                 debug_assert_eq!(clear_lits, false)
@@ -319,6 +366,7 @@ impl Incremental for InterpolantRecorder {
         debug_assert!(matches!(self.state, State::Solving));
         self.defs.clear();
         self.clauses.clear();
+        self.dep_checker.clear();
     }
 }
 
@@ -379,35 +427,38 @@ impl Recorder for InterpolantRecorder {
         matches!(self.state, State::Proving)
     }
 
-    type BoolBufMarker = (usize, usize);
+    type SymBufMarker = (usize, usize);
 
-    fn intern_bools(&mut self, bools: impl Iterator<Item = BoolExp>) -> Self::BoolBufMarker {
-        let start_len = self.lit_buf.len();
-        self.lit_buf.extend(bools.filter_map(|x| x.to_lit().ok()));
-        (start_len, self.lit_buf.len())
+    fn intern_syms(&mut self, syms: impl Iterator<Item = Symbol>) -> Self::SymBufMarker {
+        let start_len = self.sym_buf.len();
+        self.sym_buf.extend(syms);
+        (start_len, self.sym_buf.len())
     }
 
     fn interpolant<'a, Th: FullTheory<Self>>(
         solver: &'a mut Solver<Th, Self>,
         pre_solve_marker: SolverMarker<Th::LevelMarker, LevelMarker>,
         assumptions: &Conjunction,
-        a: Self::BoolBufMarker,
-        b: Self::BoolBufMarker,
+        a: Self::SymBufMarker,
+        b: Self::SymBufMarker,
     ) -> Option<Self::Interpolant<'a>> {
-        let pre_solve_recorder_marker = pre_solve_marker.recorder;
+        let pre_solve_recorder_marker = pre_solve_marker.recorder.def_marker.def_maker;
         if State::Final != solver.th.arg.recorder.state {
             initialize_interpolant_info(solver, pre_solve_marker.clone(), &assumptions);
         };
-        let res = if let Ok(res) = find_interpolant(solver, a, b, pre_solve_recorder_marker) {
-            res
-        } else {
-            let lit_buf = mem::take(&mut solver.th.arg.recorder.lit_buf);
-            solver.th.arg.recorder.exit_solved_state();
-            solver.th.arg.recorder.lit_buf = lit_buf;
-            solver.pop_to_level(pre_solve_marker.clone());
-            solver.check_sat_assuming_preserving_trail(assumptions);
-            initialize_interpolant_info(solver, pre_solve_marker, &assumptions);
-            find_interpolant(solver, a, b, pre_solve_recorder_marker).unwrap()
+
+        let res = match find_interpolant(solver, a, b, assumptions) {
+            Ok(res) => res,
+            Err((def, MixedTerm)) if usize::from(def) >= pre_solve_recorder_marker as usize => {
+                let lit_buf = mem::take(&mut solver.th.arg.recorder.sym_buf);
+                solver.th.arg.recorder.exit_solved_state();
+                solver.th.arg.recorder.sym_buf = lit_buf;
+                solver.pop_to_level(pre_solve_marker.clone());
+                solver.check_sat_assuming_preserving_trail(assumptions);
+                initialize_interpolant_info(solver, pre_solve_marker, &assumptions);
+                find_interpolant(solver, a, b, assumptions).unwrap()
+            }
+            Err(_) => return None,
         };
         Some(
             solver
@@ -433,16 +484,13 @@ impl Recorder for InterpolantRecorder {
         children: impl Iterator<Item = Exp> + Clone,
         intern: &InternInfo,
     ) -> bool {
-        let mut is_a = true;
-        let mut is_b = true;
+        let mut is_ab = BOTH;
         let res = children
             .clone()
             .try_for_each(|child| {
                 child.try_for_each_nv(|nv| {
-                    let (child_is_a, child_is_b) = self.def_status(self.defs.resolve_nv(nv));
-                    is_a &= child_is_a;
-                    is_b &= child_is_b;
-                    if !is_a && !is_b {
+                    is_ab &= self.ab_defs.get(self.defs.resolve_nv(nv));
+                    if is_ab == NEITHER {
                         Err(())
                     } else {
                         Ok(())
@@ -456,6 +504,10 @@ impl Recorder for InterpolantRecorder {
             if res { "" } else { " not" }
         );
         res
+    }
+
+    fn dep_checker_act(&mut self, act: impl DepCheckerAction) {
+        self.dep_checker.act(act)
     }
 }
 
@@ -605,41 +657,30 @@ fn find_interpolant<Th: FullTheory<InterpolantRecorder>>(
     solver: &mut Solver<Th, InterpolantRecorder>,
     a: (usize, usize),
     b: (usize, usize),
-    pre_solve: LevelMarker,
-) -> Result<DefExp, ()> {
+    assumptions: &Conjunction,
+) -> Result<DefExp, (DefExp, ErrorReason)> {
     solver.th.arg.recorder.def_stack.clear();
     solver
         .th
         .arg
         .recorder
-        .set_def_exps_status(a, b, pre_solve, &solver.th.arg.intern)?;
+        .set_def_exps_status(a, b, assumptions, &solver.th.arg.intern)?;
     theory_partial_interpolate(solver);
     solver.open(
         |_, arg| arg.incr.recorder.tseiten_partial_interpolate(&arg.sat),
         (),
     );
     solver.th.arg.recorder.resolution_partial_interpolate();
-    debug!(
-        "partial interpolants: {}",
-        display_sexp(
-            "",
-            solver.th.arg.recorder.def_stack.iter().map(|&d| solver
-                .th
-                .arg
-                .recorder
-                .defs
-                .display_def(d, &solver.th.arg.intern))
-        )
-    );
-    solver.th.arg.recorder.a_defs.clear();
-    solver.th.arg.recorder.b_defs.clear();
-    Ok(solver.th.arg.recorder.def_stack.pop().unwrap())
+    Ok(solver
+        .th
+        .arg
+        .recorder
+        .finalize_interplant(assumptions, &solver.th.arg.intern))
 }
 
 /// Allows building [`DefExp`]s
 pub struct InterpolateArg<'a> {
-    a: &'a BitSet<DefExp>,
-    b: &'a BitSet<DefExp>,
+    ab: &'a StaticFlagVec<2, DefExp>,
     defs: &'a mut DefinitionRecorder,
     def_stack: &'a mut Vec<DefExp>,
     def_stack_len: usize,
@@ -653,7 +694,7 @@ impl<'a> InterpolateArg<'a> {
 
     /// Check if `d` is only in "a" when interpolating "a" and "b"
     fn is_def_a_only(&self, def: DefExp) -> bool {
-        self.a.contains(def) && !self.b.contains(def)
+        self.ab.get(def) == A_ONLY
     }
 
     /// Adds `d` to the [`DefExp`] being built
@@ -715,8 +756,7 @@ impl<'a> InterpolateArg<'a> {
     pub fn scope(&mut self) -> InterpolateArg<'_> {
         let def_stack_len = self.def_stack.len();
         InterpolateArg {
-            a: &self.a,
-            b: &self.b,
+            ab: &self.ab,
             defs: &mut self.defs,
             def_stack: &mut self.def_stack,
             def_stack_len,

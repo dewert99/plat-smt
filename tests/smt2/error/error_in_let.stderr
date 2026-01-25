@@ -1,0 +1,8 @@
+unknown identifier `b` at 1:25
+(assert (let ((a true)) b))
+                        ^
+
+unknown identifier `a` at 2:9
+(assert a)
+        ^
+

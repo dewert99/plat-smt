@@ -1,4 +1,4 @@
 unsat
-(and r (or s (not r)))
+(and r a3)
 unsat
 r

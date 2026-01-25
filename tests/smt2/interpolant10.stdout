@@ -4,5 +4,5 @@ unsat
 (= d a)
 (not (= d a))
 (= d a)
-(or (not (= d c)) (not (= b a)))
-(and (= d c) (= b a))
+(and bc (not (= d a)))
+(and ab cd)
