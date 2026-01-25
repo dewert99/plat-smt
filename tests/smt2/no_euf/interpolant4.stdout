@@ -4,7 +4,6 @@ sat
 (
  (define-fun a1 () Bool true)
  (define-fun a2 () Bool true)
- (define-fun a3 () Bool false)
  (define-fun b1s () Bool false)
  (define-fun b1w () Bool true)
  (define-fun b2 () Bool true)
@@ -14,4 +13,4 @@ sat
  (define-fun s () Bool false)
 )
 unsat
-(and r (or s (not r)))
+(and r a3)

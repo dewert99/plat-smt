@@ -17,6 +17,7 @@ use log::info;
 use std::iter;
 
 pub use crate::full_theory::{FnSort, MaybeFnSort};
+use crate::recorder::dep_checker::DepCheckerAction;
 
 #[allow(type_alias_bounds)]
 type WrapSolver<L: Logic> = SolverWithBound<Solver<L::Theory, L::R>, HashMap<Symbol, BoundL<L>>>;
@@ -40,7 +41,7 @@ pub trait Logic: Sized {
 
     type RLevelMarker: Clone;
 
-    type R: Recorder<BoolBufMarker = Self::BoolBufMarker, LevelMarker = Self::RLevelMarker>;
+    type R: Recorder<SymBufMarker = Self::BoolBufMarker, LevelMarker = Self::RLevelMarker>;
     type Parser: ParserFragment<Self::Exp, WrapSolver<Self>, Self::M>;
 
     type EM;
@@ -72,7 +73,7 @@ where
 
     type Theory = Th;
 
-    type BoolBufMarker = R::BoolBufMarker;
+    type BoolBufMarker = R::SymBufMarker;
 
     type RLevelMarker = R::LevelMarker;
     type R = R;
@@ -234,6 +235,9 @@ impl<L: Logic> Default for OuterSolver<L> {
 }
 
 impl<L: Logic> OuterSolver<L> {
+    pub fn dep_checker_act(&mut self, act: impl DepCheckerAction) {
+        self.solver_mut().th.arg.recorder.dep_checker_act(act)
+    }
     fn optimize_binding(&mut self, name: Symbol, b: Bound<L::Exp>) -> Result<BoundL<L>, ()> {
         match b {
             Bound::Fn(f) => {

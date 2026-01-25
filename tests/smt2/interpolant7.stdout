@@ -1,5 +1,6 @@
 unsat
-(and (= i1 j1) (= i2 j2))
+(and (= i1 j1) a3)
 (and (= i2 k2) (not (= j1 k1)))
 (or (not (= i1 j1)) (not (= i2 j2)))
-(or (= j1 k1) (not (= i2 k2)))
+(let (@d22 (= j1 k1))
+  (or @d22 (or @d22 (not (= i2 k2)))))

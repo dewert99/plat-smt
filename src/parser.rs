@@ -7,7 +7,7 @@ use crate::outer_solver::{
 };
 use crate::parser::Error::*;
 use crate::parser_core::{ParseError, SexpParser, SexpTerminal, SexpToken, SexpVisitor, SpanRange};
-use crate::recorder::Recorder;
+use crate::recorder::{dep_checker, Recorder};
 use crate::solver::{SolveResult, SolverCollapse, UnsatCoreConjunction};
 use crate::util::{format_args2, parenthesized, powi, DefaultHashBuilder};
 use crate::AddSexpError::*;
@@ -537,6 +537,7 @@ impl<'a, W: Write, L: Logic> ExpVisitor<'a, W, L> {
                 }
                 let body = rest.next()?;
                 for (name, bound) in &mut self.0.let_bound_stack[old_len..] {
+                    self.0.core.dep_checker_act(dep_checker::Shadow(*name));
                     *bound = self.0.core.raw_define(*name, bound.take())
                 }
                 let exp = self.0.parse_exp(body, ctx)?;
@@ -551,6 +552,7 @@ impl<'a, W: Write, L: Logic> ExpVisitor<'a, W, L> {
                     SexpToken::List(mut l) => l
                         .map(|token| {
                             let (name, exp) = self.0.parse_binding(token?)?;
+                            self.0.core.dep_checker_act(dep_checker::Shadow(name));
                             self.0.let_bound_stack.push((
                                 name,
                                 self.0.core.raw_define(name, Some(Bound::Const(exp))),
@@ -568,6 +570,7 @@ impl<'a, W: Write, L: Logic> ExpVisitor<'a, W, L> {
             }
             ANNOT_SYM => {
                 let mut rest = CountingParser::new(rest, StrSym::Sym(f), 3);
+                self.0.core.dep_checker_act(dep_checker::EnterScope);
                 let mut exp = self.0.parse_exp(rest.next()?, StartExpCtx::Exact)?;
                 let span = self.0.parse_annot_after_exp(exp, rest)?;
                 if matches!(ctx, StartExpCtx::Assert) {
@@ -712,6 +715,7 @@ impl<W: Write, L: Logic> Parser<W, L> {
         if self.currently_defining == Some(s) {
             return Err(NamedShadow(s));
         }
+        self.core.dep_checker_act(dep_checker::ExitScope(s));
         self.define(s, Bound::Const(exp), NamedShadow)?;
         rest.finish()?;
         self.global_stack.push(s);
@@ -720,6 +724,7 @@ impl<W: Write, L: Logic> Parser<W, L> {
 
     fn undo_let_bindings(&mut self, old_len: usize) {
         for (name, bound) in self.let_bound_stack.drain(old_len..).rev() {
+            self.core.dep_checker_act(dep_checker::Unshadow(name));
             self.core.raw_define(name, bound);
         }
     }
@@ -799,6 +804,7 @@ impl<W: Write, L: Logic> Parser<W, L> {
             }
             Err(err) => {
                 self.undo_base_bindings(old_len);
+                self.undo_let_bindings(0);
                 self.named_assertions.pop_to(self.old_named_assertions);
                 self.core.reset_working_exp();
                 if let Some(c) = self.command_level_marker.clone() {
@@ -818,9 +824,9 @@ impl<W: Write, L: Logic> Parser<W, L> {
         rest: &mut CountingParser<R>,
     ) -> Result<L::BoolBufMarker> {
         let (solver, def) = self.core.solver_mut_with_def();
-        let sym_to_bool_exp = |s: Symbol| match def(s) {
+        let check_sym = |s: Symbol| match def(s) {
             None => Err(AddSexp(s.into(), Unbound)),
-            Some(Bound::Const(exp)) => exp.downcast().ok_or(AssertBool(exp.sort())),
+            Some(Bound::Const(_)) => Ok(s),
             Some(Bound::Fn(f)) => Err(AddSexp(
                 s.into(),
                 MissingArgument {
@@ -831,8 +837,8 @@ impl<W: Write, L: Logic> Parser<W, L> {
         };
         match rest.next()? {
             SexpToken::Terminal(SexpTerminal::Symbol(s)) => {
-                let exp = sym_to_bool_exp(solver.th.arg.intern.symbols.intern(s));
-                solver.th.arg.recorder.try_intern_bools(iter::once(exp))
+                let sym = check_sym(solver.th.arg.intern.symbols.intern(s));
+                solver.th.arg.recorder.try_intern_syms(iter::once(sym))
             }
             SexpToken::List(mut l) => {
                 let SexpToken::Terminal(SexpTerminal::Symbol("and")) =
@@ -844,9 +850,9 @@ impl<W: Write, L: Logic> Parser<W, L> {
                     .th
                     .arg
                     .recorder
-                    .try_intern_bools(l.zip_map(iter::repeat(()), |res, ()| match res? {
+                    .try_intern_syms(l.zip_map(iter::repeat(()), |res, ()| match res? {
                         SexpToken::Terminal(SexpTerminal::Symbol(s)) => {
-                            sym_to_bool_exp(solver.th.arg.intern.symbols.intern(s))
+                            check_sym(solver.th.arg.intern.symbols.intern(s))
                         }
                         _ => Err(InvalidCommand),
                     }))
@@ -1202,6 +1208,7 @@ impl<W: Write, L: Logic> Parser<W, L> {
                 let SexpToken::List(mut l) = rest.next()? else {
                     return Err(InvalidCommand);
                 };
+                self.core.dep_checker_act(dep_checker::EnterScope);
                 let conj = l
                     .zip_map_full(0.., |token, _| {
                         let exp = self.parse_exp(token?, StartExpCtx::Exact)?;
@@ -1210,6 +1217,9 @@ impl<W: Write, L: Logic> Parser<W, L> {
                     .collect::<Result<Vec<_>>>()?;
                 drop(l);
                 rest.finish()?;
+                // arbitrary builtin symbol so references inside the check-sat-assuming aren't
+                // treated as in a and b
+                self.core.dep_checker_act(dep_checker::ExitScope(LET_SYM));
                 self.command_level_marker = Some(self.core.solver_mut().create_level());
                 self.named_assertions
                     .extend(conj.into_iter().map(|(b, s)| (b, s)));
@@ -1313,8 +1323,10 @@ impl<W: Write, L: Logic> Parser<W, L> {
     ) -> Result<()> {
         let sort = self.parse_sort(rest.next()?)?;
         self.currently_defining = Some(name);
+        self.core.dep_checker_act(dep_checker::EnterScope);
         let ret = self.parse_exp(rest.next()?, StartExpCtx::Exact)?;
         self.currently_defining = None;
+        self.core.dep_checker_act(dep_checker::ExitScope(name));
         if sort != ret.sort() {
             return Err(BindSortMismatch(ret.sort()));
         }

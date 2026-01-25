@@ -5,11 +5,13 @@ use crate::collapse::{Collapse, CollapseOut, ExprContext};
 use crate::core_ops::{Distinct, DistinctPf, Eq, EqPf, ItePf};
 use crate::exp::Fresh;
 use crate::full_theory::{FnSort, FullTheory};
-use crate::intern::{DisplayInterned, InternInfo, Symbol, BOOL_SORT, DISTINCT_SYM};
+use crate::intern::{
+    DisplayInterned, InternInfo, Symbol, BOOL_SORT, DISTINCT_SYM, DISTINGUISHER_SYM,
+};
 use crate::outer_solver::Bound;
 use crate::parser_core::SexpTerminal;
 use crate::parser_fragment::{index_iter, ParserFragment, PfResult};
-use crate::recorder::Recorder;
+use crate::recorder::{dep_checker, Recorder};
 use crate::rexp::{rexp_debug, AsRexp, Namespace, NamespaceVar, Rexp};
 use crate::solver::{SolverCollapse, SolverWithBound};
 use crate::tseitin::{BoolOpPf, SatExplainTheoryArgT, SatTheoryArgT};
@@ -285,7 +287,7 @@ impl<'a, 'b, A: SatTheoryArgT<'a, M = PushInfo>> Collapse<Distinct<'b, Exp>, A, 
             };
         };
 
-        let distinct_sym = acts.intern_mut().symbols.gen_sym("distinct");
+        let distinct_sym = acts.intern_mut().symbols.gen_sym("distinguisher");
         self.distinct_gensym += 1;
         let b = if ctx == ExprContext::AssertEq(BoolExp::TRUE) {
             BoolExp::TRUE
@@ -304,7 +306,11 @@ impl<'a, 'b, A: SatTheoryArgT<'a, M = PushInfo>> Collapse<Distinct<'b, Exp>, A, 
                     EClass::Singleton(!b)
                 });
             if added {
-                acts.log_def(UExp::new(id, BOOL_SORT), distinct_sym, [*exp].into_iter());
+                acts.log_def(
+                    UExp::new(id, BOOL_SORT),
+                    DISTINGUISHER_SYM,
+                    [*exp].into_iter(),
+                );
             } else {
                 return acts.collapse_const(false, ctx);
             }
@@ -404,6 +410,12 @@ impl<R: Recorder> ParserFragment<Exp, EufSolver<R>, EufMarker> for UFnPf {
         ctx: ExprContext<Exp>,
     ) -> Result<Exp, AddSexpError> {
         use AddSexpError::*;
+        solver
+            .solver
+            .th
+            .arg
+            .recorder
+            .dep_checker_act(dep_checker::Reference(f));
         match solver.bound.get(&f) {
             None => Err(Unbound),
             Some(Bound::Const(c)) => {

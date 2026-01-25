@@ -1,5 +1,4 @@
 unsat
-(and (= (f p) a) (or q (not p)))
+(and pq (= (f p) a))
 (or (not (= q p)) (= c a))
-(let (@d30 (= d c))
-  (and (or q (not p)) @d30 (and @d30 (or (not q) p))))
+(and pq qp (= d c))
