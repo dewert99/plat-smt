@@ -7,8 +7,7 @@ use crate::theory::Incremental;
 use crate::util::{display_sexp, format_args2};
 use crate::{BoolExp, Conjunction, ExpLike, Solver};
 use alloc::borrow::Cow;
-use core::convert::Infallible;
-use core::fmt::Display;
+use core::fmt::Write;
 use log::{debug, info};
 use platsat::theory::ClauseRef;
 use platsat::Lit;
@@ -21,9 +20,12 @@ pub enum ClauseKind {
     TheoryConflict(bool),
 }
 
-pub trait Recorder: Default + Incremental + 'static {
-    type Interpolant<'a>: Display;
+#[non_exhaustive]
+pub enum Feature {
+    Interpolant,
+}
 
+pub trait Recorder: Default + Incremental + 'static {
     fn log_def<Exp: ExpLike, Exp2: AsRexp>(
         &mut self,
         val: Exp,
@@ -66,14 +68,25 @@ pub trait Recorder: Default + Incremental + 'static {
         Ok(res)
     }
 
-    fn interpolant<'a, Th: FullTheory<Self>>(
+    fn write_interpolant<'a, Th: FullTheory<Self>>(
         _solver: &'a mut Solver<Th, Self>,
         _pre_solve_marker: LevelMarker<Th::LevelMarker, Self::LevelMarker>,
         _assumptions: &Conjunction,
         _a: Self::SymBufMarker,
         _b: Self::SymBufMarker,
-    ) -> Result<Self::Interpolant<'a>, Cow<'static, str>> {
+        _writer: &mut impl Write,
+    ) -> Result<(), Cow<'static, str>> {
         Err(Cow::Borrowed("unsupported interpolants"))
+    }
+
+    /// Return whether feature is enabled
+    fn feature_enabled(&self, _feature: Feature) -> bool {
+        false
+    }
+
+    /// Try to set features enabled status to enable and return if successful
+    fn set_feature_enabled(&mut self, feature: Feature, enable: bool) -> bool {
+        enable != self.feature_enabled(feature)
     }
 
     fn exit_solved_state(&mut self) {}
@@ -103,8 +116,6 @@ impl Incremental for LoggingRecorder {
 }
 
 impl Recorder for LoggingRecorder {
-    type Interpolant<'a> = Infallible;
-
     #[inline]
     fn log_def<Exp: ExpLike, Exp2: AsRexp>(
         &mut self,

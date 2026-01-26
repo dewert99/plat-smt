@@ -8,7 +8,6 @@ use crate::util::{display_sexp, DisplayFn, HashMap};
 use crate::{BoolExp, ExpLike};
 use alloc::vec::Vec;
 use core::cmp::max;
-use core::convert::Infallible;
 use core::fmt::{Display, Formatter};
 use core::num::{NonZeroU32, Saturating};
 use default_vec2::DefaultVec;
@@ -246,8 +245,6 @@ impl Incremental for DefinitionRecorder {
 }
 
 impl Recorder for DefinitionRecorder {
-    type Interpolant<'a> = Infallible;
-
     fn log_def<Exp: ExpLike, Exp2: AsRexp>(
         &mut self,
         val: Exp,

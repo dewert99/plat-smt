@@ -1,4 +1,4 @@
-The option cannot be set after assertions, declarations, or definitions at 4:38
+This option cannot be set after assertions, declarations, or definitions at 4:38
 (set-option :produce-unsat-cores true)
                                      ^
 

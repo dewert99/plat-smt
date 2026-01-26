@@ -1,0 +1,6 @@
+(get-info :interpolation-method)
+(set-option :produce-interpolants false)
+(get-info :interpolation-method)
+(assert false)
+(check-sat)
+(get-interpolants)

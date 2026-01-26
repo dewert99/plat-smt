@@ -10,6 +10,7 @@ use crate::tseitin::SatTheoryArgT;
 use crate::util::{DefaultHashBuilder, Either};
 use crate::Symbol;
 use alloc::borrow::Cow;
+use core::fmt::Write;
 use hashbrown::HashMap;
 use internal_iterator::{InternalIterator, IteratorExt};
 use log::{debug, trace};
@@ -346,14 +347,15 @@ impl<Th: FullTheory<R>, R: Recorder> Solver<Th, R> {
         self.sat.set_options(options)
     }
 
-    pub fn interpolant(
+    pub(crate) fn write_interpolant(
         &mut self,
         pre_solve_level: LevelMarker<Th::LevelMarker, R::LevelMarker>,
         assumptions: &mut Conjunction,
         a: R::SymBufMarker,
         b: R::SymBufMarker,
-    ) -> Result<R::Interpolant<'_>, Cow<'static, str>> {
-        R::interpolant(self, pre_solve_level, assumptions, a, b)
+        writer: &mut impl Write,
+    ) -> Result<(), Cow<'static, str>> {
+        R::write_interpolant(self, pre_solve_level, assumptions, a, b, writer)
     }
 }
 

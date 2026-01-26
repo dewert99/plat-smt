@@ -1,7 +1,7 @@
 use crate::full_theory::FullTheory;
 use crate::intern::{InternInfo, RecInfoArg, Symbol, AND_SYM, EQ_SYM, NOT_SYM, OR_SYM};
 use crate::recorder::definition_recorder::{
-    DefExp, DefinitionRecorder, DisplayStandAloneDefExp, FALSE_DEF_EXP, TRUE_DEF_EXP,
+    DefExp, DefinitionRecorder, FALSE_DEF_EXP, TRUE_DEF_EXP,
 };
 use crate::recorder::dep_checker::{DepChecker, DepCheckerAction};
 use crate::recorder::slice_vec::SliceVec;
@@ -73,28 +73,33 @@ enum ErrorReason {
     MixedTerm,
     MissedAssumption,
 }
+use crate::recorder::recorder::Feature;
 use ErrorReason::*;
 
 #[derive(Default)]
 pub struct InterpolantRecorder {
-    state: State,
     // Cleared in `clear`
     /// Stores clauses found during search before clause boundary, and theory clauses after
     /// clause_boundary
     clauses: SliceVec<Lit>,
     defs: DefinitionRecorder,
+    disabled: bool,
+
     // Cleared in `exit_solved_state`
+    state: State,
     tseiten_clauses: Vec<ClauseRef>,
     clause_proofs: SliceVec<ClauseProofElement>,
-    sym_buf: Vec<Symbol>,
-    clause_boundary: usize,
     /// Maps clause refs to their proof index (see ClauseProofElement) or MAX if it was not
     /// resolved yet.
     clause_refs: HashMap<ClauseRef, u32>,
+    def_stack: Vec<DefExp>,
+    sym_buf: Vec<Symbol>,
+    clause_boundary: usize,
+
     // Cleared at the end of `find_interpolant`
     ab_defs: StaticFlagVec<2, DefExp>,
     ab_syms: StaticFlagVec<2, Symbol>,
-    def_stack: Vec<DefExp>,
+
     defs_marker_after_solve: u32,
 
     dep_checker: DepChecker,
@@ -373,8 +378,6 @@ impl Incremental for InterpolantRecorder {
 }
 
 impl Recorder for InterpolantRecorder {
-    type Interpolant<'a> = DisplayStandAloneDefExp<'a>;
-
     fn log_def<Exp: ExpLike, Exp2: AsRexp>(
         &mut self,
         val: Exp,
@@ -437,13 +440,14 @@ impl Recorder for InterpolantRecorder {
         (start_len, self.sym_buf.len())
     }
 
-    fn interpolant<'a, Th: FullTheory<Self>>(
+    fn write_interpolant<'a, Th: FullTheory<Self>>(
         solver: &'a mut Solver<Th, Self>,
         pre_solve_marker: SolverMarker<Th::LevelMarker, LevelMarker>,
         assumptions: &Conjunction,
         a: Self::SymBufMarker,
         b: Self::SymBufMarker,
-    ) -> Result<Self::Interpolant<'a>, Cow<'static, str>> {
+        writer: &mut impl Write,
+    ) -> Result<(), Cow<'static, str>> {
         let pre_solve_recorder_marker = pre_solve_marker.recorder.def_marker.def_maker;
         if State::Final != solver.th.arg.recorder.state {
             initialize_interpolant_info(solver, pre_solve_marker.clone(), &assumptions);
@@ -483,12 +487,31 @@ impl Recorder for InterpolantRecorder {
                 return Err(Cow::Owned(s));
             }
         };
-        Ok(solver
+        let interpolant = solver
             .th
             .arg
             .recorder
             .defs
-            .display_stand_alone_def(res, &solver.th.arg.intern))
+            .display_stand_alone_def(res, &solver.th.arg.intern);
+        write!(writer, "{interpolant}").unwrap();
+        Ok(())
+    }
+
+    fn feature_enabled(&self, feature: Feature) -> bool {
+        if matches!(feature, Feature::Interpolant) {
+            !self.disabled
+        } else {
+            false
+        }
+    }
+
+    fn set_feature_enabled(&mut self, feature: Feature, enable: bool) -> bool {
+        if matches!(feature, Feature::Interpolant) {
+            self.disabled = !enable;
+            true
+        } else {
+            enable
+        }
     }
 
     fn exit_solved_state(&mut self) {
@@ -497,6 +520,7 @@ impl Recorder for InterpolantRecorder {
         self.clause_proofs.clear();
         self.clause_refs.clear();
         self.def_stack.clear();
+        self.sym_buf.clear();
         self.clause_boundary = 0;
     }
 

@@ -1,0 +1,4 @@
+The option `:produce-interpolants` must be set to true at 6:2
+(get-interpolants)
+ ^
+
