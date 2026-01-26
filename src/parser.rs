@@ -7,6 +7,7 @@ use crate::outer_solver::{
 };
 use crate::parser::Error::*;
 use crate::parser_core::{ParseError, SexpParser, SexpTerminal, SexpToken, SexpVisitor, SpanRange};
+use crate::recorder::recorder::Feature;
 use crate::recorder::{dep_checker, Recorder};
 use crate::solver::{SolveResult, SolverCollapse, UnsatCoreConjunction};
 use crate::util::{format_args2, parenthesized, powi, DefaultHashBuilder};
@@ -91,9 +92,7 @@ enum Error {
     },
     NoUnsat,
     InterpolantCore,
-    ProduceCoreFalse,
     NoModel,
-    ProduceModelFalse,
     NonInit,
     Custom(Cow<'static, str>),
     Parser(ParseError),
@@ -101,6 +100,12 @@ enum Error {
 
 const fn custom_err(s: &'static str) -> Error {
     Custom(Cow::Borrowed(s))
+}
+
+macro_rules! not_enabled {
+    ($x:literal) => {
+        custom_err(concat!("The option `:", $x, "` must be set to true"))
+    };
 }
 
 impl DisplayInterned for Error {
@@ -148,10 +153,8 @@ impl DisplayInterned for Error {
             } => write!(fmt, "(check-sat) returned {actual:?} but should have returned {expected:?} based on last (set-info :status)"),
             NoUnsat => write!(fmt, "The last command was not `check-sat-assuming` that returned `unsat`"),
             InterpolantCore => write!(fmt, "`get-unsat-core` must be called before `get-interpolants`"),
-            ProduceCoreFalse => write!(fmt, "The option `:produce-unsat-cores` must be set to true"),
             NoModel => write!(fmt, "The last command was not `check-sat-assuming` that returned `sat`"),
-            ProduceModelFalse => write!(fmt, "The option `:produce-models` must be set to true"),
-            NonInit => write!(fmt, "The option cannot be set after assertions, declarations, or definitions"),
+            NonInit => write!(fmt, "This option cannot be set after assertions, declarations, or definitions"),
             Custom(s) => write!(fmt, "{s}"),
             Parser(err) => write!(fmt, "{err}"),
         }
@@ -333,6 +336,7 @@ enum_option! {SetOption{
     "random-seed" => BaseRandomSeed(f64),
     "produce-models" => ProduceModels(bool),
     "produce-unsat-cores" => ProduceUnsatCores(bool),
+    "produce-interpolants" => ProduceInterpolants(bool),
     "print-success" => PrintSuccess(bool),
 }}
 
@@ -894,7 +898,7 @@ impl<W: Write, L: Logic> Parser<W, L> {
                     return Err(NoUnsat);
                 };
                 if !self.options.produces_unsat_cores {
-                    return Err(ProduceCoreFalse);
+                    return Err(not_enabled!("produce-unsat-cores"));
                 }
                 write!(self.writer, "(");
                 let mut need_space = false;
@@ -921,7 +925,7 @@ impl<W: Write, L: Logic> Parser<W, L> {
                     return Err(NoModel);
                 }
                 if !self.options.produce_models {
-                    return Err(ProduceModelFalse);
+                    return Err(not_enabled!("produce-models"));
                 }
                 let SexpToken::List(mut l) = rest.next()? else {
                     return Err(InvalidCommand);
@@ -954,7 +958,7 @@ impl<W: Write, L: Logic> Parser<W, L> {
                     return Err(NoModel);
                 }
                 if !self.options.produce_models {
-                    return Err(ProduceModelFalse);
+                    return Err(not_enabled!("produce-models"));
                 }
                 rest.finish()?;
                 writeln!(self.writer, "(");
@@ -982,28 +986,35 @@ impl<W: Write, L: Logic> Parser<W, L> {
                 writeln!(self.writer, ")");
             }
             Smt2Command::GetInfo => {
-                match rest.next()? {
-                    SexpToken::Terminal(SexpTerminal::Keyword("name")) => {
-                        writeln!(&mut self.writer, "(:name \"PlatSmt\")")
+                let SexpToken::Terminal(SexpTerminal::Keyword(s)) = rest.next()? else {
+                    return Err(InvalidCommand);
+                };
+                match s {
+                    "name" => {
+                        writeln!(&mut self.writer, "(:{s} \"PlatSmt\")")
                     }
-                    SexpToken::Terminal(SexpTerminal::Keyword("authors")) => {
-                        writeln!(&mut self.writer, "(:authors \"David Ewert\")")
+                    "authors" => {
+                        writeln!(&mut self.writer, "(:{s} \"David Ewert\")")
                     }
-                    SexpToken::Terminal(
-                        SexpTerminal::Keyword(s @ "error-behaviour")
-                        | SexpTerminal::Keyword(s @ "error-behavior"),
-                    ) => {
+                    "error-behaviour" | "error-behavior" => {
                         writeln!(&mut self.writer, "(:{s} continued-execution)")
                     }
-                    SexpToken::Terminal(SexpTerminal::Keyword("version")) => {
-                        writeln!(&mut self.writer, "(:version \"{}\")", env!("GIT_VERSION"));
+                    "version" => {
+                        writeln!(&mut self.writer, "(:{s} \"{}\")", env!("GIT_VERSION"));
                     }
-                    SexpToken::Terminal(SexpTerminal::Keyword("assertion-stack-levels")) => {
-                        writeln!(
-                            &mut self.writer,
-                            "(:assertion-stack-levels {})",
-                            self.push_info.len()
-                        )
+                    "assertion-stack-levels" => {
+                        writeln!(&mut self.writer, "(:{s} {})", self.push_info.len())
+                    }
+                    "interpolation-method" => {
+                        let enabled = self
+                            .core
+                            .solver_mut()
+                            .th
+                            .arg
+                            .recorder
+                            .feature_enabled(Feature::Interpolant);
+                        let method = if enabled { "basic" } else { "unsupported" };
+                        writeln!(&mut self.writer, "(:{s} {})", method)
                     }
                     _ => return Err(InvalidCommand),
                 }
@@ -1074,6 +1085,21 @@ impl<W: Write, L: Logic> Parser<W, L> {
                         self.options.produce_models = x;
                         return Ok(());
                     }
+                    SetOption::ProduceInterpolants(x) => {
+                        if !matches!(self.state, State::Init) {
+                            return Err(NonInit);
+                        }
+                        if !self
+                            .core
+                            .solver_mut()
+                            .th
+                            .arg
+                            .recorder
+                            .set_feature_enabled(Feature::Interpolant, x)
+                        {
+                            return Err(custom_err("unsupported interpolants"));
+                        }
+                    }
                     SetOption::PrintSuccess(x) => {
                         self.options.print_success = x;
                         self.writer.print_success = x; // apply to current command
@@ -1101,17 +1127,30 @@ impl<W: Write, L: Logic> Parser<W, L> {
                 else {
                     return Err(NoUnsat);
                 };
+                if !self
+                    .core
+                    .solver_mut()
+                    .th
+                    .arg
+                    .recorder
+                    .feature_enabled(Feature::Interpolant)
+                {
+                    return Err(not_enabled!("produce-interpolants"));
+                }
                 let a = self.parse_interpolant_arg(&mut rest)?;
                 let b = self.parse_interpolant_arg(&mut rest)?;
-                let interpolant = self.core.solver_mut().interpolant(
-                    pre_solve_level,
-                    &mut self.named_assertions.conj,
-                    a,
-                    b,
-                );
-                let interpolant = interpolant.map_err(Custom)?;
+                self.core
+                    .solver_mut()
+                    .write_interpolant(
+                        pre_solve_level,
+                        &mut self.named_assertions.conj,
+                        a,
+                        b,
+                        &mut self.writer.writer,
+                    )
+                    .map_err(Custom)?;
+                writeln!(self.writer, "");
                 self.state = State::UnsatInterpolant;
-                writeln!(self.writer, "{interpolant}");
             }
             _ => return self.parse_destructive_command(name, rest),
         }

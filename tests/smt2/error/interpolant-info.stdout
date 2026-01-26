@@ -1,0 +1,3 @@
+(:interpolation-method basic)
+(:interpolation-method unsupported)
+unsat
