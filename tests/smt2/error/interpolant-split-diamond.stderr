@@ -1,0 +1,16 @@
+Can't produce interpolant because of term containing a-only and b-only constants: eqab at 59:124
+(get-interpolants (and a01* a02* b1c* b2c* c01* c02* d1e* d2e* ne ab bc cd de) (and a1b* a2b* b01* b02* c1d* c2d* d01* d02*))
+                                                                                                                           ^
+
+Can't produce interpolant because of term containing a-only and b-only constants: eqab at 60:124
+(get-interpolants (and a01* a02* b1c* b2c* c01* c02* d1e* d2e* ne) (and a1b* a2b* b01* b02* c1d* c2d* d01* d02* ab bc cd de))
+                                                                                                                           ^
+
+Can't produce interpolant because of term containing a-only and b-only constants: eqab at 61:124
+(get-interpolants (and a1b* a2b* b01* b02* c1d* c2d* d01* d02*) (and a01* a02* b1c* b2c* c01* c02* d1e* d2e* ne ab bc cd de))
+                                                                                                                           ^
+
+Can't produce interpolant because of term containing a-only and b-only constants: eqab at 62:124
+(get-interpolants (and a1b* a2b* b01* b02* c1d* c2d* d01* d02* ab bc cd de) (and a01* a02* b1c* b2c* c01* c02* d1e* d2e* ne))
+                                                                                                                           ^
+

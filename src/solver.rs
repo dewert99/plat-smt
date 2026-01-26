@@ -9,6 +9,7 @@ use crate::theory::{TheoryArg, TheoryWrapper};
 use crate::tseitin::SatTheoryArgT;
 use crate::util::{DefaultHashBuilder, Either};
 use crate::Symbol;
+use alloc::borrow::Cow;
 use hashbrown::HashMap;
 use internal_iterator::{InternalIterator, IteratorExt};
 use log::{debug, trace};
@@ -351,7 +352,7 @@ impl<Th: FullTheory<R>, R: Recorder> Solver<Th, R> {
         assumptions: &mut Conjunction,
         a: R::SymBufMarker,
         b: R::SymBufMarker,
-    ) -> Option<R::Interpolant<'_>> {
+    ) -> Result<R::Interpolant<'_>, Cow<'static, str>> {
         R::interpolant(self, pre_solve_level, assumptions, a, b)
     }
 }
