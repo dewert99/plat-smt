@@ -6,6 +6,7 @@ use crate::solver::LevelMarker;
 use crate::theory::Incremental;
 use crate::util::{display_sexp, format_args2};
 use crate::{BoolExp, Conjunction, ExpLike, Solver};
+use alloc::borrow::Cow;
 use core::convert::Infallible;
 use core::fmt::Display;
 use log::{debug, info};
@@ -71,8 +72,8 @@ pub trait Recorder: Default + Incremental + 'static {
         _assumptions: &Conjunction,
         _a: Self::SymBufMarker,
         _b: Self::SymBufMarker,
-    ) -> Option<Self::Interpolant<'a>> {
-        None
+    ) -> Result<Self::Interpolant<'a>, Cow<'static, str>> {
+        Err(Cow::Borrowed("unsupported interpolants"))
     }
 
     fn exit_solved_state(&mut self) {}

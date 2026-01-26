@@ -11,9 +11,12 @@ use crate::solver::LevelMarker as SolverMarker;
 use crate::theory::Incremental;
 use crate::util::{display_sexp, DebugIter, DisplayFn, HashMap};
 use crate::{BoolExp, Conjunction, ExpLike, Solver};
+use alloc::borrow::Cow;
+use alloc::string::String;
 use alloc::vec::Vec;
 use bytemuck::must_cast;
 use core::fmt::Debug;
+use core::fmt::Write;
 use core::num::NonZeroU32;
 use default_vec2::StaticFlagVec;
 use log::{debug, info, trace, warn};
@@ -68,7 +71,6 @@ pub struct LevelMarker {
 #[derive(Debug)]
 enum ErrorReason {
     MixedTerm,
-    ComplexAssumption,
     MissedAssumption,
 }
 use ErrorReason::*;
@@ -141,7 +143,7 @@ impl InterpolantRecorder {
         for &a in &assumptions.lits {
             let def = self.defs.intern_exp(BoolExp::unknown(a));
             let Some(sym) = self.defs.get_alias(def) else {
-                return Err((def, ComplexAssumption));
+                return Err((def, MissedAssumption));
             };
             if self.ab_syms.get(sym) == NEITHER {
                 return Err((def, MissedAssumption));
@@ -257,7 +259,7 @@ impl InterpolantRecorder {
     }
 
     fn finalize_interplant(&mut self, assumptions: &Conjunction, intern: &InternInfo) -> DefExp {
-        debug!(
+        info!(
             "partial interpolants: {}",
             display_sexp(
                 "",
@@ -441,7 +443,7 @@ impl Recorder for InterpolantRecorder {
         assumptions: &Conjunction,
         a: Self::SymBufMarker,
         b: Self::SymBufMarker,
-    ) -> Option<Self::Interpolant<'a>> {
+    ) -> Result<Self::Interpolant<'a>, Cow<'static, str>> {
         let pre_solve_recorder_marker = pre_solve_marker.recorder.def_marker.def_maker;
         if State::Final != solver.th.arg.recorder.state {
             initialize_interpolant_info(solver, pre_solve_marker.clone(), &assumptions);
@@ -458,16 +460,35 @@ impl Recorder for InterpolantRecorder {
                 initialize_interpolant_info(solver, pre_solve_marker, &assumptions);
                 find_interpolant(solver, a, b, assumptions).unwrap()
             }
-            Err(_) => return None,
+            Err((def, reason)) => {
+                let mut s = String::new();
+                s.push_str("Can't produce interpolant because of ");
+                s.push_str(match reason {
+                    MixedTerm => "term containing a-only and b-only constants: ",
+                    MissedAssumption => "term in check-sat-assuming in neither a nor b: ",
+                });
+                write!(
+                    &mut s,
+                    "{}",
+                    solver
+                        .th
+                        .arg
+                        .recorder
+                        .defs
+                        .display_stand_alone_def(def, &solver.th.arg.intern)
+                )
+                .unwrap();
+                solver.th.arg.recorder.ab_defs.clear();
+                solver.th.arg.recorder.ab_syms.clear();
+                return Err(Cow::Owned(s));
+            }
         };
-        Some(
-            solver
-                .th
-                .arg
-                .recorder
-                .defs
-                .display_stand_alone_def(res, &solver.th.arg.intern),
-        )
+        Ok(solver
+            .th
+            .arg
+            .recorder
+            .defs
+            .display_stand_alone_def(res, &solver.th.arg.intern))
     }
 
     fn exit_solved_state(&mut self) {

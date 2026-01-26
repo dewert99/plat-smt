@@ -12,6 +12,7 @@ use crate::solver::{SolveResult, SolverCollapse, UnsatCoreConjunction};
 use crate::util::{format_args2, parenthesized, powi, DefaultHashBuilder};
 use crate::AddSexpError::*;
 use crate::{solver, AddSexpError, BoolExp, HasSort, SubExp, SuperExp};
+use alloc::borrow::Cow;
 use core::fmt::Arguments;
 use hashbrown::HashMap;
 use internal_iterator::InternalIterator;
@@ -94,8 +95,12 @@ enum Error {
     NoModel,
     ProduceModelFalse,
     NonInit,
-    UnsupportedP(&'static str),
+    Custom(Cow<'static, str>),
     Parser(ParseError),
+}
+
+const fn custom_err(s: &'static str) -> Error {
+    Custom(Cow::Borrowed(s))
 }
 
 impl DisplayInterned for Error {
@@ -147,7 +152,7 @@ impl DisplayInterned for Error {
             NoModel => write!(fmt, "The last command was not `check-sat-assuming` that returned `sat`"),
             ProduceModelFalse => write!(fmt, "The option `:produce-models` must be set to true"),
             NonInit => write!(fmt, "The option cannot be set after assertions, declarations, or definitions"),
-            UnsupportedP(s) => write!(fmt, "unsupported {s}"),
+            Custom(s) => write!(fmt, "{s}"),
             Parser(err) => write!(fmt, "{err}"),
         }
     }
@@ -475,10 +480,10 @@ impl<'a, W: Write, L: Logic> ExpVisitor<'a, W, L> {
                     .end_exp_take()
                     .map_err(|(s, e)| AddSexp(s.into(), e))
             }
-            SexpTerminal::String(_) => Err(UnsupportedP("strings")),
-            SexpTerminal::Number(_) => Err(UnsupportedP("arithmetic")),
-            SexpTerminal::Decimal(_, _) => Err(UnsupportedP("decimal")),
-            SexpTerminal::BitVec { .. } => Err(UnsupportedP("bitvec")),
+            SexpTerminal::String(_) => Err(custom_err("unsupported strings")),
+            SexpTerminal::Number(_) => Err(custom_err("unsupported arithmetic")),
+            SexpTerminal::Decimal(_, _) => Err(custom_err("unsupported decimal")),
+            SexpTerminal::BitVec { .. } => Err(custom_err("unsupported bitvec")),
             SexpTerminal::Keyword(_) => Err(InvalidExp),
         }
     }
@@ -805,10 +810,10 @@ impl<W: Write, L: Logic> Parser<W, L> {
             Err(err) => {
                 self.undo_base_bindings(old_len);
                 self.undo_let_bindings(0);
-                self.named_assertions.pop_to(self.old_named_assertions);
                 self.core.reset_working_exp();
                 if let Some(c) = self.command_level_marker.clone() {
                     if matches!(self.state, State::Base) {
+                        self.named_assertions.pop_to(self.old_named_assertions);
                         self.core.solver_mut().pop_to_level(c)
                     }
                 } else {
@@ -1008,7 +1013,7 @@ impl<W: Write, L: Logic> Parser<W, L> {
                 match rest.next()? {
                     SexpToken::Terminal(SexpTerminal::Symbol("QF_UF")) => {}
                     SexpToken::Terminal(SexpTerminal::Symbol(_)) => {
-                        return Err(UnsupportedP("logic"))
+                        return Err(custom_err("unsupported logic"))
                     }
                     _ => return Err(InvalidCommand),
                 }
@@ -1104,7 +1109,7 @@ impl<W: Write, L: Logic> Parser<W, L> {
                     a,
                     b,
                 );
-                let interpolant = interpolant.ok_or(UnsupportedP("interpolants"))?;
+                let interpolant = interpolant.map_err(Custom)?;
                 self.state = State::UnsatInterpolant;
                 writeln!(self.writer, "{interpolant}");
             }
@@ -1311,7 +1316,7 @@ impl<W: Write, L: Logic> Parser<W, L> {
     ) -> Result<()> {
         match self.core.define(name, val) {
             Ok(_) => Ok(()),
-            Err(DefineError::Unsupported) => Err(UnsupportedP("functions")),
+            Err(DefineError::Unsupported) => Err(custom_err("unsupported functions")),
             Err(DefineError::Exists(_)) => Err(shadow(name)),
         }
     }
