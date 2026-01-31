@@ -449,7 +449,7 @@ impl<'a, R: FullBufRead> Debug for SexpParser<'a, R> {
     }
 }
 
-#[derive(Copy, Clone)]
+#[derive(Copy, Clone, Debug)]
 pub struct SpanRange(usize, usize);
 
 impl<'a> SexpParser<'a, &'static [u8]> {
