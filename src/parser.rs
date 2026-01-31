@@ -1139,11 +1139,13 @@ impl<W: Write, L: Logic> Parser<W, L> {
                 }
                 let a = self.parse_interpolant_arg(&mut rest)?;
                 let b = self.parse_interpolant_arg(&mut rest)?;
+                let (conj, mapper) = self.named_assertions.parts();
                 self.core
                     .solver_mut()
                     .write_interpolant(
                         pre_solve_level,
-                        &mut self.named_assertions.conj,
+                        conj,
+                        |a| rest.p.lookup_range(*mapper.get(!a).expect("`map_assumption` should only be called with elements of `assumptions`")),
                         a,
                         b,
                         &mut self.writer.writer,

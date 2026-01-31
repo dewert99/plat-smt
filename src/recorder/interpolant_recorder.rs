@@ -12,7 +12,7 @@ use crate::theory::Incremental;
 use crate::util::{display_sexp, DebugIter, DisplayFn, HashMap};
 use crate::{BoolExp, Conjunction, ExpLike, Solver};
 use alloc::borrow::Cow;
-use alloc::string::String;
+use alloc::format;
 use alloc::vec::Vec;
 use bytemuck::must_cast;
 use core::fmt::Debug;
@@ -69,9 +69,9 @@ pub struct LevelMarker {
 }
 
 #[derive(Debug)]
-enum ErrorReason {
-    MixedTerm,
-    MissedAssumption,
+enum ErrorReason<'a> {
+    MixedTerm(DefExp),
+    MissedAssumption(&'a str),
 }
 use crate::recorder::recorder::Feature;
 use ErrorReason::*;
@@ -131,13 +131,14 @@ impl InterpolantRecorder {
         }))
     }
 
-    fn set_def_exps_status(
+    fn set_def_exps_status<'a>(
         &mut self,
         a: (usize, usize),
         b: (usize, usize),
         assumptions: &Conjunction,
-        intern: &InternInfo,
-    ) -> Result<(), (DefExp, ErrorReason)> {
+        map_assumption: impl Fn(Lit) -> &'a str,
+        intern: &mut InternInfo,
+    ) -> Result<(), ErrorReason<'a>> {
         for &a_sym in &self.sym_buf[a.0..a.1] {
             self.ab_syms.or_assign(a_sym, A_ONLY)
         }
@@ -146,12 +147,13 @@ impl InterpolantRecorder {
         }
 
         for &a in &assumptions.lits {
-            let def = self.defs.intern_exp(BoolExp::unknown(a));
-            let Some(sym) = self.defs.get_alias(def) else {
-                return Err((def, MissedAssumption));
+            let a = map_assumption(a);
+            if a.starts_with("(") {
+                return Err(MissedAssumption(a));
             };
+            let sym = intern.symbols.intern(a);
             if self.ab_syms.get(sym) == NEITHER {
-                return Err((def, MissedAssumption));
+                return Err(MissedAssumption(a));
             }
         }
 
@@ -163,7 +165,7 @@ impl InterpolantRecorder {
     fn set_def_status_from_syms(
         &mut self,
         intern: &InternInfo,
-    ) -> Result<(), (DefExp, ErrorReason)> {
+    ) -> Result<(), ErrorReason<'static>> {
         for def in (1..self.defs_marker_after_solve)
             .into_iter()
             .map(|x| DefExp::new(NonZeroU32::new(x).unwrap()))
@@ -182,7 +184,7 @@ impl InterpolantRecorder {
                         "{} is a possible mixed term which currently isn't supported",
                         self.defs.display_stand_alone_def(def, intern)
                     );
-                    return Err((def, MixedTerm));
+                    return Err(MixedTerm(def));
                 }
             }
             debug!(
@@ -440,10 +442,11 @@ impl Recorder for InterpolantRecorder {
         (start_len, self.sym_buf.len())
     }
 
-    fn write_interpolant<'a, Th: FullTheory<Self>>(
+    fn write_interpolant<'a, 'b, Th: FullTheory<Self>>(
         solver: &'a mut Solver<Th, Self>,
         pre_solve_marker: SolverMarker<Th::LevelMarker, LevelMarker>,
         assumptions: &Conjunction,
+        map_assumptions: impl Fn(Lit) -> &'b str,
         a: Self::SymBufMarker,
         b: Self::SymBufMarker,
         writer: &mut impl Write,
@@ -453,35 +456,32 @@ impl Recorder for InterpolantRecorder {
             initialize_interpolant_info(solver, pre_solve_marker.clone(), &assumptions);
         };
 
-        let res = match find_interpolant(solver, a, b, assumptions) {
+        let res = match find_interpolant(solver, a, b, assumptions, &map_assumptions) {
             Ok(res) => res,
-            Err((def, MixedTerm)) if usize::from(def) >= pre_solve_recorder_marker as usize => {
+            Err(MixedTerm(def)) if usize::from(def) >= pre_solve_recorder_marker as usize => {
                 let lit_buf = mem::take(&mut solver.th.arg.recorder.sym_buf);
                 solver.th.arg.recorder.exit_solved_state();
                 solver.th.arg.recorder.sym_buf = lit_buf;
                 solver.pop_to_level(pre_solve_marker.clone());
                 solver.check_sat_assuming_preserving_trail(assumptions);
                 initialize_interpolant_info(solver, pre_solve_marker, &assumptions);
-                find_interpolant(solver, a, b, assumptions).unwrap()
+                find_interpolant(solver, a, b, assumptions, map_assumptions).unwrap()
             }
-            Err((def, reason)) => {
-                let mut s = String::new();
-                s.push_str("Can't produce interpolant because of ");
-                s.push_str(match reason {
-                    MixedTerm => "term containing a-only and b-only constants: ",
-                    MissedAssumption => "term in check-sat-assuming in neither a nor b: ",
-                });
-                write!(
-                    &mut s,
-                    "{}",
-                    solver
-                        .th
-                        .arg
-                        .recorder
-                        .defs
-                        .display_stand_alone_def(def, &solver.th.arg.intern)
-                )
-                .unwrap();
+            Err(e) => {
+                let s = match e {
+                    MixedTerm(def) => format!(
+                        "Can't produce interpolant because of term containing a-only and b-only constants: {}",
+                        solver
+                            .th
+                            .arg
+                            .recorder
+                            .defs
+                            .display_stand_alone_def(def, &solver.th.arg.intern)
+                    ),
+                    MissedAssumption(a) => format!(
+                        "Can't produce interpolant because of term in check-sat-assuming in neither a nor b: {a}"
+                    ),
+                };
                 solver.th.arg.recorder.ab_defs.clear();
                 solver.th.arg.recorder.ab_syms.clear();
                 return Err(Cow::Owned(s));
@@ -698,18 +698,21 @@ fn theory_partial_interpolate<Th: FullTheory<InterpolantRecorder>>(
     }
 }
 
-fn find_interpolant<Th: FullTheory<InterpolantRecorder>>(
+fn find_interpolant<'a, Th: FullTheory<InterpolantRecorder>>(
     solver: &mut Solver<Th, InterpolantRecorder>,
     a: (usize, usize),
     b: (usize, usize),
     assumptions: &Conjunction,
-) -> Result<DefExp, (DefExp, ErrorReason)> {
+    map_assumption: impl Fn(Lit) -> &'a str,
+) -> Result<DefExp, ErrorReason<'a>> {
     solver.th.arg.recorder.def_stack.clear();
-    solver
-        .th
-        .arg
-        .recorder
-        .set_def_exps_status(a, b, assumptions, &solver.th.arg.intern)?;
+    solver.th.arg.recorder.set_def_exps_status(
+        a,
+        b,
+        assumptions,
+        map_assumption,
+        &mut solver.th.arg.intern,
+    )?;
     theory_partial_interpolate(solver);
     solver.open(
         |_, arg| arg.incr.recorder.tseiten_partial_interpolate(&arg.sat),

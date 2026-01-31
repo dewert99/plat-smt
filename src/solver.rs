@@ -347,15 +347,24 @@ impl<Th: FullTheory<R>, R: Recorder> Solver<Th, R> {
         self.sat.set_options(options)
     }
 
-    pub(crate) fn write_interpolant(
-        &mut self,
+    pub(crate) fn write_interpolant<'a, 'b>(
+        &'a mut self,
         pre_solve_level: LevelMarker<Th::LevelMarker, R::LevelMarker>,
-        assumptions: &mut Conjunction,
+        assumptions: &Conjunction,
+        map_assumptions: impl Fn(Lit) -> &'b str,
         a: R::SymBufMarker,
         b: R::SymBufMarker,
         writer: &mut impl Write,
     ) -> Result<(), Cow<'static, str>> {
-        R::write_interpolant(self, pre_solve_level, assumptions, a, b, writer)
+        R::write_interpolant(
+            self,
+            pre_solve_level,
+            assumptions,
+            map_assumptions,
+            a,
+            b,
+            writer,
+        )
     }
 }
 
@@ -409,7 +418,7 @@ impl<Euf: FullTheory<R>, R: Recorder> Solver<Euf, R> {
     }
 }
 
-#[perfect_derive(Default)]
+#[perfect_derive(Default, Debug)]
 pub(crate) struct UnsatCoreInfo<T> {
     false_by: Option<T>,
     data: HashMap<Lit, T, DefaultHashBuilder>,
@@ -432,18 +441,22 @@ impl<T> UnsatCoreInfo<T> {
         }
     }
 
+    pub(crate) fn get(&self, x: Lit) -> Option<&T> {
+        self.data.get(&x)
+    }
+
     pub(crate) fn core(
         &self,
         lits: impl InternalIterator<Item = Lit>,
     ) -> impl InternalIterator<Item = &T> {
         match &self.false_by {
             Some(x) => Either::Right(core::iter::once(x).into_internal()),
-            None => Either::Left(lits.filter_map(|x| self.data.get(&x))),
+            None => Either::Left(lits.filter_map(|x| self.get(x))),
         }
     }
 }
 
-#[perfect_derive(Default)]
+#[perfect_derive(Default, Debug)]
 pub struct UnsatCoreConjunction<T> {
     pub(crate) conj: Conjunction,
     info: UnsatCoreInfo<T>,

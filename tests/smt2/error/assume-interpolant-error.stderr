@@ -1,8 +1,8 @@
-unexpected token when parsing command at 7:38
+unexpected token when parsing command at 8:38
 (get-interpolants (and p pq) (and qr (not r)))
                                      ^
 
-Can't produce interpolant because of term in check-sat-assuming in neither a nor b: (not r) at 8:37
+Can't produce interpolant because of term in check-sat-assuming in neither a nor b: (not r) at 9:37
 (get-interpolants (and p pq) (and qr))
                                     ^
 

@@ -68,10 +68,11 @@ pub trait Recorder: Default + Incremental + 'static {
         Ok(res)
     }
 
-    fn write_interpolant<'a, Th: FullTheory<Self>>(
+    fn write_interpolant<'a, 'b, Th: FullTheory<Self>>(
         _solver: &'a mut Solver<Th, Self>,
         _pre_solve_marker: LevelMarker<Th::LevelMarker, Self::LevelMarker>,
         _assumptions: &Conjunction,
+        _map_assumptions: impl Fn(Lit) -> &'b str,
         _a: Self::SymBufMarker,
         _b: Self::SymBufMarker,
         _writer: &mut impl Write,
