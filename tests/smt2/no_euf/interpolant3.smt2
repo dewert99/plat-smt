@@ -8,6 +8,7 @@
 (assert (! (=> (not q) (not r)) :named b2))
 (push)
 (assert (! (=> r s) :named a3))
+(define-const a3* Bool a3)
 (check-sat)
 (get-interpolants (and a1 a2 a3) (and b1w b2))
 (pop)

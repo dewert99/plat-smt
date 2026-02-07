@@ -92,10 +92,6 @@ impl DefinitionRecorder {
         self.defs.resolve(def)
     }
 
-    pub fn get_alias(&self, def: DefExp) -> Option<Symbol> {
-        self.aliases.get(&def).copied()
-    }
-
     fn finish_usages(&mut self, last: DefExp) {
         for i in (1..last.0.get() + 1).into_iter().rev() {
             let def = DefExp(NonZeroU32::new(i).unwrap());

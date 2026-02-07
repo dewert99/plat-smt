@@ -7,7 +7,7 @@ use crate::recorder::dep_checker::{DepChecker, DepCheckerAction};
 use crate::recorder::slice_vec::SliceVec;
 use crate::recorder::{dep_checker, ClauseKind, Recorder};
 use crate::rexp::{AsRexp, NamespaceVar};
-use crate::solver::LevelMarker as SolverMarker;
+use crate::solver::{LevelMarker as SolverMarker, UnsatCoreConjunction};
 use crate::theory::Incremental;
 use crate::util::{display_sexp, DebugIter, DisplayFn, HashMap};
 use crate::{BoolExp, Conjunction, ExpLike, Solver};
@@ -265,7 +265,12 @@ impl InterpolantRecorder {
         }
     }
 
-    fn finalize_interplant(&mut self, assumptions: &Conjunction, intern: &InternInfo) -> DefExp {
+    fn finalize_interplant<'a>(
+        &mut self,
+        assumptions: &UnsatCoreConjunction<SpanRange>,
+        map_assumption: impl Fn(SpanRange) -> &'a str,
+        intern: &mut InternInfo,
+    ) -> DefExp {
         info!(
             "partial interpolants: {}",
             display_sexp(
@@ -279,10 +284,13 @@ impl InterpolantRecorder {
         let ab_syms = mem::take(&mut self.ab_syms);
         let mut arg = self.arg();
         arg.add_def(base);
-        for &a in &assumptions.lits {
+        let (conj, mapper) = assumptions.parts();
+        for &a in &conj.lits {
             let def = arg.intern_exp(BoolExp::unknown(a));
             if arg.ab.get(def) == BOTH {
-                let sym = arg.defs.get_alias(def).unwrap();
+                let sym = intern
+                    .symbols
+                    .intern(map_assumption(*mapper.get(!a).unwrap()));
                 if ab_syms.get(sym) == A_ONLY {
                     debug!(
                         "{} is only in a but uses only shared symbols",
@@ -445,7 +453,7 @@ impl Recorder for InterpolantRecorder {
     fn write_interpolant<'a, 'b, Th: FullTheory<Self>>(
         solver: &'a mut Solver<Th, Self>,
         pre_solve_marker: SolverMarker<Th::LevelMarker, LevelMarker>,
-        assumptions: &Conjunction,
+        assumptions: &UnsatCoreConjunction<SpanRange>,
         map_assumptions: impl Fn(SpanRange) -> &'b str,
         a: Self::SymBufMarker,
         b: Self::SymBufMarker,
@@ -453,7 +461,7 @@ impl Recorder for InterpolantRecorder {
     ) -> Result<(), Cow<'static, str>> {
         let pre_solve_recorder_marker = pre_solve_marker.recorder.def_marker.def_maker;
         if State::Final != solver.th.arg.recorder.state {
-            initialize_interpolant_info(solver, pre_solve_marker.clone(), &assumptions);
+            initialize_interpolant_info(solver, pre_solve_marker.clone(), &assumptions.conj);
         };
 
         let res = match find_interpolant(solver, a, b, assumptions, &map_assumptions) {
@@ -463,8 +471,8 @@ impl Recorder for InterpolantRecorder {
                 solver.th.arg.recorder.exit_solved_state();
                 solver.th.arg.recorder.sym_buf = lit_buf;
                 solver.pop_to_level(pre_solve_marker.clone());
-                solver.check_sat_assuming_preserving_trail(assumptions);
-                initialize_interpolant_info(solver, pre_solve_marker, &assumptions);
+                solver.check_sat_assuming_preserving_trail(&assumptions.conj);
+                initialize_interpolant_info(solver, pre_solve_marker, &assumptions.conj);
                 find_interpolant(solver, a, b, assumptions, map_assumptions).unwrap()
             }
             Err(e) => {
@@ -702,7 +710,7 @@ fn find_interpolant<'a, Th: FullTheory<InterpolantRecorder>>(
     solver: &mut Solver<Th, InterpolantRecorder>,
     a: (usize, usize),
     b: (usize, usize),
-    assumptions: &Conjunction,
+    assumptions: &UnsatCoreConjunction<SpanRange>,
     map_assumption: impl Fn(SpanRange) -> &'a str,
 ) -> Result<DefExp, ErrorReason<'a>> {
     solver.th.arg.recorder.def_stack.clear();
@@ -710,18 +718,18 @@ fn find_interpolant<'a, Th: FullTheory<InterpolantRecorder>>(
         .th
         .arg
         .recorder
-        .set_def_exps_status(a, b, map_assumption, &mut solver.th.arg.intern)?;
+        .set_def_exps_status(a, b, &map_assumption, &mut solver.th.arg.intern)?;
     theory_partial_interpolate(solver);
     solver.open(
         |_, arg| arg.incr.recorder.tseiten_partial_interpolate(&arg.sat),
         (),
     );
     solver.th.arg.recorder.resolution_partial_interpolate();
-    Ok(solver
-        .th
-        .arg
-        .recorder
-        .finalize_interplant(assumptions, &solver.th.arg.intern))
+    Ok(solver.th.arg.recorder.finalize_interplant(
+        assumptions,
+        map_assumption,
+        &mut solver.th.arg.intern,
+    ))
 }
 
 /// Allows building [`DefExp`]s
