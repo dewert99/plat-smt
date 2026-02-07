@@ -1139,12 +1139,11 @@ impl<W: Write, L: Logic> Parser<W, L> {
                 }
                 let a = self.parse_interpolant_arg(&mut rest)?;
                 let b = self.parse_interpolant_arg(&mut rest)?;
-                let (conj, _) = self.named_assertions.parts();
                 self.core
                     .solver_mut()
                     .write_interpolant(
                         pre_solve_level,
-                        conj,
+                        &self.named_assertions,
                         |s| rest.p.lookup_range(s),
                         a,
                         b,

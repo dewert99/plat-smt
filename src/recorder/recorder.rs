@@ -3,10 +3,10 @@ use crate::intern::{DisplayInterned, InternInfo, Symbol};
 use crate::parser_core::SpanRange;
 use crate::recorder::dep_checker::DepCheckerAction;
 use crate::rexp::AsRexp;
-use crate::solver::LevelMarker;
+use crate::solver::{LevelMarker, UnsatCoreConjunction};
 use crate::theory::Incremental;
 use crate::util::{display_sexp, format_args2};
-use crate::{BoolExp, Conjunction, ExpLike, Solver};
+use crate::{BoolExp, ExpLike, Solver};
 use alloc::borrow::Cow;
 use core::fmt::Write;
 use log::{debug, info};
@@ -72,7 +72,7 @@ pub trait Recorder: Default + Incremental + 'static {
     fn write_interpolant<'a, 'b, Th: FullTheory<Self>>(
         _solver: &'a mut Solver<Th, Self>,
         _pre_solve_marker: LevelMarker<Th::LevelMarker, Self::LevelMarker>,
-        _assumptions: &Conjunction,
+        _assumptions: &UnsatCoreConjunction<SpanRange>,
         _map_assumptions: impl Fn(SpanRange) -> &'b str,
         _a: Self::SymBufMarker,
         _b: Self::SymBufMarker,

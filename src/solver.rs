@@ -351,7 +351,7 @@ impl<Th: FullTheory<R>, R: Recorder> Solver<Th, R> {
     pub(crate) fn write_interpolant<'a, 'b>(
         &'a mut self,
         pre_solve_level: LevelMarker<Th::LevelMarker, R::LevelMarker>,
-        assumptions: &Conjunction,
+        assumptions: &UnsatCoreConjunction<SpanRange>,
         map_assumptions: impl Fn(SpanRange) -> &'b str,
         a: R::SymBufMarker,
         b: R::SymBufMarker,
