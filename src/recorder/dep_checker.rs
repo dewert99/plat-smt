@@ -1,4 +1,5 @@
 use crate::intern::Symbol;
+use crate::parser_core::SpanRange;
 use crate::recorder::interpolant_recorder::{BOTH, NEITHER};
 use crate::theory::Incremental;
 use crate::util::HashMap;
@@ -25,6 +26,7 @@ pub struct DepChecker {
     /// ```
     instructions: Vec<(u32, Option<Symbol>)>,
     shadows: HashMap<Symbol, u32>,
+    assumptions: Vec<SpanRange>,
 }
 
 impl DepChecker {
@@ -32,7 +34,7 @@ impl DepChecker {
         action.act(self)
     }
 
-    pub(crate) fn resolve_syms_in_ab(&self, ab_syms: &mut StaticFlagVec<2, Symbol>) {
+    pub(super) fn resolve_syms_in_ab(&self, ab_syms: &mut StaticFlagVec<2, Symbol>) {
         let mut curr = self.dep_list.len();
         let mut in_ab: u8 = BOTH as u8;
         let mut scopes: SmallVec<[u8; 8]> = Default::default();
@@ -53,6 +55,10 @@ impl DepChecker {
             }
         }
     }
+
+    pub(super) fn assumptions(&self) -> impl Iterator<Item = SpanRange> + '_ {
+        self.assumptions.iter().copied()
+    }
 }
 
 pub trait DepCheckerAction {
@@ -69,7 +75,7 @@ impl DepCheckerAction for EnterScope {
     }
 }
 
-pub struct ExitScope(pub Symbol);
+pub struct ExitScope(pub(crate) Symbol);
 
 impl DepCheckerAction for ExitScope {
     fn act(self, checker: &mut DepChecker) {
@@ -79,7 +85,7 @@ impl DepCheckerAction for ExitScope {
     }
 }
 
-pub struct Shadow(pub Symbol);
+pub struct Shadow(pub(crate) Symbol);
 
 impl DepCheckerAction for Shadow {
     fn act(self, checker: &mut DepChecker) {
@@ -87,7 +93,7 @@ impl DepCheckerAction for Shadow {
     }
 }
 
-pub struct Unshadow(pub Symbol);
+pub struct Unshadow(pub(crate) Symbol);
 
 impl DepCheckerAction for Unshadow {
     fn act(self, checker: &mut DepChecker) {
@@ -95,13 +101,29 @@ impl DepCheckerAction for Unshadow {
     }
 }
 
-pub struct Reference(pub Symbol);
+pub struct Reference(pub(crate) Symbol);
 
 impl DepCheckerAction for Reference {
     fn act(self, checker: &mut DepChecker) {
         if *checker.shadows.get(&self.0).unwrap_or(&0) == 0 {
             checker.dep_list.push(self.0)
         }
+    }
+}
+
+pub struct AddAssumption(pub(crate) SpanRange);
+
+impl DepCheckerAction for AddAssumption {
+    fn act(self, checker: &mut DepChecker) {
+        checker.assumptions.push(self.0)
+    }
+}
+
+pub struct TruncateAssumptions(pub(crate) usize);
+
+impl DepCheckerAction for TruncateAssumptions {
+    fn act(self, checker: &mut DepChecker) {
+        checker.assumptions.truncate(self.0)
     }
 }
 

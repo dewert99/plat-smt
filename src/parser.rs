@@ -586,7 +586,7 @@ impl<'a, W: Write, L: Logic> ExpVisitor<'a, W, L> {
                     match exp.downcast() {
                         None => return Err(AssertBool(exp.sort())),
                         Some(b) => {
-                            self.0.named_assertions.extend([(b, span)]);
+                            self.0.extend_named_assertions([(b, span)]);
                             self.0.old_named_assertions = self.0.named_assertions.push();
                             // don't return exp since we don't want it to be asserted
                             exp = BoolExp::TRUE.upcast()
@@ -791,7 +791,7 @@ impl<W: Write, L: Logic> Parser<W, L> {
     fn reset_state(&mut self) {
         if !matches!(self.state, State::Base) {
             self.core.solver_mut().pop_model();
-            self.named_assertions.pop_to(self.old_named_assertions);
+            self.truncate_named_assertions(self.old_named_assertions);
             self.command_level_marker = Some(self.core.solver_mut().create_level());
             self.state = State::Base;
         }
@@ -817,7 +817,7 @@ impl<W: Write, L: Logic> Parser<W, L> {
                 self.core.reset_working_exp();
                 if let Some(c) = self.command_level_marker.clone() {
                     if matches!(self.state, State::Base) {
-                        self.named_assertions.pop_to(self.old_named_assertions);
+                        self.truncate_named_assertions(self.old_named_assertions);
                         self.core.solver_mut().pop_to_level(c)
                     }
                 } else {
@@ -1139,13 +1139,13 @@ impl<W: Write, L: Logic> Parser<W, L> {
                 }
                 let a = self.parse_interpolant_arg(&mut rest)?;
                 let b = self.parse_interpolant_arg(&mut rest)?;
-                let (conj, mapper) = self.named_assertions.parts();
+                let (conj, _) = self.named_assertions.parts();
                 self.core
                     .solver_mut()
                     .write_interpolant(
                         pre_solve_level,
                         conj,
-                        |a| rest.p.lookup_range(*mapper.get(!a).expect("`map_assumption` should only be called with elements of `assumptions`")),
+                        |s| rest.p.lookup_range(s),
                         a,
                         b,
                         &mut self.writer.writer,
@@ -1191,7 +1191,7 @@ impl<W: Write, L: Logic> Parser<W, L> {
         self.declared_sorts.clear();
         self.sort_stack.clear();
         self.declared_sorts.insert(BOOL_SYM, 0);
-        self.named_assertions.pop_to(0);
+        self.truncate_named_assertions(0);
         self.command_level_marker = None;
         self.old_named_assertions = 0;
         self.state = State::Init;
@@ -1267,8 +1267,7 @@ impl<W: Write, L: Logic> Parser<W, L> {
                 // treated as in a and b
                 self.core.dep_checker_act(dep_checker::ExitScope(LET_SYM));
                 self.command_level_marker = Some(self.core.solver_mut().create_level());
-                self.named_assertions
-                    .extend(conj.into_iter().map(|(b, s)| (b, s)));
+                self.extend_named_assertions(conj);
                 self.check_sat()?;
             }
             Smt2Command::Push => {
@@ -1310,7 +1309,7 @@ impl<W: Write, L: Logic> Parser<W, L> {
                     for s in self.sort_stack.drain(info.sort as usize..).rev() {
                         self.declared_sorts.remove(&s);
                     }
-                    self.named_assertions.pop_to(info.named_assert);
+                    self.truncate_named_assertions(info.named_assert);
                     self.old_named_assertions = self.named_assertions.push();
                 }
             }
@@ -1337,6 +1336,19 @@ impl<W: Write, L: Logic> Parser<W, L> {
             self.command_level_marker = Some(self.core.solver_mut().create_level());
         }
         Ok(())
+    }
+
+    fn extend_named_assertions(&mut self, conj: impl IntoIterator<Item = (BoolExp, SpanRange)>) {
+        let conj = conj
+            .into_iter()
+            .inspect(|(_, s)| self.core.dep_checker_act(dep_checker::AddAssumption(*s)));
+        self.named_assertions.extend(conj);
+    }
+
+    fn truncate_named_assertions(&mut self, t: u32) {
+        self.named_assertions.pop_to(t);
+        self.core
+            .dep_checker_act(dep_checker::TruncateAssumptions(t as usize))
     }
 
     fn check_sat(&mut self) -> Result<()> {
