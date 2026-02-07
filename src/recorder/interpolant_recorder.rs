@@ -73,6 +73,7 @@ enum ErrorReason<'a> {
     MixedTerm(DefExp),
     MissedAssumption(&'a str),
 }
+use crate::parser_core::SpanRange;
 use crate::recorder::recorder::Feature;
 use ErrorReason::*;
 
@@ -135,8 +136,7 @@ impl InterpolantRecorder {
         &mut self,
         a: (usize, usize),
         b: (usize, usize),
-        assumptions: &Conjunction,
-        map_assumption: impl Fn(Lit) -> &'a str,
+        map_assumption: impl Fn(SpanRange) -> &'a str,
         intern: &mut InternInfo,
     ) -> Result<(), ErrorReason<'a>> {
         for &a_sym in &self.sym_buf[a.0..a.1] {
@@ -146,7 +146,7 @@ impl InterpolantRecorder {
             self.ab_syms.or_assign(b_sym, B_ONLY)
         }
 
-        for &a in &assumptions.lits {
+        for a in self.dep_checker.assumptions() {
             let a = map_assumption(a);
             if a.starts_with("(") {
                 return Err(MissedAssumption(a));
@@ -446,7 +446,7 @@ impl Recorder for InterpolantRecorder {
         solver: &'a mut Solver<Th, Self>,
         pre_solve_marker: SolverMarker<Th::LevelMarker, LevelMarker>,
         assumptions: &Conjunction,
-        map_assumptions: impl Fn(Lit) -> &'b str,
+        map_assumptions: impl Fn(SpanRange) -> &'b str,
         a: Self::SymBufMarker,
         b: Self::SymBufMarker,
         writer: &mut impl Write,
@@ -703,16 +703,14 @@ fn find_interpolant<'a, Th: FullTheory<InterpolantRecorder>>(
     a: (usize, usize),
     b: (usize, usize),
     assumptions: &Conjunction,
-    map_assumption: impl Fn(Lit) -> &'a str,
+    map_assumption: impl Fn(SpanRange) -> &'a str,
 ) -> Result<DefExp, ErrorReason<'a>> {
     solver.th.arg.recorder.def_stack.clear();
-    solver.th.arg.recorder.set_def_exps_status(
-        a,
-        b,
-        assumptions,
-        map_assumption,
-        &mut solver.th.arg.intern,
-    )?;
+    solver
+        .th
+        .arg
+        .recorder
+        .set_def_exps_status(a, b, map_assumption, &mut solver.th.arg.intern)?;
     theory_partial_interpolate(solver);
     solver.open(
         |_, arg| arg.incr.recorder.tseiten_partial_interpolate(&arg.sat),

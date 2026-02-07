@@ -1,5 +1,6 @@
 use crate::full_theory::FullTheory;
 use crate::intern::{DisplayInterned, InternInfo, Symbol};
+use crate::parser_core::SpanRange;
 use crate::recorder::dep_checker::DepCheckerAction;
 use crate::rexp::AsRexp;
 use crate::solver::LevelMarker;
@@ -72,7 +73,7 @@ pub trait Recorder: Default + Incremental + 'static {
         _solver: &'a mut Solver<Th, Self>,
         _pre_solve_marker: LevelMarker<Th::LevelMarker, Self::LevelMarker>,
         _assumptions: &Conjunction,
-        _map_assumptions: impl Fn(Lit) -> &'b str,
+        _map_assumptions: impl Fn(SpanRange) -> &'b str,
         _a: Self::SymBufMarker,
         _b: Self::SymBufMarker,
         _writer: &mut impl Write,

@@ -4,6 +4,7 @@ use crate::exp::*;
 use crate::full_theory::{FullTheory, TopLevelCollapse};
 use crate::intern::*;
 use crate::junction::*;
+use crate::parser_core::SpanRange;
 use crate::recorder::Recorder;
 use crate::theory::{TheoryArg, TheoryWrapper};
 use crate::tseitin::SatTheoryArgT;
@@ -351,7 +352,7 @@ impl<Th: FullTheory<R>, R: Recorder> Solver<Th, R> {
         &'a mut self,
         pre_solve_level: LevelMarker<Th::LevelMarker, R::LevelMarker>,
         assumptions: &Conjunction,
-        map_assumptions: impl Fn(Lit) -> &'b str,
+        map_assumptions: impl Fn(SpanRange) -> &'b str,
         a: R::SymBufMarker,
         b: R::SymBufMarker,
         writer: &mut impl Write,
