@@ -792,7 +792,23 @@ impl<W: Write, L: Logic> Parser<W, L> {
         if !matches!(self.state, State::Base) {
             self.core.solver_mut().pop_model();
             self.truncate_named_assertions(self.old_named_assertions);
-            self.command_level_marker = Some(self.core.solver_mut().create_level());
+            let interpolant_enabled = self
+                .core
+                .solver_mut()
+                .th
+                .arg
+                .recorder
+                .feature_enabled(Feature::Interpolant);
+            if interpolant_enabled {
+                if let Some(marker) = self.command_level_marker.clone() {
+                    // When working with interpolants don't remember clauses from prior solves
+                    // since interpolating treats all clauses from before the most recent solve as non learned
+                    self.core.solver_mut().pop_to_level(marker)
+                }
+            } else {
+                self.command_level_marker = Some(self.core.solver_mut().create_level());
+            }
+
             self.state = State::Base;
         }
     }
@@ -1346,8 +1362,6 @@ impl<W: Write, L: Logic> Parser<W, L> {
 
     fn truncate_named_assertions(&mut self, t: u32) {
         self.named_assertions.pop_to(t);
-        self.core
-            .dep_checker_act(dep_checker::TruncateAssumptions(t as usize))
     }
 
     fn check_sat(&mut self) -> Result<()> {

@@ -8,6 +8,7 @@
 (assert (! (=> q s (not r)) :named b1))
 (assert (! (=> (not q) (not r)) :named b2))
 (check-sat)
+(check-sat)
 (get-interpolants (and a1 a2 a3) (and b1 b2))
 (get-interpolants (and b1 b2) (and a1 a2 a3))
 (get-interpolants (and a1 a2) (and b1 b2 a3))

@@ -122,18 +122,11 @@ impl DepCheckerAction for AddAssumption {
     }
 }
 
-pub struct TruncateAssumptions(pub(crate) usize);
-
-impl DepCheckerAction for TruncateAssumptions {
-    fn act(self, checker: &mut DepChecker) {
-        checker.assumptions.truncate(self.0)
-    }
-}
-
 #[derive(Copy, Clone)]
 pub struct Marker {
     dep_list: u32,
     instructions: u32,
+    assumptions: u32,
 }
 
 impl Incremental for DepChecker {
@@ -143,17 +136,20 @@ impl Incremental for DepChecker {
         Marker {
             dep_list: self.dep_list.len() as u32,
             instructions: self.instructions.len() as u32,
+            assumptions: self.assumptions.len() as u32,
         }
     }
 
     fn pop_to_level(&mut self, marker: Self::LevelMarker, _: bool) {
         self.dep_list.truncate(marker.dep_list as usize);
         self.instructions.truncate(marker.instructions as usize);
+        self.assumptions.truncate(marker.assumptions as usize)
     }
 
     fn clear(&mut self) {
         self.dep_list.clear();
         self.instructions.clear();
         self.shadows.clear();
+        self.assumptions.clear();
     }
 }
