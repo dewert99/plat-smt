@@ -54,6 +54,9 @@ impl DepChecker {
                 in_ab = scopes.pop().unwrap();
             }
         }
+        for s in &self.dep_list[..curr] {
+            ab_syms.or_assign(*s, in_ab as _)
+        }
     }
 
     pub(super) fn assumptions(&self) -> impl Iterator<Item = SpanRange> + '_ {
