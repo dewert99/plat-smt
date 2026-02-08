@@ -101,6 +101,9 @@ pub struct InterpolantRecorder {
     ab_defs: StaticFlagVec<2, DefExp>,
     ab_syms: StaticFlagVec<2, Symbol>,
 
+    // temporary use within one method
+    ab_syms_back: StaticFlagVec<2, Symbol>,
+
     defs_marker_after_solve: u32,
 
     dep_checker: DepChecker,
@@ -157,9 +160,11 @@ impl InterpolantRecorder {
             }
         }
 
+        self.ab_syms_back.clone_from(&self.ab_syms);
         self.dep_checker.resolve_syms_in_ab(&mut self.ab_syms);
-
-        self.set_def_status_from_syms(intern)
+        let res = self.set_def_status_from_syms(intern);
+        mem::swap(&mut self.ab_syms_back, &mut self.ab_syms);
+        res
     }
 
     fn set_def_status_from_syms(

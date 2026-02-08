@@ -185,7 +185,7 @@ impl Euf {
         match (e1, e2) {
             (Exp::Left(b1), Exp::Left(b2)) => match (b1.to_lit(), b2.to_lit()) {
                 (Err(pol), Ok(l)) | (Ok(l), Err(pol)) => {
-                    acts.propagate(l ^ !pol);
+                    acts.assert(BoolExp::unknown(l ^ !pol));
                 }
                 (Err(b1), Err(b2)) => {
                     if b1 != b2 {

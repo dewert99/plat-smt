@@ -235,9 +235,9 @@ checksum = "460fbee9c2c2f33933d720630a6a0bac33ba7053db5344fac858d4b8952d77d5"
 
 [[package]]
 name = "default-vec2"
-version = "0.1.4"
+version = "0.1.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "52b8acfae8560f68dfa16dda16b70326c02902acd41d7e29f1e2df48d59f8aa0"
+checksum = "0d39654454d9644976d691512327d6d467fdb2aaa1c48fcddb0376df5247f2cf"
 
 [[package]]
 name = "either"
