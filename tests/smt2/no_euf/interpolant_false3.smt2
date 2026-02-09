@@ -1,0 +1,6 @@
+(declare-const p Bool)
+(declare-const q Bool)
+(assert (! (and (or p q) (=> p q) (=> q p) (not (and p q))) :named a))
+(check-sat)
+(get-interpolants (and a) (and))
+(get-interpolants (and) (and a))

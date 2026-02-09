@@ -1,0 +1,5 @@
+(assert (! false :named f))
+(assert (! true :named t))
+(check-sat)
+(get-interpolants t f)
+(get-interpolants f t)

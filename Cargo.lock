@@ -235,9 +235,9 @@ checksum = "460fbee9c2c2f33933d720630a6a0bac33ba7053db5344fac858d4b8952d77d5"
 
 [[package]]
 name = "default-vec2"
-version = "0.1.5"
+version = "0.1.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "0d39654454d9644976d691512327d6d467fdb2aaa1c48fcddb0376df5247f2cf"
+checksum = "a41c9ac7821a2b7f70c709eb7474e6a7ac591a628956409e2e9d523558504fcd"
 
 [[package]]
 name = "either"
@@ -457,7 +457,7 @@ dependencies = [
 [[package]]
 name = "platsat"
 version = "0.5.0"
-source = "git+https://github.com/dewert99/platsat?branch=main#9aa48ad517c3b600234fa08f46459274105a9dcd"
+source = "git+https://github.com/dewert99/platsat?branch=main#d9f76c6929d83461777d1c01ce13e23319ae4b3f"
 dependencies = [
  "bytemuck",
  "default-vec2",

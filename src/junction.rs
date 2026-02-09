@@ -88,6 +88,14 @@ impl<const IS_AND: bool> Junction<IS_AND> {
         self.lits.clear();
         self.absorbing = false;
     }
+
+    pub(crate) fn lits(&self) -> Option<&[Lit]> {
+        if self.absorbing {
+            None
+        } else {
+            Some(&self.lits)
+        }
+    }
 }
 
 impl BitAnd<BoolExp> for BoolExp {
