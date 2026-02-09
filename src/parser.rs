@@ -7,7 +7,7 @@ use crate::outer_solver::{
 };
 use crate::parser::Error::*;
 use crate::parser_core::{ParseError, SexpParser, SexpTerminal, SexpToken, SexpVisitor, SpanRange};
-use crate::recorder::recorder::Feature;
+use crate::recorder::recorder::{Feature, InterpolantGroup};
 use crate::recorder::{dep_checker, Recorder};
 use crate::solver::{SolveResult, SolverCollapse, UnsatCoreConjunction};
 use crate::util::{format_args2, parenthesized, powi, DefaultHashBuilder};
@@ -847,7 +847,8 @@ impl<W: Write, L: Logic> Parser<W, L> {
     fn parse_interpolant_arg<R: FullBufRead>(
         &mut self,
         rest: &mut CountingParser<R>,
-    ) -> Result<L::BoolBufMarker> {
+        group: InterpolantGroup,
+    ) -> Result<()> {
         let (solver, def) = self.core.solver_mut_with_def();
         let check_sym = |s: Symbol| match def(s) {
             None => Err(AddSexp(s.into(), Unbound)),
@@ -862,8 +863,9 @@ impl<W: Write, L: Logic> Parser<W, L> {
         };
         match rest.next()? {
             SexpToken::Terminal(SexpTerminal::Symbol(s)) => {
-                let sym = check_sym(solver.th.arg.intern.symbols.intern(s));
-                solver.th.arg.recorder.try_intern_syms(iter::once(sym))
+                let sym = check_sym(solver.th.arg.intern.symbols.intern(s))?;
+                solver.th.arg.recorder.flag_sym_for_interpolant(sym, &group);
+                Ok(())
             }
             SexpToken::List(mut l) => {
                 let SexpToken::Terminal(SexpTerminal::Symbol("and")) =
@@ -871,16 +873,15 @@ impl<W: Write, L: Logic> Parser<W, L> {
                 else {
                     return Err(InvalidCommand);
                 };
-                solver
-                    .th
-                    .arg
-                    .recorder
-                    .try_intern_syms(l.zip_map(iter::repeat(()), |res, ()| match res? {
-                        SexpToken::Terminal(SexpTerminal::Symbol(s)) => {
-                            check_sym(solver.th.arg.intern.symbols.intern(s))
-                        }
-                        _ => Err(InvalidCommand),
-                    }))
+                l.map(|res| match res? {
+                    SexpToken::Terminal(SexpTerminal::Symbol(s)) => {
+                        let sym = check_sym(solver.th.arg.intern.symbols.intern(s))?;
+                        solver.th.arg.recorder.flag_sym_for_interpolant(sym, &group);
+                        Ok(())
+                    }
+                    _ => Err(InvalidCommand),
+                })
+                .try_for_each(|x| x)
             }
             _ => Err(InvalidCommand),
         }
@@ -1153,16 +1154,14 @@ impl<W: Write, L: Logic> Parser<W, L> {
                 {
                     return Err(not_enabled!("produce-interpolants"));
                 }
-                let a = self.parse_interpolant_arg(&mut rest)?;
-                let b = self.parse_interpolant_arg(&mut rest)?;
+                self.parse_interpolant_arg(&mut rest, InterpolantGroup::A)?;
+                self.parse_interpolant_arg(&mut rest, InterpolantGroup::B)?;
                 self.core
                     .solver_mut()
                     .write_interpolant(
                         pre_solve_level,
                         &self.named_assertions,
                         |s| rest.p.lookup_range(s),
-                        a,
-                        b,
                         &mut self.writer.writer,
                     )
                     .map_err(Custom)?;

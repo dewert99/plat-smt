@@ -26,6 +26,16 @@ pub enum Feature {
     Interpolant,
 }
 
+pub struct InterpolantGroup {
+    pub(super) is_a: bool,
+}
+
+impl InterpolantGroup {
+    pub const A: Self = InterpolantGroup { is_a: true };
+
+    pub const B: Self = InterpolantGroup { is_a: false };
+}
+
 pub trait Recorder: Default + Incremental + 'static {
     fn log_def<Exp: ExpLike, Exp2: AsRexp>(
         &mut self,
@@ -48,34 +58,13 @@ pub trait Recorder: Default + Incremental + 'static {
         false
     }
 
-    type SymBufMarker: Copy;
-
-    fn intern_syms(&mut self, syms: impl Iterator<Item = Symbol>) -> Self::SymBufMarker;
-
-    fn try_intern_syms<E>(
-        &mut self,
-        mut bools: impl Iterator<Item = Result<Symbol, E>>,
-    ) -> Result<Self::SymBufMarker, E> {
-        let mut status = Ok(());
-        let res = self.intern_syms(bools.by_ref().map_while(|x| match x {
-            Ok(x) => Some(x),
-            Err(e) => {
-                status = Err(e);
-                None
-            }
-        }));
-        status?;
-        bools.try_for_each(|x| x.map(|_| ()))?;
-        Ok(res)
-    }
+    fn flag_sym_for_interpolant(&mut self, _sym: Symbol, _group: &InterpolantGroup) {}
 
     fn write_interpolant<'a, 'b, Th: FullTheory<Self>>(
         _solver: &'a mut Solver<Th, Self>,
         _pre_solve_marker: LevelMarker<Th::LevelMarker, Self::LevelMarker>,
         _assumptions: &UnsatCoreConjunction<SpanRange>,
         _map_assumptions: impl Fn(SpanRange) -> &'b str,
-        _a: Self::SymBufMarker,
-        _b: Self::SymBufMarker,
         _writer: &mut impl Write,
     ) -> Result<(), Cow<'static, str>> {
         Err(Cow::Borrowed("unsupported interpolants"))
@@ -162,8 +151,4 @@ impl Recorder for LoggingRecorder {
             )
         )
     }
-
-    type SymBufMarker = ();
-
-    fn intern_syms(&mut self, _: impl Iterator<Item = Symbol>) -> Self::SymBufMarker {}
 }
