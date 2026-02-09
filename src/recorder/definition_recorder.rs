@@ -269,10 +269,6 @@ impl Recorder for DefinitionRecorder {
     }
 
     fn log_clause(&mut self, _: &[Lit], _: ClauseKind) {}
-
-    type SymBufMarker = ();
-
-    fn intern_syms(&mut self, _: impl Iterator<Item = Symbol>) -> Self::SymBufMarker {}
 }
 
 #[derive(Copy, Clone)]

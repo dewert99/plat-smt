@@ -37,11 +37,9 @@ pub trait Logic: Sized {
             Self::CM,
         >;
 
-    type BoolBufMarker: Copy;
-
     type RLevelMarker: Clone;
 
-    type R: Recorder<SymBufMarker = Self::BoolBufMarker, LevelMarker = Self::RLevelMarker>;
+    type R: Recorder<LevelMarker = Self::RLevelMarker>;
     type Parser: ParserFragment<Self::Exp, WrapSolver<Self>, Self::M>;
 
     type EM;
@@ -72,8 +70,6 @@ where
     type LevelMarker = Th::LevelMarker;
 
     type Theory = Th;
-
-    type BoolBufMarker = R::SymBufMarker;
 
     type RLevelMarker = R::LevelMarker;
     type R = R;

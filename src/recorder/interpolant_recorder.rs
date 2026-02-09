@@ -74,7 +74,7 @@ enum ErrorReason<'a> {
     MissedAssumption(&'a str),
 }
 use crate::parser_core::SpanRange;
-use crate::recorder::recorder::Feature;
+use crate::recorder::recorder::{Feature, InterpolantGroup};
 use ErrorReason::*;
 
 #[derive(Default)]
@@ -94,7 +94,6 @@ pub struct InterpolantRecorder {
     /// resolved yet.
     clause_refs: HashMap<ClauseRef, u32>,
     def_stack: Vec<DefExp>,
-    sym_buf: Vec<Symbol>,
     clause_boundary: usize,
 
     // Cleared at the end of `find_interpolant`
@@ -137,18 +136,9 @@ impl InterpolantRecorder {
 
     fn set_def_exps_status<'a>(
         &mut self,
-        a: (usize, usize),
-        b: (usize, usize),
         map_assumption: impl Fn(SpanRange) -> &'a str,
         intern: &mut InternInfo,
     ) -> Result<(), ErrorReason<'a>> {
-        for &a_sym in &self.sym_buf[a.0..a.1] {
-            self.ab_syms.or_assign(a_sym, A_ONLY)
-        }
-        for &b_sym in &self.sym_buf[b.0..b.1] {
-            self.ab_syms.or_assign(b_sym, B_ONLY)
-        }
-
         for a in self.dep_checker.assumptions() {
             let a = map_assumption(a);
             if a.starts_with("(") {
@@ -458,12 +448,9 @@ impl Recorder for InterpolantRecorder {
         matches!(self.state, State::Proving)
     }
 
-    type SymBufMarker = (usize, usize);
-
-    fn intern_syms(&mut self, syms: impl Iterator<Item = Symbol>) -> Self::SymBufMarker {
-        let start_len = self.sym_buf.len();
-        self.sym_buf.extend(syms);
-        (start_len, self.sym_buf.len())
+    fn flag_sym_for_interpolant(&mut self, sym: Symbol, group: &InterpolantGroup) {
+        let group = if group.is_a { A_ONLY } else { B_ONLY };
+        self.ab_syms.set(sym, group)
     }
 
     fn write_interpolant<'a, 'b, Th: FullTheory<Self>>(
@@ -471,8 +458,6 @@ impl Recorder for InterpolantRecorder {
         pre_solve_marker: SolverMarker<Th::LevelMarker, LevelMarker>,
         assumptions: &UnsatCoreConjunction<SpanRange>,
         map_assumptions: impl Fn(SpanRange) -> &'b str,
-        a: Self::SymBufMarker,
-        b: Self::SymBufMarker,
         writer: &mut impl Write,
     ) -> Result<(), Cow<'static, str>> {
         let pre_solve_recorder_marker = pre_solve_marker.recorder.def_marker.def_maker;
@@ -480,20 +465,20 @@ impl Recorder for InterpolantRecorder {
             initialize_interpolant_info(solver, pre_solve_marker.clone(), &assumptions.conj);
         };
 
-        let res = match find_interpolant(solver, a, b, assumptions, &map_assumptions) {
+        let res = match find_interpolant(solver, assumptions, &map_assumptions) {
             Ok(res) => {
                 solver.th.arg.recorder.ab_syms.clear();
                 solver.th.arg.recorder.ab_defs.clear();
                 res
             }
             Err(MixedTerm(def)) if usize::from(def) >= pre_solve_recorder_marker as usize => {
-                let lit_buf = mem::take(&mut solver.th.arg.recorder.sym_buf);
+                let ab_sym_buf = mem::take(&mut solver.th.arg.recorder.ab_syms);
                 solver.th.arg.recorder.exit_solved_state();
-                solver.th.arg.recorder.sym_buf = lit_buf;
+                solver.th.arg.recorder.ab_syms = ab_sym_buf;
                 solver.pop_to_level(pre_solve_marker.clone());
                 solver.check_sat_assuming_preserving_trail(&assumptions.conj);
                 initialize_interpolant_info(solver, pre_solve_marker, &assumptions.conj);
-                find_interpolant(solver, a, b, assumptions, map_assumptions).unwrap()
+                find_interpolant(solver, assumptions, map_assumptions).unwrap()
             }
             Err(e) => {
                 let s = match e {
@@ -548,7 +533,7 @@ impl Recorder for InterpolantRecorder {
         self.clause_proofs.clear();
         self.clause_refs.clear();
         self.def_stack.clear();
-        self.sym_buf.clear();
+        self.ab_syms.clear();
         self.clause_boundary = 0;
     }
 
@@ -739,8 +724,6 @@ fn theory_partial_interpolate<Th: FullTheory<InterpolantRecorder>>(
 
 fn find_interpolant<'a, Th: FullTheory<InterpolantRecorder>>(
     solver: &mut Solver<Th, InterpolantRecorder>,
-    a: (usize, usize),
-    b: (usize, usize),
     assumptions: &UnsatCoreConjunction<SpanRange>,
     map_assumption: impl Fn(SpanRange) -> &'a str,
 ) -> Result<DefExp, ErrorReason<'a>> {
@@ -749,7 +732,7 @@ fn find_interpolant<'a, Th: FullTheory<InterpolantRecorder>>(
         .th
         .arg
         .recorder
-        .set_def_exps_status(a, b, &map_assumption, &mut solver.th.arg.intern)?;
+        .set_def_exps_status(&map_assumption, &mut solver.th.arg.intern)?;
     let (conj, mapper) = assumptions.parts();
     let Some(conj_lits) = conj.lits() else {
         return Ok(solver.th.arg.recorder.handle_false_assumptions(
