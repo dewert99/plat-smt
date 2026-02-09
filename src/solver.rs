@@ -242,11 +242,11 @@ impl<Th: FullTheory<R>, R: Recorder> Solver<Th, R> {
     /// Check if the current assertions combined with the assertions in `c` are satisfiable
     /// Leave the solver in a state representing the model
     pub fn check_sat_assuming_preserving_trail(&mut self, c: &Conjunction) -> SolveResult {
-        let res = match c.absorbing {
-            true => lbool::FALSE,
-            false => self
+        let res = match c.lits() {
+            None => lbool::FALSE,
+            Some(lits) => self
                 .sat
-                .solve_limited_preserving_trail_th(&mut self.th, &c.lits),
+                .solve_limited_preserving_trail_th(&mut self.th, lits),
         };
         if res == lbool::FALSE {
             debug!("check-sat {c:?} returned unsat",);
@@ -446,6 +446,10 @@ impl<T> UnsatCoreInfo<T> {
         self.data.get(&x)
     }
 
+    pub(crate) fn false_by(&self) -> Option<&T> {
+        self.false_by.as_ref()
+    }
+
     pub(crate) fn core(
         &self,
         lits: impl InternalIterator<Item = Lit>,
@@ -493,10 +497,10 @@ impl<T> UnsatCoreConjunction<T> {
     }
 
     pub(crate) fn push(&self) -> u32 {
-        if self.conj.absorbing {
-            u32::MAX
+        if let Some(lits) = self.conj.lits() {
+            lits.len() as u32
         } else {
-            self.conj.lits.len() as u32
+            u32::MAX
         }
     }
 

@@ -1,4 +1,4 @@
 unsat
 (and pq (= (f p) a))
 (or (not (= q p)) (= c a))
-(and cd pq qp)
+(and cd pq qp (and cd qp))

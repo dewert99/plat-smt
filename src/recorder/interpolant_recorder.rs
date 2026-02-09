@@ -7,7 +7,7 @@ use crate::recorder::dep_checker::{DepChecker, DepCheckerAction};
 use crate::recorder::slice_vec::SliceVec;
 use crate::recorder::{dep_checker, ClauseKind, Recorder};
 use crate::rexp::{AsRexp, NamespaceVar};
-use crate::solver::{LevelMarker as SolverMarker, UnsatCoreConjunction};
+use crate::solver::{LevelMarker as SolverMarker, UnsatCoreConjunction, UnsatCoreInfo};
 use crate::theory::Incremental;
 use crate::util::{display_sexp, DebugIter, DisplayFn, HashMap};
 use crate::{BoolExp, Conjunction, ExpLike, Solver};
@@ -41,10 +41,10 @@ enum State {
 struct ClauseProofElement {
     pivot: Lit,
     /// Represents a [`ClauseRef`] in [`State::Proving`], and an index in [`State::Final`].
-    /// The indexes index into `clause_proofs ++ tseiten_clauses ++ clauses[clause_boundary..]`
-    /// Where `clause_proofs` represent clauses produced by resolution, `tseiten_clause` represent
-    /// clauses produce by the tseiten transformation, and `clauses[clause_boundary..]` represent
-    /// theory lemmas
+    /// The indexes index into `clause_proofs ++ assumption ++ tseiten_clauses ++ clauses[clause_boundary..]`
+    /// Where `clause_proofs` represent clauses produced by resolution, `assumption` represents
+    /// the assumptions as unit clauses `tseiten_clause` represent lauses produce by the tseiten
+    /// transformation, and `clauses[clause_boundary..]` represent theory lemmas
     clause: u32,
 }
 
@@ -212,6 +212,32 @@ impl InterpolantRecorder {
         self.ab_defs.get(def) == A_ONLY
     }
 
+    fn assumption_partial_interpolate<'a>(
+        &mut self,
+        assumptions: &[Lit],
+        intern: &mut InternInfo,
+        mapper: &UnsatCoreInfo<SpanRange>,
+        map_assumption: impl Fn(SpanRange) -> &'a str,
+    ) {
+        for &assumption in assumptions.iter() {
+            let def = self.defs.intern_exp(BoolExp::unknown(assumption));
+            let partial_interpolant = match self.ab_defs.get(def) {
+                A_ONLY => FALSE_DEF_EXP,
+                B_ONLY => TRUE_DEF_EXP,
+                x => {
+                    debug_assert_eq!(x, BOTH);
+                    let s = map_assumption(*mapper.get(!assumption).unwrap());
+                    if self.ab_syms.get(intern.symbols.intern(s)) == A_ONLY {
+                        def
+                    } else {
+                        TRUE_DEF_EXP
+                    }
+                }
+            };
+            self.def_stack.push(partial_interpolant);
+        }
+    }
+
     fn tseiten_partial_interpolate(&mut self, sat: &TheoryArg) {
         for tseiten in self.tseiten_clauses.iter().rev() {
             let tseiten = sat.resolve_clause_ref(*tseiten);
@@ -238,12 +264,15 @@ impl InterpolantRecorder {
         }
     }
 
-    fn resolution_partial_interpolate(&mut self) {
+    fn resolution_partial_interpolate(&mut self, assumptions: usize, intern: &InternInfo) {
         let theory_clauses = self.clauses.len() - self.clause_boundary;
-        let max_idx = self.tseiten_clauses.len() + self.clause_proofs.len() + theory_clauses - 1;
+        let max_idx =
+            (self.tseiten_clauses.len() + assumptions + self.clause_proofs.len() + theory_clauses)
+                as isize
+                - 1;
         for proof in self.clause_proofs.iter().rev() {
             let (first, rest) = proof.split_first().unwrap();
-            let def = self.def_stack[max_idx - first.clause as usize];
+            let def = self.def_stack[max_idx as usize - first.clause as usize];
             let def_stack_len = self.def_stack.len();
             let mut interp = InterpolateArg {
                 ab: &self.ab_defs,
@@ -256,7 +285,7 @@ impl InterpolantRecorder {
             for elt in rest {
                 let pivot_def = interp.intern_exp(elt.pivot.var());
                 let def_is_and = !interp.is_def_a_only(pivot_def);
-                let def = interp.def_stack[max_idx - elt.clause as usize];
+                let def = interp.def_stack[max_idx as usize - elt.clause as usize];
                 if def_is_and != is_and {
                     let so_far = interp.finish(if is_and { AND_SYM } else { OR_SYM });
                     interp.add_def(so_far);
@@ -268,14 +297,6 @@ impl InterpolantRecorder {
             drop(interp);
             self.def_stack.push(res);
         }
-    }
-
-    fn finalize_interplant<'a>(
-        &mut self,
-        assumptions: &UnsatCoreConjunction<SpanRange>,
-        map_assumption: impl Fn(SpanRange) -> &'a str,
-        intern: &mut InternInfo,
-    ) -> DefExp {
         info!(
             "partial interpolants: {}",
             display_sexp(
@@ -285,39 +306,29 @@ impl InterpolantRecorder {
                     .map(|&d| self.defs.display_def(d, &intern))
             )
         );
-        let base = self.def_stack.pop().unwrap();
-        let ab_syms = mem::take(&mut self.ab_syms);
-        let mut arg = self.arg();
-        arg.add_def(base);
-        let (conj, mapper) = assumptions.parts();
-        for &a in &conj.lits {
-            let def = arg.intern_exp(BoolExp::unknown(a));
-            if arg.ab.get(def) == BOTH {
-                let sym = intern
-                    .symbols
-                    .intern(map_assumption(*mapper.get(!a).unwrap()));
-                if ab_syms.get(sym) == A_ONLY {
-                    debug!(
-                        "{} is only in a but uses only shared symbols",
-                        arg.defs.display_stand_alone_def(def, intern)
-                    );
-                    arg.add_def(def)
-                }
-            }
-        }
-        let res = arg.finish(AND_SYM);
-        drop(arg);
-        self.ab_syms = ab_syms;
-        self.ab_defs.clear();
-        self.ab_syms.clear();
-        res
     }
 
-    fn initialize_tseiten_clauses(&mut self, sat: &TheoryArg, intern: &InternInfo) {
-        let clause_proofs = self.clause_proofs.len();
+    fn handle_false_assumptions<'a>(
+        &mut self,
+        intern: &mut InternInfo,
+        mapper: &UnsatCoreInfo<SpanRange>,
+        map_assumption: impl Fn(SpanRange) -> &'a str,
+    ) -> DefExp {
+        let s = map_assumption(*mapper.false_by().unwrap());
+        let sym = intern.symbols.intern(s);
+        let sym_info = self.ab_syms.get(sym);
+        if sym_info == A_ONLY {
+            FALSE_DEF_EXP
+        } else {
+            TRUE_DEF_EXP
+        }
+    }
+
+    fn initialize_tseiten_clauses(&mut self, sat: &TheoryArg, intern: &InternInfo, i: &mut u32) {
         for (k, v) in &mut self.clause_refs {
             if *v == u32::MAX && *k != ClauseRef::SPECIAL {
-                *v = (self.tseiten_clauses.len() + clause_proofs) as u32;
+                *v = *i;
+                *i += 1;
                 self.tseiten_clauses.push(*k);
                 let c = sat.resolve_clause_ref(*k);
                 info!(
@@ -328,8 +339,7 @@ impl InterpolantRecorder {
         }
     }
 
-    fn finalize_clause_proofs(&mut self, intern: &InternInfo) {
-        let mut theory_lemma_idx = (self.clause_proofs.len() + self.tseiten_clauses.len()) as u32;
+    fn finalize_clause_proofs(&mut self, intern: &InternInfo, i: &mut u32) {
         let mut clause_idx = self.clause_boundary;
         for proof_elt in self.clause_proofs.iter_mut().flatten() {
             let cr = proof_elt.clause_ref();
@@ -340,8 +350,8 @@ impl InterpolantRecorder {
                         .display_clause(self.clauses[clause_idx].iter().copied(), intern)
                 );
                 clause_idx += 1;
-                theory_lemma_idx += 1;
-                theory_lemma_idx - 1
+                *i += 1;
+                *i - 1
             } else {
                 *self.clause_refs.get(&proof_elt.clause_ref()).unwrap()
             }
@@ -418,9 +428,10 @@ impl Recorder for InterpolantRecorder {
 
     fn log_clause(&mut self, clause: &[Lit], kind: ClauseKind) {
         trace!("Adding clause {:?} {:?} in {:?}", clause, kind, self.state);
-        match (self.state, kind) {
+        match (self.state, &kind) {
             (State::Solving, ClauseKind::Sat)
             | (State::Proving, ClauseKind::TheoryExplain | ClauseKind::TheoryConflict(_)) => {
+                debug!("Adding clause {:?} {:?} in {:?}", clause, kind, self.state);
                 self.clauses.push(clause)
             }
             _ => {}
@@ -470,7 +481,11 @@ impl Recorder for InterpolantRecorder {
         };
 
         let res = match find_interpolant(solver, a, b, assumptions, &map_assumptions) {
-            Ok(res) => res,
+            Ok(res) => {
+                solver.th.arg.recorder.ab_syms.clear();
+                solver.th.arg.recorder.ab_defs.clear();
+                res
+            }
             Err(MixedTerm(def)) if usize::from(def) >= pre_solve_recorder_marker as usize => {
                 let lit_buf = mem::take(&mut solver.th.arg.recorder.sym_buf);
                 solver.th.arg.recorder.exit_solved_state();
@@ -571,19 +586,12 @@ impl Recorder for InterpolantRecorder {
 
 fn analyze_final_clause<Th: FullTheory<InterpolantRecorder>>(
     solver: &mut Solver<Th, InterpolantRecorder>,
-    assumptions: &Conjunction,
 ) {
     solver.th.arg.recorder.clause_proofs.push(&[]);
     solver.simplify();
     solver.analyze_final_conflict();
     info!(
-        "final: {} by {:?}",
-        solver
-            .th
-            .arg
-            .recorder
-            .defs
-            .display_clause(assumptions.lits.iter().map(|&x| !x), solver.intern()),
+        "final: false by {:?}",
         solver.th.arg.recorder.display_last_proof(solver.intern())
     );
 }
@@ -593,32 +601,28 @@ fn initialize_interpolant_info<Th: FullTheory<InterpolantRecorder>>(
     pre_solve_marker: SolverMarker<Th::LevelMarker, LevelMarker>,
     assumptions: &Conjunction,
 ) {
-    solver.th.arg.recorder.defs_marker_after_solve =
-        solver.th.arg.recorder.defs.create_level().def_maker;
     solver.th.arg.recorder.clause_boundary = solver.th.arg.recorder.clauses.len();
-    solver.th.arg.recorder.state = State::Proving;
     solver.th.arg.recorder.defs_marker_after_solve =
         solver.th.arg.recorder.defs.create_level().def_maker;
+    let Some(assumption_lits) = assumptions.lits() else {
+        solver.th.arg.recorder.state = State::Final;
+        return;
+    };
+    solver.th.arg.recorder.state = State::Proving;
     solver.sat.pop_model(&mut solver.th);
     solver.pop_to_level_keep_lits(pre_solve_marker.clone());
     let mut levels = Vec::with_capacity(solver.th.arg.recorder.clauses.len());
-    solver.open(
-        |_, acts| {
-            for &l in &assumptions.lits {
-                acts.sat.add_clause_unchecked([l]);
-            }
-        },
-        (),
-    );
+    for &l in assumption_lits {
+        solver.sat.add_exact_clause([l])
+    }
     for i in 0..solver.th.arg.recorder.clauses.len() {
         let level = solver.create_level();
         if !solver.is_ok() {
             break;
         }
         levels.push(level);
-        solver
-            .sat
-            .add_exact_clause(solver.th.arg.recorder.clauses[i].iter().copied());
+        let clause = &solver.th.arg.recorder.clauses[i];
+        solver.sat.add_exact_clause(clause.iter().copied());
     }
 
     info!(
@@ -630,11 +634,33 @@ fn initialize_interpolant_info<Th: FullTheory<InterpolantRecorder>>(
             .defs
             .dump_global_defs(&solver.th.arg.intern)
     );
-    analyze_final_clause(solver, assumptions);
+    analyze_final_clause(solver);
 
     // analyze each learned clause
     for (i, level) in levels.into_iter().enumerate().rev() {
         let _ = analyze_clause(solver, i, level);
+    }
+
+    let mut i = solver.th.arg.recorder.clause_proofs.len() as u32;
+    for (cr, &l) in solver.sat.clauses().rev().zip(assumption_lits.iter().rev()) {
+        let x = solver
+            .th
+            .arg
+            .recorder
+            .clause_refs
+            .entry(cr)
+            .or_insert(u32::MAX);
+        *x = i;
+        i += 1;
+        info!(
+            "{cr:?}: {} by assumption",
+            solver
+                .th
+                .arg
+                .recorder
+                .defs
+                .display_clause([l].into_iter(), solver.intern())
+        );
     }
 
     solver.pop_to_level_keep_lits(pre_solve_marker);
@@ -643,8 +669,8 @@ fn initialize_interpolant_info<Th: FullTheory<InterpolantRecorder>>(
             let recorder = &mut acts.incr.recorder;
             let sat = &acts.sat;
             let intern = &acts.incr.intern;
-            recorder.initialize_tseiten_clauses(sat, intern);
-            recorder.finalize_clause_proofs(intern);
+            recorder.initialize_tseiten_clauses(sat, intern, &mut i);
+            recorder.finalize_clause_proofs(intern, &mut i);
             recorder.state = State::Final;
         },
         (),
@@ -724,17 +750,33 @@ fn find_interpolant<'a, Th: FullTheory<InterpolantRecorder>>(
         .arg
         .recorder
         .set_def_exps_status(a, b, &map_assumption, &mut solver.th.arg.intern)?;
+    let (conj, mapper) = assumptions.parts();
+    let Some(conj_lits) = conj.lits() else {
+        return Ok(solver.th.arg.recorder.handle_false_assumptions(
+            &mut solver.th.arg.intern,
+            mapper,
+            map_assumption,
+        ));
+    };
     theory_partial_interpolate(solver);
     solver.open(
-        |_, arg| arg.incr.recorder.tseiten_partial_interpolate(&arg.sat),
+        |_, arg| {
+            arg.incr.recorder.tseiten_partial_interpolate(&arg.sat);
+            arg.incr.recorder.assumption_partial_interpolate(
+                conj_lits,
+                &mut arg.incr.intern,
+                mapper,
+                map_assumption,
+            );
+        },
         (),
     );
-    solver.th.arg.recorder.resolution_partial_interpolate();
-    Ok(solver.th.arg.recorder.finalize_interplant(
-        assumptions,
-        map_assumption,
-        &mut solver.th.arg.intern,
-    ))
+    solver
+        .th
+        .arg
+        .recorder
+        .resolution_partial_interpolate(conj_lits.len(), &solver.th.arg.intern);
+    Ok(solver.th.arg.recorder.def_stack.pop().unwrap())
 }
 
 /// Allows building [`DefExp`]s
