@@ -272,7 +272,7 @@ enum_str! {Smt2Command{
     "get-model" => GetModel(0),
     "get-info" => GetInfo(1),
     "assert" => Assert(1),
-    "check-sat" => CheckSat(1),
+    "check-sat" => CheckSat(0),
     "check-sat-assuming" => CheckSatAssuming(1),
     "push" => Push(0),
     "pop" => Pop(0),
@@ -805,10 +805,7 @@ impl<W: Write, L: Logic> Parser<W, L> {
                     // since interpolating treats all clauses from before the most recent solve as non learned
                     self.core.solver_mut().pop_to_level(marker)
                 }
-            } else {
-                self.command_level_marker = Some(self.core.solver_mut().create_level());
             }
-
             self.state = State::Base;
         }
     }
@@ -1261,6 +1258,7 @@ impl<W: Write, L: Logic> Parser<W, L> {
                 rest.finish()?;
             }
             Smt2Command::CheckSat => {
+                rest.finish()?;
                 self.old_named_assertions = self.named_assertions.push();
                 self.check_sat()?;
             }
@@ -1286,6 +1284,7 @@ impl<W: Write, L: Logic> Parser<W, L> {
             }
             Smt2Command::Push => {
                 let n = rest.try_next_parse()?.unwrap_or(1);
+                rest.finish()?;
                 for _ in 0..n {
                     let info = LevelMarker {
                         bound: self.global_stack.len() as u32,
@@ -1303,6 +1302,7 @@ impl<W: Write, L: Logic> Parser<W, L> {
             }
             Smt2Command::Pop => {
                 let n = rest.try_next_parse()?.unwrap_or(1);
+                rest.finish()?;
                 if n > self.push_info.len() {
                     info!("Pop ({} -> clear)", self.push_info.len());
                     self.clear()
