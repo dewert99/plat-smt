@@ -26,11 +26,12 @@ that accepts a subset of SMT2LIB syntax for the logic `QF_UF`
 - [x] `echo`
 - [x] `set-info`
 - [x] `get-info`
+- [x] `get-interpolants`
 - [ ] `get-proof`
 
 ## Binary usage
-The binary (produced by `cargo build`) takes in a list of `.smt2` files  and evaluates sequentially as if they were a single concatenated file.
-This list can optionally be followed by `-i` which enters interactive mode (reading from `stdin`) after the files are evaluated
+The binary (produced by `cargo build`) takes in a list of `.smt2` files and evaluates sequentially as if they were a single concatenated file.
+This list can optionally be followed by `-i` which enters interactive mode (reading from `stdin`) after the files are evaluated.
 
 ## Parameters (`set-option`)
 Most parameters currently come from [batsat](https://docs.rs/batsat/latest/batsat/core/struct.SolverOpts.html), and are prefixed by `sat.`,
@@ -42,6 +43,13 @@ for example random initial activations would be enabled with:
 * `:produce-models` (default `true`) 
 * `:produce-unsat-cores` (default `true`)
 * `:print-success` (default `false`)
+
+## Interpolants
+When build with the `interpolant` feature `plat-smt` supports interpolant generation based on the SMTInterpol [proposal](https://ultimate.informatik.uni-freiburg.de/smtinterpol/proposal.pdf).
+`plat-smt` only supports binary interpolation, but does accept using `and` to include multiple formulas in the same partition.
+The `get-interpolants` command requires that all assumptions (both named assertions and arguments to `check-sat-assuming`) are included in one of the partitions.
+Unnamed assertions are included in all partitions when computing interpolants. 
+When using the `interpolant` feature the `:produce-interpolants` option defaults to `true`, but when not using the feature it defaults to `false` and cannot be set to `true`.
 
 ## Misc
 * The `yices-smt2` file is from `https://yices.csl.sri.com/` and is only included for testing
