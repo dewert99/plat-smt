@@ -30,7 +30,7 @@ test_add_more_mid_search_equalities = []
 [dev-dependencies]
 rstest = { version = "0.18.2", default-features = false, features = [] }
 walkdir = "2.5.0"
-codspeed-criterion-compat = "2.4.0"
+codspeed-criterion-compat = "4.3.0"
 
 [[bench]]
 name = "bench"

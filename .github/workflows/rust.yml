@@ -47,6 +47,7 @@ jobs:
       - run: SEED=1 cargo test --release --package plat-smt --test test test_smtlib_benchmarks
 
   benchmarks:
+    name: Simulation Benchmark
     needs: [test-starexec-bench]
     runs-on: ubuntu-latest
     steps:
@@ -63,7 +64,32 @@ jobs:
         run: cargo +1.89.0 codspeed build
 
       - name: Run the benchmarks
-        uses: CodSpeedHQ/action@v3
+        uses: CodSpeedHQ/action@v4
         with:
           token: ${{ secrets.CODSPEED_TOKEN }}
           run: cargo codspeed run
+          mode: 'simulation'
+  benchmarks_memory:
+    name: Memory Benchmark
+    needs: [ test-starexec-bench ]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v3
+
+      - name: Setup rust toolchain, cache and cargo-codspeed binary
+        uses: moonrepo/setup-rust@v1
+        with:
+          channel: 1.89.0
+          cache-target: release
+          bins: cargo-codspeed
+
+      - name: Build the benchmark target(s)
+        run: cargo +1.89.0 codspeed build -m memory
+
+      - name: Run the benchmarks
+        uses: CodSpeedHQ/action@v4
+        with:
+          token: ${{ secrets.CODSPEED_TOKEN }}
+          run: cargo codspeed run -m memory
+          mode: 'memory'
+
