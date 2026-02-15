@@ -57,7 +57,7 @@ jobs:
         uses: moonrepo/setup-rust@v1
         with:
           channel: 1.89.0
-          cache-target: release
+          cache-target: codspeed
           bins: cargo-codspeed
 
       - name: Build the benchmark target(s)
@@ -80,7 +80,7 @@ jobs:
         uses: moonrepo/setup-rust@v1
         with:
           channel: 1.89.0
-          cache-target: release
+          cache-target: codspeed
           bins: cargo-codspeed
 
       - name: Build the benchmark target(s)

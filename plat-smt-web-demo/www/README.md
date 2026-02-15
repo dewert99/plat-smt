@@ -1,0 +1,1 @@
+Simple playground for PlatSmt based on [lip](https://github.com/momori256/lip)'s playground
