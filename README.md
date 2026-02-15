@@ -1,6 +1,10 @@
 This is a toy Rust SMT solver build using [platsat](https://github.com/dewert99/platsat) and [plat-egg](https://github.com/dewert99/plat-egg)
 that accepts a subset of SMT2LIB syntax for the logic `QF_UF`
 
+## WASM
+
+Explore the [Live demo](https://dewert99.github.io/plat-smt/) via a browser.
+
 ## Supported syntax:
 - [x] `true`, `false`, `and`, `or`, `not`,
 - [x] `=>`, `xor`
