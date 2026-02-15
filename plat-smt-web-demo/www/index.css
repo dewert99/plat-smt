@@ -1,0 +1,158 @@
+* {
+    margin: 0;
+    padding: 0;
+}
+
+:root {
+    --color: #312f2f;
+    --light-color: #312f2f10;
+    --primary-color: #12b59d;
+    --accent-color: #de788c;
+
+    font-family: monospace;
+    color: var(--color);
+}
+
+.flex {
+    display: flex;
+}
+
+.card {
+    box-shadow: 0 2px 4px 0 rgba(0, 0, 0, 0.2);
+    padding: 1rem;
+}
+
+body {
+    padding: 2rem;
+}
+
+h1 {
+    padding-bottom: 2rem;
+}
+
+h2 {
+    font-weight: normal;
+}
+
+h3 {
+    font-weight: normal;
+    padding-bottom: 0.5rem;
+}
+
+.round-button {
+    border-radius: 0.5rem;
+    padding: 1.25rem;
+    text-align: center;
+    line-height: 1px;
+    cursor: pointer;
+    transition-duration: 0.4s;
+    background-color: white;
+
+    &.run {
+        color: var(--primary-color);
+        border: 2px solid var(--primary-color);
+        margin-right: 0.5rem;
+
+        &:hover {
+            background-color: var(--primary-color);
+            color: white;
+        }
+    }
+
+    &.clear {
+        color: var(--accent-color);
+        border: 2px solid var(--accent-color);
+
+        &:hover {
+            background-color: var(--accent-color);
+            color: white;
+        }
+    }
+
+    &.example {
+        color: var(--color);
+        border: 2px solid var(--color);
+
+        &:hover {
+            background-color: var(--color);
+            color: white;
+        }
+    }
+}
+
+textarea {
+    width: 90%;
+    display: block;
+    margin: 0 auto;
+    margin-top: 2rem;
+    padding: 1rem;
+    border: 1px solid var(--light-color);
+    background-color: var(--light-color);
+}
+
+hr {
+    margin: 2rem 0;
+    border: 1px solid var(--light-color);
+}
+
+ul {
+    list-style: none;
+}
+
+li {
+    margin-bottom: 1.5rem;
+    &:last-child {
+        margin-bottom: 0;
+    }
+}
+
+p {
+    &.ok {
+        color: var(--primary-color);
+    }
+    &.err {
+        color: var(--accent-color);
+    }
+}
+
+pre {
+    padding: 0.5rem;
+    margin-bottom: 0.5rem;
+    border: 1px solid var(--light-color);
+    background-color: var(--light-color);
+}
+
+dialog#example {
+    width: 50%;
+    height: 50%;
+    border: 2px solid var(--color);
+    margin: auto;
+    padding: 2rem;
+
+    .flex {
+        justify-content: space-between;
+        align-items: center;
+        padding-bottom: 1.5rem;
+    }
+
+    button.close {
+        font-size: 1rem;
+        width: 2rem;
+        height: 2rem;
+        text-align: center;
+        line-height: 1px;
+        cursor: pointer;
+        transition-duration: 0.4s;
+        background-color: white;
+        font-weight: bold;
+        color: var(--accent-color);
+        border: 2px solid var(--accent-color);
+        border-radius: 50%;
+        transition: 0.4s;
+
+        &:hover {
+            background: var(--accent-color);
+            color: white;
+        }
+    }
+}
