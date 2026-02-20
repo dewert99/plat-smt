@@ -4,13 +4,23 @@
 }
 
 :root {
-    --color: #312f2f;
-    --light-color: #312f2f10;
-    --primary-color: #12b59d;
-    --accent-color: #de788c;
+    --colour: #312f2f;
+    --background-colour: #ffffff;
+    --text-background-colour: #312f2f10;
+    --ok-colour: #12b59d;
+    --err-color: #de788c;
 
     font-family: monospace;
-    color: var(--color);
+    color: var(--colour);
+    background-color: var(--background-colour);
+}
+
+@media (prefers-color-scheme: dark) {
+    :root {
+        --background-colour: #1e1f22;
+        --colour: #ffffff;
+        --text-background-colour: #ffffff10;
+    }
 }
 
 .flex {
@@ -46,25 +56,25 @@ h3 {
     line-height: 1px;
     cursor: pointer;
     transition-duration: 0.4s;
-    background-color: white;
+    background-color: var(--background-colour);
 
     &.run {
-        color: var(--primary-color);
-        border: 2px solid var(--primary-color);
+        color: var(--ok-colour);
+        border: 2px solid var(--ok-colour);
         margin-right: 0.5rem;
 
         &:hover {
-            background-color: var(--primary-color);
+            background-color: var(--ok-colour);
             color: white;
         }
     }
 
     &.clear {
-        color: var(--accent-color);
-        border: 2px solid var(--accent-color);
+        color: var(--err-color);
+        border: 2px solid var(--err-color);
 
         &:hover {
-            background-color: var(--accent-color);
+            background-color: var(--err-color);
             color: white;
         }
     }
@@ -86,13 +96,14 @@ textarea {
     margin: 0 auto;
     margin-top: 2rem;
     padding: 1rem;
-    border: 1px solid var(--light-color);
-    background-color: var(--light-color);
+    border: 1px solid var(--text-background-colour);
+    background-color: var(--text-background-colour);
+    color: var(--colour);
 }
 
 hr {
     margin: 2rem 0;
-    border: 1px solid var(--light-color);
+    border: 1px solid var(--text-background-colour);
 }
 
 ul {
@@ -108,18 +119,18 @@ li {
 
 p {
     &.ok {
-        color: var(--primary-color);
+        color: var(--ok-colour);
     }
     &.err {
-        color: var(--accent-color);
+        color: var(--err-color);
     }
 }
 
 pre {
     padding: 0.5rem;
     margin-bottom: 0.5rem;
-    border: 1px solid var(--light-color);
-    background-color: var(--light-color);
+    border: 1px solid var(--text-background-colour);
+    background-color: var(--text-background-colour);
 }
 
 dialog#example {
@@ -145,13 +156,13 @@ dialog#example {
         transition-duration: 0.4s;
         background-color: white;
         font-weight: bold;
-        color: var(--accent-color);
-        border: 2px solid var(--accent-color);
+        color: var(--err-color);
+        border: 2px solid var(--err-color);
         border-radius: 50%;
         transition: 0.4s;
 
         &:hover {
-            background: var(--accent-color);
+            background: var(--err-color);
             color: white;
         }
     }
