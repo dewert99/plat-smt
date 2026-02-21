@@ -1,5 +1,6 @@
 #![forbid(unsafe_code)]
 #![no_std]
+#![cfg_attr(feature = "async", feature(async_drop))]
 
 extern crate alloc;
 extern crate no_std_compat as std;
@@ -32,7 +33,7 @@ pub mod rexp;
 use intern::Symbol;
 
 pub use exp::{BoolExp, ExpLike, HasSort, StaticSort, SubExp, SuperExp};
-pub use full_buf_read::FullBufRead;
+pub use full_buf_read::{AsyncFullBufRead, FullBufRead};
 pub use intern::Sort;
 #[doc(inline)]
 pub use junction::{Conjunction, Disjunction};
@@ -40,3 +41,4 @@ pub use outer_solver::OuterSolver;
 pub use parser::interp_smt2;
 pub use parser_fragment::AddSexpError;
 pub use solver::{Approx, BLit, SolveResult, Solver};
+pub use util::{poll, poll_ready};

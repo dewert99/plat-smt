@@ -1,8 +1,9 @@
-use crate::full_buf_read::FullBufRead;
+use crate::full_buf_read::AsyncFullBufRead;
 use core::fmt::{Debug, Display, Formatter};
 use core::mem::ManuallyDrop;
 use core::str::Utf8Error;
 use no_std_compat::prelude::v1::*;
+use std::mem;
 use std::string::FromUtf8Error;
 fn is_white_space_byte(c: u8) -> bool {
     matches!(c, b' ' | b'\n' | b'\t' | b'\r')
@@ -59,7 +60,8 @@ pub enum ParseError {
     #[error("integer overflow")]
     Overflow,
 }
-use crate::util::Bind;
+
+use crate::util::poll_ready;
 use ParseError::*;
 
 #[derive(Debug)]
@@ -140,7 +142,7 @@ enum DropToken {
     None,
 }
 
-impl<R: FullBufRead> SexpLexer<R> {
+impl<R: AsyncFullBufRead> SexpLexer<R> {
     fn new(reader: R) -> Self {
         Self {
             reader,
@@ -157,7 +159,7 @@ impl<R: FullBufRead> SexpLexer<R> {
     }
 
     fn consume_byte(&mut self) {
-        if let Some(c) = self.peek_byte() {
+        if let Some(&c) = self.reader.data().get(self.idx) {
             if c == b'\n' {
                 self.current_line += 1;
             }
@@ -165,14 +167,14 @@ impl<R: FullBufRead> SexpLexer<R> {
         }
     }
 
-    fn read_byte(&mut self) -> Option<u8> {
-        let c = self.peek_byte();
+    async fn read_byte(&mut self) -> Option<u8> {
+        let c = self.peek_byte().await;
         self.consume_byte();
         c
     }
 
-    fn read_char(&mut self) -> char {
-        let bytes = &self.reader.fill_to_data(self.idx + 4)[self.idx..];
+    async fn read_char(&mut self) -> char {
+        let bytes = &self.reader.fill_to_data_async(self.idx + 4).await[self.idx..];
         let end = core::cmp::min(4, bytes.len());
         let bytes = &bytes[..end];
         let s = match core::str::from_utf8(bytes) {
@@ -184,15 +186,16 @@ impl<R: FullBufRead> SexpLexer<R> {
         c.unwrap_or(char::REPLACEMENT_CHARACTER)
     }
 
-    fn peek_byte(&mut self) -> Option<u8> {
+    async fn peek_byte(&mut self) -> Option<u8> {
         self.reader
-            .fill_to_data(self.idx + 1)
+            .fill_to_data_async(self.idx + 1)
+            .await
             .get(self.idx)
             .copied()
     }
 
-    fn skip_whitespace(&mut self) -> bool {
-        match self.peek_byte() {
+    async fn skip_whitespace(&mut self) -> bool {
+        match self.peek_byte().await {
             Some(b) if is_white_space_byte(b) => {
                 self.consume_byte();
                 true
@@ -201,11 +204,11 @@ impl<R: FullBufRead> SexpLexer<R> {
         }
     }
 
-    fn skip_comment(&mut self) -> bool {
-        match self.peek_byte() {
+    async fn skip_comment(&mut self) -> bool {
+        match self.peek_byte().await {
             Some(c) if c == b';' => {
                 self.consume_byte();
-                while let Some(c) = self.read_byte() {
+                while let Some(c) = self.read_byte().await {
                     if c == b'\n' {
                         break;
                     }
@@ -216,7 +219,7 @@ impl<R: FullBufRead> SexpLexer<R> {
         }
     }
 
-    fn read_number_raw(
+    async fn read_number_raw(
         &mut self,
         first_byte: Option<u8>,
         radix: Radix,
@@ -225,7 +228,7 @@ impl<R: FullBufRead> SexpLexer<R> {
         let mut n = byte_to_digit(first_byte, radix)?;
         let mut chars = 1;
         self.consume_byte();
-        while let Some(c) = self.peek_byte() {
+        while let Some(c) = self.peek_byte().await {
             if !c.is_ascii_alphanumeric() {
                 break;
             }
@@ -237,26 +240,26 @@ impl<R: FullBufRead> SexpLexer<R> {
         Ok((n, chars))
     }
 
-    fn read_number(&mut self, radix: Radix) -> Result<(u128, u8), ParseError> {
-        let x = self.peek_byte();
-        self.read_number_raw(x, radix)
+    async fn read_number(&mut self, radix: Radix) -> Result<(u128, u8), ParseError> {
+        let x = self.peek_byte().await;
+        self.read_number_raw(x, radix).await
     }
 
     fn last_str(&self, before: usize, off: usize) -> Result<&str, Utf8Error> {
         core::str::from_utf8(&self.reader.data()[before..self.idx - off])
     }
 
-    fn skip(&mut self) {
-        while self.skip_whitespace() || self.skip_comment() {}
+    async fn skip(&mut self) {
+        while self.skip_whitespace().await || self.skip_comment().await {}
     }
 
     // doesn't consume right paren
-    fn lex(&mut self) -> Result<RawSexpToken<'_, R>, ParseError> {
+    async fn lex(&mut self) -> Result<RawSexpToken<'_, R>, ParseError> {
         use RawSexpToken::*;
         use SexpTerminal::*;
-        self.skip();
+        self.skip().await;
         self.update_last_span();
-        match self.peek_byte() {
+        match self.peek_byte().await {
             // Parentheses
             Some(b'(') => {
                 self.consume_byte();
@@ -267,7 +270,7 @@ impl<R: FullBufRead> SexpLexer<R> {
             Some(b'|') => {
                 self.consume_byte();
                 let before = self.idx;
-                while let Some(c) = self.read_byte() {
+                while let Some(c) = self.read_byte().await {
                     if c == b'|' {
                         return Ok(Terminal(Symbol(self.last_str(before, 1)?)));
                     }
@@ -279,9 +282,9 @@ impl<R: FullBufRead> SexpLexer<R> {
             Some(b'"') => {
                 self.consume_byte();
                 self.str_buf.clear();
-                while let Some(c) = self.read_byte() {
+                while let Some(c) = self.read_byte().await {
                     if c == b'"' {
-                        if let Some(d) = self.peek_byte() {
+                        if let Some(d) = self.peek_byte().await {
                             if d == b'"' {
                                 self.consume_byte();
                                 self.str_buf.push(b'"');
@@ -298,33 +301,33 @@ impl<R: FullBufRead> SexpLexer<R> {
             // Binary and Hexadecimal literals
             Some(b'#') => {
                 self.consume_byte();
-                match self.peek_byte() {
+                match self.peek_byte().await {
                     Some(b'b') => {
                         self.consume_byte();
-                        let (value, bits) = self.read_number(Radix::Binary)?;
+                        let (value, bits) = self.read_number(Radix::Binary).await?;
                         Ok(Terminal(BitVec { value, bits }))
                     }
                     Some(b'x') => {
                         self.consume_byte();
-                        let (value, hexits) = self.read_number(Radix::Hexidecimal)?;
+                        let (value, hexits) = self.read_number(Radix::Hexidecimal).await?;
                         Ok(Terminal(BitVec {
                             value,
                             bits: hexits * 4,
                         }))
                     }
                     Some(_) => Err(LiteralError {
-                        prefix: self.read_char(),
+                        prefix: self.read_char().await,
                     }),
                     None => Err(UnexpectedEOI { expected: 'b' }),
                 }
             }
             // Number literals
             Some(digit @ b'0'..=b'9') => {
-                let n = self.read_number_raw(Some(digit), Radix::Decimal)?.0;
-                if self.peek_byte() == Some(b'.') {
+                let n = self.read_number_raw(Some(digit), Radix::Decimal).await?.0;
+                if self.peek_byte().await == Some(b'.') {
                     self.consume_byte();
 
-                    let (after, exp) = self.read_number(Radix::Decimal)?;
+                    let (after, exp) = self.read_number(Radix::Decimal).await?;
                     Ok(Terminal(Decimal(n * 10u128.pow(exp.into()) + after, exp)))
                 } else {
                     Ok(Terminal(Number(n)))
@@ -334,18 +337,18 @@ impl<R: FullBufRead> SexpLexer<R> {
             Some(b':') => {
                 self.consume_byte();
                 let before = self.idx;
-                self.consume_symbols();
+                self.consume_symbols().await;
                 Ok(Terminal(Keyword(self.last_str(before, 0)?)))
             }
             // Symbols (including `_` and `!`)
             Some(c) if is_non_digit_symbol_byte(c) => {
                 let before = self.idx;
                 self.consume_byte();
-                self.consume_symbols();
+                self.consume_symbols().await;
                 Ok(Terminal(Symbol(self.last_str(before, 0)?)))
             }
             Some(_) => Err(UnexpectedChar {
-                found: self.read_char(),
+                found: self.read_char().await,
             }),
             None => {
                 self.update_last_span();
@@ -361,14 +364,14 @@ impl<R: FullBufRead> SexpLexer<R> {
         };
     }
 
-    fn lex_drop(&mut self) -> DropToken {
-        match self.read_byte() {
+    async fn lex_drop(&mut self) -> DropToken {
+        match self.read_byte().await {
             // Parentheses
             Some(b'(') => DropToken::LeftParen,
             Some(b')') => DropToken::RightParen,
             // Quoted symbols
             Some(b'|') => {
-                while let Some(c) = self.read_byte() {
+                while let Some(c) = self.read_byte().await {
                     if c == b'|' {
                         return DropToken::None;
                     }
@@ -377,9 +380,9 @@ impl<R: FullBufRead> SexpLexer<R> {
             }
             // String literals
             Some(b'"') => {
-                while let Some(c) = self.read_byte() {
+                while let Some(c) = self.read_byte().await {
                     if c == b'"' {
-                        if let Some(d) = self.peek_byte() {
+                        if let Some(d) = self.peek_byte().await {
                             if d == b'"' {
                                 self.consume_byte();
                                 continue;
@@ -396,8 +399,8 @@ impl<R: FullBufRead> SexpLexer<R> {
         }
     }
 
-    fn consume_symbols(&mut self) {
-        while let Some(c) = self.peek_byte() {
+    async fn consume_symbols(&mut self) {
+        while let Some(c) = self.peek_byte().await {
             if !is_symbol_byte(c) {
                 break;
             }
@@ -407,7 +410,7 @@ impl<R: FullBufRead> SexpLexer<R> {
 }
 
 #[derive(Debug)]
-pub enum SexpToken<'a, R: FullBufRead> {
+pub enum SexpToken<'a, R: AsyncFullBufRead> {
     Terminal(SexpTerminal<'a>),
     List(SexpParser<'a, R>),
 }
@@ -416,34 +419,35 @@ pub enum SexpToken<'a, R: FullBufRead> {
 ///
 /// ```
 /// use std::io::Cursor;
+/// use plat_smt::poll_ready;
 /// use plat_smt::parser_core::{SexpParser, SexpToken::{self, Terminal}, Radix, SexpTerminal::*};
 /// let sexp = "(|hello world| (+ x 1 (+ a b) (+ c (+ d e))) 42)";
-/// SexpParser::parse_stream_keep_going(sexp.as_bytes(), (), |_, token| {
+/// poll_ready(SexpParser::parse_stream_keep_going(sexp.as_bytes(), (), async |_, token| {
 ///     let Ok(SexpToken::List(mut list)) = token else {unreachable!()};
-///     let t1 = list.next(); // *
+///     let t1 = list.next().await; // *
 ///     assert!(matches!(t1, Some(Ok(Terminal(Symbol("hello world"))))));
 ///     drop(t1);
-///     let t2 = list.next(); // (+ x 1 (+ a b) (+ c d))
+///     let t2 = list.next().await; // (+ x 1 (+ a b) (+ c d))
 ///     let mut list2 = (|| match t2 {
 ///         Some(Ok(SexpToken::List(list2))) => list2,
 ///         _ => unreachable!(),
 ///     })();
-///     let t21 = list2.next(); // +
+///     let t21 = list2.next().await; // +
 ///     assert!(matches!(t21, Some(Ok(Terminal(Symbol("+"))))));
 ///     drop(t21);
-///     let _ = list2.next().unwrap(); // 1
-///     let _ = list2.next().unwrap(); // (+ a b)
+///     let _ = list2.next().await.unwrap(); // 1
+///     let _ = list2.next().await.unwrap(); // (+ a b)
 ///     drop(list2);
-///     let t3 = list.next();
+///     let t3 = list.next().await;
 ///     assert!(matches!(t3, Some(Ok(Terminal(Number(42))))));
 ///     drop(t3);
-///     assert!(list.next().is_none());
+///     assert!(list.next().await.is_none());
 ///     Ok::<(), ()>(())
-/// }, |_, _| unreachable!());
+/// }, |_, _| unreachable!()));
 /// ```
-pub struct SexpParser<'a, R: FullBufRead>(&'a mut SexpLexer<R>);
+pub struct SexpParser<'a, R: AsyncFullBufRead>(&'a mut SexpLexer<R>);
 
-impl<'a, R: FullBufRead> Debug for SexpParser<'a, R> {
+impl<'a, R: AsyncFullBufRead> Debug for SexpParser<'a, R> {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("SexpParser").finish()
     }
@@ -459,23 +463,23 @@ impl<'a> SexpParser<'a, &'static [u8]> {
     }
 }
 
-impl<'a, R: FullBufRead> SexpParser<'a, R> {
-    pub fn parse_stream_keep_going<E, C>(
+impl<'a, R: AsyncFullBufRead> SexpParser<'a, R> {
+    pub async fn parse_stream_keep_going<E, C>(
         reader: R,
         mut ctx: C,
-        mut f: impl FnMut(&mut C, Result<SexpToken<'_, R>, ParseError>) -> Result<(), E>,
+        mut f: impl AsyncFnMut(&mut C, Result<SexpToken<'_, R>, ParseError>) -> Result<(), E>,
         mut handle_err: impl FnMut(&mut C, Spanned<E>),
     ) {
         let mut lexer = SexpLexer::new(reader);
         let mut p = SexpParser(&mut lexer);
         loop {
-            let next = p.next();
+            let next = p.next().await;
             if next.is_some() {
                 let next = next.unwrap();
                 if let Err(UnexpectedEOI { expected: ')' }) = next {
                     return;
                 }
-                if let Err(e) = f(&mut ctx, next) {
+                if let Err(e) = f(&mut ctx, next).await {
                     handle_err(
                         &mut ctx,
                         Spanned {
@@ -496,8 +500,8 @@ impl<'a, R: FullBufRead> SexpParser<'a, R> {
     }
 
     #[inline]
-    pub fn next(&mut self) -> Option<Result<SexpToken<'_, R>, ParseError>> {
-        match self.0.lex() {
+    pub async fn next(&mut self) -> Option<Result<SexpToken<'_, R>, ParseError>> {
+        match self.0.lex().await {
             Ok(RawSexpToken::LeftParen(m)) => Some(Ok(SexpToken::List(SexpParser(m)))),
             Ok(RawSexpToken::Terminal(t)) => Some(Ok(SexpToken::Terminal(t))),
             Ok(RawSexpToken::RightParen) => None,
@@ -505,68 +509,40 @@ impl<'a, R: FullBufRead> SexpParser<'a, R> {
         }
     }
 
-    pub fn start_idx(&mut self) -> usize {
-        self.0.skip();
+    pub async fn start_idx(&mut self) -> usize {
+        self.0.skip().await;
         self.0.idx
+    }
+
+    #[inline]
+    pub async fn next_map_spanned<O, E: From<ParseError>>(
+        &mut self,
+        f: impl AsyncFnOnce(SexpToken<'_, R>) -> Result<O, E>,
+    ) -> Option<Result<(O, SpanRange), E>> {
+        let start_idx = self.start_idx().await;
+        let res = self.next().await?;
+        if let Err(err) = res {
+            return Some(Err(err.into()));
+        }
+        Some(
+            f(res.unwrap())
+                .await
+                .map(|res| (res, self.end_idx(start_idx))),
+        )
     }
 
     pub fn end_idx(&mut self, start: usize) -> SpanRange {
         SpanRange(start, self.0.idx)
     }
 
-    pub fn zip_map_full<
-        U,
-        E,
-        F: FnMut(Result<SexpToken<'_, R>, ParseError>, I::Item) -> Result<U, E>,
-        I: IntoIterator,
-    >(
-        &mut self,
-        zip: I,
-        mut f: F,
-    ) -> impl Iterator<Item = Result<(U, SpanRange), E>> + Bind<(F, I, &mut Self)> {
-        let mut iter = zip.into_iter();
-        core::iter::from_fn(move || {
-            let start = self.start_idx();
-            let it_next = iter.next()?;
-            let res = f(self.next()?, it_next);
-            let range = self.end_idx(start);
-            Some(res.map(|res| (res, range)))
-        })
-    }
-
-    pub fn zip_map<
-        U,
-        F: FnMut(Result<SexpToken<'_, R>, ParseError>, I::Item) -> U,
-        I: IntoIterator,
-    >(
-        &mut self,
-        zip: I,
-        mut f: F,
-    ) -> impl Iterator<Item = U> + Bind<(F, I, &mut Self)> {
-        let mut iter = zip.into_iter();
-        core::iter::from_fn(move || {
-            self.0.skip();
-            let it_next = iter.next()?;
-            let res = f(self.next()?, it_next);
-            Some(res)
-        })
-    }
-
-    pub fn map<U, F: FnMut(Result<SexpToken<'_, R>, ParseError>) -> U>(
-        &mut self,
-        mut f: F,
-    ) -> impl Iterator<Item = U> + Bind<(F, &mut Self)> {
-        core::iter::from_fn(move || Some(f(self.next()?)))
-    }
-
     pub fn close(&mut self) {
         self.0.close();
     }
 
-    fn drop_at_depth(&mut self, mut depth: u32) {
+    async fn drop_at_depth(&mut self, mut depth: u32) {
         loop {
-            self.0.skip_whitespace();
-            match self.0.lex_drop() {
+            self.0.skip_whitespace().await;
+            match self.0.lex_drop().await {
                 DropToken::None => {}
                 DropToken::LeftParen => depth += 1,
                 DropToken::RightParen if depth > 0 => depth -= 1,
@@ -574,11 +550,26 @@ impl<'a, R: FullBufRead> SexpParser<'a, R> {
             }
         }
     }
+
+    pub async fn drop(mut self) {
+        self.drop_at_depth(0).await;
+        mem::forget(self);
+    }
 }
 
-impl<'a, R: FullBufRead> Drop for SexpParser<'a, R> {
+#[cfg(not(feature = "async"))]
+impl<'a, R: AsyncFullBufRead> Drop for SexpParser<'a, R> {
     fn drop(&mut self) {
-        self.drop_at_depth(0);
+        // since we are not using the async feature AsyncFullBufRead is not exported so
+        // R will always return Ready
+        poll_ready(self.drop_at_depth(0))
+    }
+}
+
+#[cfg(feature = "async")]
+impl<'a, R: AsyncFullBufRead> core::future::AsyncDrop for SexpParser<'a, R> {
+    async fn drop(mut self: core::pin::Pin<&mut Self>) {
+        self.drop_at_depth(0).await
     }
 }
 
@@ -597,7 +588,7 @@ pub enum SexpTerminal<'a> {
 ///
 /// ### Example
 /// ```rust
-/// use plat_smt::FullBufRead;
+/// use plat_smt::{AsyncFullBufRead, poll_ready};
 /// use plat_smt::parser_core::{ParseError, SexpParser, SexpTerminal, SexpToken, SexpVisitor};
 ///
 /// #[derive(Default)]
@@ -635,8 +626,8 @@ pub enum SexpTerminal<'a> {
 ///         Ok(())
 ///     }
 ///
-///     fn start_outer_list<R: FullBufRead>(&mut self, p: &mut SexpParser<R>) -> Result<(), Self::E> {
-///         let op = match p.next().ok_or(AEError::MissingOp)?? {
+///     async fn start_outer_list<R: AsyncFullBufRead>(&mut self, p: &mut SexpParser<'_, R>) -> Result<(), Self::E> {
+///         let op = match p.next().await.ok_or(AEError::MissingOp)?? {
 ///             SexpToken::Terminal(SexpTerminal::Symbol("+")) => |s: &[u128]| s.iter().copied().sum(),
 ///             SexpToken::Terminal(SexpTerminal::Symbol("*")) => |s: &[u128]| s.iter().copied().product(),
 ///             _ => return Err(AEError::InvalidOp),
@@ -660,14 +651,14 @@ pub enum SexpTerminal<'a> {
 /// }
 ///
 /// let sexp = "((+ (* x 2) 3) (+ (* 2 3) (* 3 4)))";
-/// SexpParser::parse_stream_keep_going(sexp.as_bytes(), (), |_, token| {
+/// poll_ready(SexpParser::parse_stream_keep_going(sexp.as_bytes(), (), async |_, token| {
 ///     let Ok(SexpToken::List(mut list)) = token else {unreachable!()};
-///     let t1 = list.next().unwrap().unwrap(); // (+ (* x 2) 3)
-///     assert!(matches!(AEVisitor::default().visit(t1), Err(AEError::InvalidArg)));
-///     let t1 = list.next().unwrap().unwrap(); // (+ (* 2 3) (* 3 4))
-///     assert!(matches!(AEVisitor::default().visit(t1), Ok(18)));
+///     let t1 = list.next().await.unwrap().unwrap(); // (+ (* x 2) 3)
+///     assert!(matches!(AEVisitor::default().visit(t1).await, Err(AEError::InvalidArg)));
+///     let t1 = list.next().await.unwrap().unwrap(); // (+ (* 2 3) (* 3 4))
+///     assert!(matches!(AEVisitor::default().visit(t1).await, Ok(18)));
 ///     Ok::<(), ()>(())
-/// }, |_, _| unreachable!());
+/// }, |_, _| unreachable!()));
 /// ```
 pub trait SexpVisitor {
     type T;
@@ -683,11 +674,17 @@ pub trait SexpVisitor {
     }
 
     /// Start handling a list if it is the outermost element
-    fn start_outer_list<R: FullBufRead>(&mut self, p: &mut SexpParser<R>) -> Result<(), Self::E>;
+    fn start_outer_list<R: AsyncFullBufRead>(
+        &mut self,
+        p: &mut SexpParser<'_, R>,
+    ) -> impl std::future::Future<Output = Result<(), Self::E>>;
 
     /// Handle a terminal within a larger s-expression
     /// Defaults to calling [`start_outer_list`](SexpVisitor::start_outer_list)
-    fn start_inner_list<R: FullBufRead>(&mut self, p: &mut SexpParser<R>) -> Result<(), Self::E> {
+    fn start_inner_list<R: AsyncFullBufRead>(
+        &mut self,
+        p: &mut SexpParser<'_, R>,
+    ) -> impl std::future::Future<Output = Result<(), Self::E>> {
         self.start_outer_list(p)
     }
 
@@ -700,37 +697,43 @@ pub trait SexpVisitor {
         self.end_outer_list().map(|_| ())
     }
 
-    fn visit<R: FullBufRead>(&mut self, t: SexpToken<R>) -> Result<Self::T, Self::E> {
-        match t {
-            SexpToken::Terminal(t) => self.handle_outer_terminal(t),
-            SexpToken::List(p) => {
-                let mut depth = 0u32;
-                let mut p = ManuallyDrop::new(p);
-                let res = (|| {
-                    self.start_outer_list(&mut p)?;
-                    loop {
-                        match p.0.lex()? {
-                            RawSexpToken::LeftParen(_) => {
-                                depth += 1;
-                                self.start_inner_list(&mut p)?;
-                            }
-                            RawSexpToken::RightParen => {
-                                p.0.consume_byte();
-                                if depth == 0 {
-                                    return Ok(());
+    fn visit<R: AsyncFullBufRead>(
+        &mut self,
+        t: SexpToken<'_, R>,
+    ) -> impl std::future::Future<Output = Result<Self::T, Self::E>> {
+        async {
+            match t {
+                SexpToken::Terminal(t) => self.handle_outer_terminal(t),
+                SexpToken::List(p) => {
+                    let mut depth = 0u32;
+                    let mut p = ManuallyDrop::new(p);
+                    let res = (async {
+                        self.start_outer_list(&mut p).await?;
+                        loop {
+                            match p.0.lex().await? {
+                                RawSexpToken::LeftParen(_) => {
+                                    depth += 1;
+                                    self.start_inner_list(&mut p).await?;
                                 }
-                                depth -= 1;
-                                self.end_inner_list()?;
+                                RawSexpToken::RightParen => {
+                                    p.0.consume_byte();
+                                    if depth == 0 {
+                                        return Ok(());
+                                    }
+                                    depth -= 1;
+                                    self.end_inner_list()?;
+                                }
+                                RawSexpToken::Terminal(t) => self.handle_inner_terminal(t)?,
                             }
-                            RawSexpToken::Terminal(t) => self.handle_inner_terminal(t)?,
                         }
+                    })
+                    .await;
+                    if let Err(e) = res {
+                        p.drop_at_depth(depth).await;
+                        return Err(e);
                     }
-                })();
-                if let Err(e) = res {
-                    p.drop_at_depth(depth);
-                    return Err(e);
+                    self.end_outer_list()
                 }
-                self.end_outer_list()
             }
         }
     }

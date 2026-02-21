@@ -1,6 +1,10 @@
 use core::convert::Infallible;
 use core::fmt::{Debug, Display, Formatter};
+use core::future::Future;
 use core::ops::ControlFlow;
+use core::pin::{pin, Pin};
+use core::task::{Context, Poll};
+use futures_task::noop_waker_ref;
 use internal_iterator::InternalIterator;
 use no_std_compat::prelude::v1::*;
 
@@ -157,6 +161,18 @@ pub(crate) fn extend_result<T, E>(
             None
         }
     }));
+    res
+}
+
+pub fn poll<T>(f: Pin<&mut impl Future<Output = T>>) -> Poll<T> {
+    f.poll(&mut Context::from_waker(noop_waker_ref()))
+}
+
+pub fn poll_ready<T>(f: impl Future<Output = T>) -> T {
+    let f = pin!(f);
+    let Poll::Ready(res) = poll(f) else {
+        panic!("Future was not ready")
+    };
     res
 }
 
