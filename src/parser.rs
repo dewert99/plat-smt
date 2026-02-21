@@ -701,7 +701,7 @@ impl<W: Write, L: Logic> Parser<W, L> {
         ExpVisitor(self, context, None).visit(token).await
     }
 
-    #[inline]
+    #[inline(always)]
     async fn parse_exp_boxed<R: AsyncFullBufRead>(
         &mut self,
         body: SexpToken<'_, R>,
