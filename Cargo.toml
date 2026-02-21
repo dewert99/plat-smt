@@ -19,11 +19,13 @@ smallvec = { version = "1.13.1", features = ["union"], default-features = false 
 no-std-compat = { version = "0.4.1" , features = ["alloc"]}
 internal-iterator = "0.2.3"
 bytemuck = { version = "1.14.0", default-features = false, features = ["must_cast", "extern_crate_alloc"] }
+futures-task = "0.3.32"
 
 [features]
 default = ["log/release_max_level_warn", "euf"]
 euf = ["plat-egg"]
 interpolant = []
+async = []
 # Add more equalities mid-search, used for testing
 test_add_more_mid_search_equalities = []
 

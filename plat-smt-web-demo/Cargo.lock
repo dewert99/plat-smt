@@ -53,6 +53,12 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "a41c9ac7821a2b7f70c709eb7474e6a7ac591a628956409e2e9d523558504fcd"
 
 [[package]]
+name = "futures-task"
+version = "0.3.32"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "037711b3d59c33004d3856fbdc83b99d4ff37a24768fa1be9ce3538a1cde4393"
+
+[[package]]
 name = "hashbrown"
 version = "0.14.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -123,6 +129,7 @@ version = "0.1.0"
 dependencies = [
  "bytemuck",
  "default-vec2",
+ "futures-task",
  "hashbrown",
  "internal-iterator",
  "log",
