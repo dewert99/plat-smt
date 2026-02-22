@@ -27,6 +27,7 @@ pub struct DepChecker {
     instructions: Vec<(u32, Option<Symbol>)>,
     shadows: HashMap<Symbol, u32>,
     assumptions: Vec<SpanRange>,
+    assumptions_marker: u32,
 }
 
 impl DepChecker {
@@ -122,6 +123,24 @@ impl DepCheckerAction for AddAssumption {
     }
 }
 
+pub struct SetAssumptionMarker;
+
+impl DepCheckerAction for SetAssumptionMarker {
+    fn act(self, checker: &mut DepChecker) {
+        checker.assumptions_marker = checker.assumptions.len() as u32;
+    }
+}
+
+pub struct ClearAssumptionsAfterMarker;
+
+impl DepCheckerAction for ClearAssumptionsAfterMarker {
+    fn act(self, checker: &mut DepChecker) {
+        checker
+            .assumptions
+            .truncate(checker.assumptions_marker as usize)
+    }
+}
+
 #[derive(Copy, Clone)]
 pub struct Marker {
     dep_list: u32,
@@ -143,7 +162,7 @@ impl Incremental for DepChecker {
     fn pop_to_level(&mut self, marker: Self::LevelMarker, _: bool) {
         self.dep_list.truncate(marker.dep_list as usize);
         self.instructions.truncate(marker.instructions as usize);
-        self.assumptions.truncate(marker.assumptions as usize)
+        self.assumptions.truncate(marker.assumptions as usize);
     }
 
     fn clear(&mut self) {

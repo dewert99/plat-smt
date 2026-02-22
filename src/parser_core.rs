@@ -505,6 +505,19 @@ impl<'a, R: FullBufRead> SexpParser<'a, R> {
         }
     }
 
+    #[inline]
+    pub fn next_map_spanned<O, E: From<ParseError>>(
+        &mut self,
+        f: impl FnOnce(SexpToken<'_, R>) -> Result<O, E>,
+    ) -> Option<Result<(O, SpanRange), E>> {
+        let start_idx = self.start_idx();
+        let res = self.next()?;
+        if let Err(err) = res {
+            return Some(Err(err.into()));
+        }
+        Some(f(res.unwrap()).map(|res| (res, self.end_idx(start_idx))))
+    }
+
     pub fn start_idx(&mut self) -> usize {
         self.0.skip();
         self.0.idx
