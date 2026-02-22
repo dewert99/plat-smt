@@ -587,7 +587,7 @@ impl<'a, W: Write, L: Logic> ExpVisitor<'a, W, L> {
                         None => return Err(AssertBool(exp.sort())),
                         Some(b) => {
                             self.0.extend_named_assertions([(b, span)]);
-                            self.0.old_named_assertions = self.0.named_assertions.push();
+                            self.0.set_old_named_assertions();
                             // don't return exp since we don't want it to be asserted
                             exp = BoolExp::TRUE.upcast()
                         }
@@ -777,7 +777,9 @@ impl<W: Write, L: Logic> Parser<W, L> {
                     }
                     _ => return Err(InvalidSort),
                 };
-                let params = l.map(|x| self.parse_sort(x?)).collect::<Result<Vec<_>>>()?;
+                let params = l
+                    .map(|x| self.parse_sort(x?))
+                    .collect::<Result<SmallVec<[_; 4]>>>()?;
                 self.create_sort(name, &params)?
             }
             _ => return Err(InvalidSort),
@@ -791,7 +793,7 @@ impl<W: Write, L: Logic> Parser<W, L> {
     fn reset_state(&mut self) {
         if !matches!(self.state, State::Base) {
             self.core.solver_mut().pop_model();
-            self.truncate_named_assertions(self.old_named_assertions);
+            self.truncate_named_assertions();
             let interpolant_enabled = self
                 .core
                 .solver_mut()
@@ -816,6 +818,7 @@ impl<W: Write, L: Logic> Parser<W, L> {
         rest: SexpParser<R>,
     ) -> Result<()> {
         let old_len = self.global_stack.len();
+        let old_named_assertions = self.named_assertions.push();
         self.writer.print_success = self.options.print_success;
         match self.parse_command_h(name, rest) {
             Ok(()) => {
@@ -828,14 +831,15 @@ impl<W: Write, L: Logic> Parser<W, L> {
                 self.undo_base_bindings(old_len);
                 self.undo_let_bindings(0);
                 self.core.reset_working_exp();
-                if let Some(c) = self.command_level_marker.clone() {
-                    if matches!(self.state, State::Base) {
-                        self.truncate_named_assertions(self.old_named_assertions);
-                        self.core.solver_mut().pop_to_level(c)
+                if matches!(self.state, State::Base) {
+                    self.named_assertions.pop_to(old_named_assertions);
+                    if let Some(c) = self.command_level_marker.clone() {
+                        self.core.solver_mut().pop_to_level(c);
+                    } else {
+                        self.core.solver_mut().clear();
                     }
-                } else {
-                    self.core.solver_mut().clear()
                 }
+
                 Err(err)
             }
         }
@@ -1202,9 +1206,9 @@ impl<W: Write, L: Logic> Parser<W, L> {
         self.declared_sorts.clear();
         self.sort_stack.clear();
         self.declared_sorts.insert(BOOL_SYM, 0);
-        self.truncate_named_assertions(0);
+        self.named_assertions.pop_to(0);
         self.command_level_marker = None;
-        self.old_named_assertions = 0;
+        self.set_old_named_assertions();
         self.state = State::Init;
     }
 
@@ -1259,7 +1263,6 @@ impl<W: Write, L: Logic> Parser<W, L> {
             }
             Smt2Command::CheckSat => {
                 rest.finish()?;
-                self.old_named_assertions = self.named_assertions.push();
                 self.check_sat()?;
             }
             Smt2Command::CheckSatAssuming => {
@@ -1267,19 +1270,19 @@ impl<W: Write, L: Logic> Parser<W, L> {
                     return Err(InvalidCommand);
                 };
                 self.core.dep_checker_act(dep_checker::EnterScope);
-                let conj = l
-                    .zip_map_full(0.., |token, _| {
-                        let exp = self.parse_exp(token?, StartExpCtx::Exact)?;
-                        exp.downcast().ok_or(AssertBool(exp.sort()))
-                    })
-                    .collect::<Result<Vec<_>>>()?;
+                while let Some(x) = l.next_map_spanned(|token| {
+                    let token = token;
+                    let exp = self.parse_exp(token, StartExpCtx::Exact)?;
+                    exp.downcast().ok_or(AssertBool(exp.sort()))
+                }) {
+                    self.extend_named_assertions([x?]);
+                }
                 drop(l);
                 rest.finish()?;
                 // arbitrary builtin symbol so references inside the check-sat-assuming aren't
                 // treated as in a and b
                 self.core.dep_checker_act(dep_checker::ExitScope(LET_SYM));
                 self.command_level_marker = Some(self.core.solver_mut().create_level());
-                self.extend_named_assertions(conj);
                 self.check_sat()?;
             }
             Smt2Command::Push => {
@@ -1323,8 +1326,8 @@ impl<W: Write, L: Logic> Parser<W, L> {
                     for s in self.sort_stack.drain(info.sort as usize..).rev() {
                         self.declared_sorts.remove(&s);
                     }
-                    self.truncate_named_assertions(info.named_assert);
-                    self.old_named_assertions = self.named_assertions.push();
+                    self.named_assertions.pop_to(info.named_assert);
+                    self.set_old_named_assertions();
                 }
             }
             Smt2Command::ResetAssertions => {
@@ -1359,8 +1362,15 @@ impl<W: Write, L: Logic> Parser<W, L> {
         self.named_assertions.extend(conj);
     }
 
-    fn truncate_named_assertions(&mut self, t: u32) {
-        self.named_assertions.pop_to(t);
+    fn truncate_named_assertions(&mut self) {
+        self.named_assertions.pop_to(self.old_named_assertions);
+        self.core
+            .dep_checker_act(dep_checker::ClearAssumptionsAfterMarker)
+    }
+
+    fn set_old_named_assertions(&mut self) {
+        self.old_named_assertions = self.named_assertions.push();
+        self.core.dep_checker_act(dep_checker::SetAssumptionMarker);
     }
 
     fn check_sat(&mut self) -> Result<()> {
