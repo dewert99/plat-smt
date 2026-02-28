@@ -12,7 +12,7 @@ use crate::recorder::{dep_checker, Recorder};
 use crate::solver::{SolveResult, SolverCollapse, UnsatCoreConjunction};
 use crate::util::{format_args2, parenthesized, powi, DefaultHashBuilder};
 use crate::AddSexpError::*;
-use crate::{solver, AddSexpError, BoolExp, HasSort, SubExp, SuperExp};
+use crate::{solver, AddSexpError, BoolExp, ExpLike, HasSort, SubExp, SuperExp};
 use alloc::borrow::Cow;
 use core::fmt::Arguments;
 use hashbrown::HashMap;
@@ -997,7 +997,7 @@ impl<W: Write, L: Logic> Parser<W, L> {
                             let args = parenthesized(args, " ");
                             let ret = f.ret().with_intern(intern);
                             writeln!(self.writer, " (define-fun {k_i} {args} {ret}");
-                            write_body::<_, L>(&mut self.writer, assignment, k_i, ret, intern);
+                            write_body::<_, L>(&mut self.writer, assignment, ret, intern);
                         }
                     }
                 });
@@ -1453,7 +1453,6 @@ impl<W: Write, L: Logic> Parser<W, L> {
 fn write_body<'a, W: Write, L: Logic>(
     writer: &mut PrintSuccessWriter<W>,
     assignment: impl FunctionAssignmentT<L::Exp>,
-    name: WithIntern<Symbol>,
     ret: WithIntern<Sort>,
     intern: &InternInfo,
 ) {
@@ -1478,11 +1477,13 @@ fn write_body<'a, W: Write, L: Logic>(
         }
         writeln!(writer, " {res}");
     }
-    if ret.0 == BOOL_SORT {
-        writeln!(writer, "   false{:)<len$})", "");
-    } else {
-        writeln!(writer, "   (as @{name}!default {ret}){:)<len$})", "");
-    }
+
+    writeln!(
+        writer,
+        "   {}{:)<len$})",
+        L::Exp::default_with_sort(ret.0).with_intern(intern),
+        ""
+    );
 }
 
 /// Evaluate `data`, the bytes of an `smt2` file, reporting results to `stdout` and errors to

@@ -1,7 +1,9 @@
 use super::egraph::{children, Children, EGraph, Op, PushInfo as EGPushInfo, SymbolLang, EQ_OP};
 use super::explain::{check_node_is_eq, EqIds, Justification};
 use crate::exp::{BoolExp, EitherExp};
-use crate::intern::{DisplayInterned, InternInfo, Sort, BOOL_SORT, EQ_SYM, FALSE_SYM, TRUE_SYM};
+use crate::intern::{
+    DisplayInterned, InternInfo, Sort, BOOL_SORT, EQ_SYM, FALSE_SYM, LET_SYM, TRUE_SYM,
+};
 use crate::theory::{Incremental, Theory};
 use crate::util::{minmax, Bind, DebugIter, DisplayFn, HashMap};
 use crate::{SubExp, Symbol};
@@ -175,7 +177,7 @@ pub struct PushInfo {
 }
 
 pub(super) fn id_for_bool(b: bool) -> Id {
-    Id::from(b as usize)
+    Id::from(b as usize + 1)
 }
 
 #[derive(Debug, Default)]
@@ -281,6 +283,11 @@ impl Incremental for Euf {
 
 impl<'a, A: SatTheoryArgT<'a, M = PushInfo>> Theory<A, A::Explain<'a>> for Euf {
     fn init(&mut self, acts: &mut A) {
+        // Dummy id 0 is used to represent UExps produced by evaluating function expression in
+        // the model that didn't exist until now
+        self.egraph.add(Op::from(LET_SYM), Children::new(), |_, _| {
+            EClass::Uninterpreted(BOOL_SORT)
+        });
         for (b, s) in [false, true].into_iter().zip([FALSE_SYM, TRUE_SYM]) {
             let id = self.egraph.add(Op::from(s), Children::new(), |_, _| {
                 EClass::Bool(BoolClass::Const(b))

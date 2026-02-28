@@ -103,8 +103,9 @@ impl<'a, T> Reborrow for &'a mut T {
 }
 
 pub struct TheoryArgRaw<'a, S, M, R> {
-    pub sat: S,
-    pub incr: &'a mut IncrementalArgData<M, R>,
+    pub(crate) sat: S,
+    pub(crate) incr: &'a mut IncrementalArgData<M, R>,
+    pub(crate) in_model: bool,
 }
 
 pub type TheoryArg<'a, M, R> = TheoryArgRaw<'a, SatTheoryArg<'a>, M, R>;
@@ -196,6 +197,7 @@ impl<'a, S: Reborrow, M, R> Reborrow for TheoryArgRaw<'a, S, M, R> {
         TheoryArgRaw {
             sat: self.sat.reborrow(),
             incr: self.incr.reborrow(),
+            in_model: self.in_model,
         }
     }
 }
@@ -273,6 +275,7 @@ impl<
     pub fn open<'a, S: Reborrow>(
         &'a mut self,
         sat: &'a mut S,
+        in_model: bool,
     ) -> (
         &'a mut Th,
         TheoryArgRaw<'a, S::Target<'a>, Th::LevelMarker, R>,
@@ -282,6 +285,7 @@ impl<
             TheoryArgRaw {
                 sat: sat.reborrow(),
                 incr: &mut self.arg,
+                in_model,
             },
         )
     }
@@ -294,7 +298,7 @@ impl<
     ) -> &'a [Lit] {
         acts.clause_builder().clear();
         acts.clause_builder().push(p);
-        let (th, mut arg) = self.open(&mut acts);
+        let (th, mut arg) = self.open(&mut acts, false);
         th.explain_propagation(p, &mut arg, is_final);
         self.arg
             .recorder
@@ -323,6 +327,7 @@ impl<
         let mut acts = TheoryArg {
             sat: acts.reborrow(),
             incr: &mut self.arg,
+            in_model: false,
         };
         self.th.final_check(&mut acts)
     }
@@ -373,6 +378,7 @@ impl<
         let mut acts = TheoryArg {
             sat: acts.reborrow(),
             incr: &mut self.arg,
+            in_model: false,
         };
         let _: Result<(), ()> = (|| {
             self.th.initial_check(&mut acts)?;

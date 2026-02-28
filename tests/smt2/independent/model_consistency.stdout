@@ -1,0 +1,11 @@
+sat
+(
+ (define-fun f ((x!0 Bool)) M
+   (as @d2 M))
+ (define-fun p ((x!0 Bool)) Bool
+   false)
+)
+(((p true) false)
+ ((p false) false)
+ ((f true) (as @d2 M))
+ ((f false) (as @d2 M)))

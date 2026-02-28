@@ -1,14 +1,14 @@
 sat
 (
- (define-fun e () I (as @v3 I))
+ (define-fun e () I (as @v4 I))
  (define-fun i () Bool false)
- (define-fun r () I (as @v3 I))
- (define-fun t () I (as @v4 I))
+ (define-fun r () I (as @v4 I))
+ (define-fun t () I (as @v5 I))
 )
 sat
 (
- (define-fun e () I (as @v7 I))
+ (define-fun e () I (as @v8 I))
  (define-fun i () Bool false)
- (define-fun r () I (as @v3 I))
- (define-fun t () I (as @v4 I))
+ (define-fun r () I (as @v4 I))
+ (define-fun t () I (as @v5 I))
 )

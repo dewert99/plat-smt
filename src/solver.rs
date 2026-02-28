@@ -46,6 +46,7 @@ type BatSolver = platsat::Solver<NoCb>;
 pub struct Solver<Euf: FullTheory<R>, R> {
     pub(crate) th: TheoryWrapper<Euf, R>,
     pub(crate) sat: BatSolver,
+    in_model: bool,
 }
 
 impl<Th: FullTheory<R> + Default, R: Recorder> Default for Solver<Th, R> {
@@ -53,6 +54,7 @@ impl<Th: FullTheory<R> + Default, R: Recorder> Default for Solver<Th, R> {
         let mut res = Solver {
             th: Default::default(),
             sat: Default::default(),
+            in_model: false,
         };
         res.open(
             |th: &mut Th, acts| {
@@ -177,7 +179,7 @@ impl<Th: FullTheory<R>, R: Recorder> Solver<Th, R> {
     ) -> U {
         let mut ret = default;
         self.sat.with_theory_arg(|acts| {
-            let (euf, mut acts) = self.th.open(acts);
+            let (euf, mut acts) = self.th.open(acts, self.in_model);
             ret = f(euf, &mut acts)
         });
         ret
@@ -248,6 +250,7 @@ impl<Th: FullTheory<R>, R: Recorder> Solver<Th, R> {
                 .sat
                 .solve_limited_preserving_trail_th(&mut self.th, lits),
         };
+        self.in_model = true;
         if res == lbool::FALSE {
             debug!("check-sat {c:?} returned unsat",);
             SolveResult::Unsat
@@ -281,6 +284,7 @@ impl<Th: FullTheory<R>, R: Recorder> Solver<Th, R> {
     pub fn pop_model(&mut self) {
         self.sat.pop_model(&mut self.th);
         self.th.arg.recorder.exit_solved_state();
+        self.in_model = false;
     }
 
     pub fn clear(&mut self) {
@@ -313,20 +317,6 @@ impl<Th: FullTheory<R>, R: Recorder> Solver<Th, R> {
         BOOL_SORT
     }
 
-    // /// Simplifies `t` based on the current assertions
-    // pub fn canonize<T: ExpLike<Euf>>(&self, t: T) -> T {
-    //     if !self.is_ok() {
-    //         return t;
-    //     }
-    //     let res = t.canonize(self);
-    //     debug!(
-    //         "{} canonized to {}",
-    //         t.with_intern(self.intern()),
-    //         res.with_intern(self.intern())
-    //     );
-    //     res
-    // }
-
     pub(crate) fn last_unsat_core(&mut self) -> impl InternalIterator<Item = Lit> + '_ {
         self.sat.unsat_core(&mut self.th)
     }
@@ -344,7 +334,7 @@ impl<Th: FullTheory<R>, R: Recorder> Solver<Th, R> {
         self.sat.options()
     }
 
-    pub fn set_sat_options(&mut self, options: SolverOpts) -> core::result::Result<(), ()> {
+    pub fn set_sat_options(&mut self, options: SolverOpts) -> Result<(), ()> {
         self.sat.set_options(options)
     }
 

@@ -11,19 +11,7 @@ use std::hash::BuildHasher;
 pub struct Symbol(pub(crate) NonZeroU32);
 
 #[derive(Copy, Clone, Eq, PartialEq, Hash, Ord, PartialOrd, Debug)]
-pub struct Sort(NonZeroU32);
-
-impl From<NonZeroU32> for Sort {
-    fn from(value: NonZeroU32) -> Self {
-        Sort(value)
-    }
-}
-
-impl Into<NonZeroU32> for Sort {
-    fn into(self) -> NonZeroU32 {
-        self.0
-    }
-}
+pub struct Sort(pub(crate) NonZeroU32);
 
 impl Into<usize> for Symbol {
     fn into(self) -> usize {
