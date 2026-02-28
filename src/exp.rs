@@ -19,20 +19,8 @@ pub trait HasSort {
 pub trait ExpLike:
     Copy + DisplayInterned + AsRexp + HasSort + Eq + Hash + Ord + CollapseOut<Out = Self>
 {
-}
-
-impl<
-        T: Copy
-            + Debug
-            + DisplayInterned
-            + HasSort
-            + Eq
-            + Hash
-            + Ord
-            + AsRexp
-            + CollapseOut<Out = Self>,
-    > ExpLike for T
-{
+    /// Return a default instance with the given sort to be used as a placeholder in a model
+    fn default_with_sort(s: Sort) -> Self;
 }
 
 pub trait StaticSort: HasSort {
@@ -133,7 +121,17 @@ impl<E1: HasSort, E2: HasSort> HasSort for EitherExp<E1, E2> {
     }
 }
 
-impl<L: crate::rexp::AsRexp, R: crate::rexp::AsRexp> crate::rexp::AsRexp for EitherExp<L, R> {
+impl<E1: ExpLike, E2: ExpLike> ExpLike for EitherExp<E1, E2> {
+    fn default_with_sort(s: Sort) -> Self {
+        if E1::can_have_sort(s) {
+            EitherExp::Left(E1::default_with_sort(s))
+        } else {
+            EitherExp::Right(E2::default_with_sort(s))
+        }
+    }
+}
+
+impl<L: AsRexp, R: AsRexp> AsRexp for EitherExp<L, R> {
     fn as_rexp<O>(&self, f: impl for<'a> FnOnce(Rexp<'a>) -> O) -> O {
         match self {
             EitherExp::Left(l) => l.as_rexp(f),
@@ -209,6 +207,12 @@ impl BoolExp {
 
 impl StaticSort for BoolExp {
     const SORT: Sort = BOOL_SORT;
+}
+
+impl ExpLike for BoolExp {
+    fn default_with_sort(_: Sort) -> Self {
+        BoolExp::FALSE
+    }
 }
 
 impl Not for BoolExp {

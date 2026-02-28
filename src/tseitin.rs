@@ -50,6 +50,8 @@ pub trait SatTheoryArgT<'a>: TheoryArgT {
 
     fn sat(&self) -> &SatTheoryArg<'a>;
 
+    fn in_model(&self) -> bool;
+
     fn add_clause_unchecked<I: IntoIterator<Item = Lit>>(&mut self, lits: I)
     where
         I::IntoIter: ExactSizeIterator,
@@ -386,10 +388,15 @@ impl<'a, M, R: Recorder> SatTheoryArgT<'a> for TheoryArgRaw<'a, SatTheoryArg<'a>
         &self.sat
     }
 
+    fn in_model(&self) -> bool {
+        self.in_model
+    }
+
     fn for_explain(&mut self) -> Self::Explain<'_> {
         ExplainTheoryArg {
             sat: self.sat.explain_arg(),
             incr: self.incr.reborrow(),
+            in_model: self.in_model,
         }
     }
 }

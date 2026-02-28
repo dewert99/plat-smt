@@ -7,5 +7,4 @@
 (check-sat-assuming ((= a b)))
 (get-unsat-core)
 (check-sat)
-(get-model)
 (get-value (a b (f a a) (f a b)))

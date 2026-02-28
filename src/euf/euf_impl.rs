@@ -16,7 +16,7 @@ use crate::rexp::{rexp_debug, AsRexp, Namespace, NamespaceVar, Rexp};
 use crate::solver::{SolverCollapse, SolverWithBound};
 use crate::tseitin::{BoolOpPf, SatExplainTheoryArgT, SatTheoryArgT};
 use crate::util::{pairwise_sym, HashMap};
-use crate::{AddSexpError, BoolExp, Conjunction, HasSort, Solver, Sort, SubExp, SuperExp};
+use crate::{AddSexpError, BoolExp, Conjunction, ExpLike, HasSort, Solver, Sort, SubExp, SuperExp};
 use core::fmt::Formatter;
 use plat_egg::raw::Language;
 use plat_egg::Id;
@@ -61,7 +61,14 @@ impl AsRexp for Id {
 
 impl AsRexp for UExp {
     fn as_rexp<R>(&self, f: impl for<'a> FnOnce(Rexp<'a>) -> R) -> R {
-        self.id.as_rexp(f)
+        if usize::from(self.id) == 0 {
+            f(Rexp::Nv(NamespaceVar(
+                Namespace::SortDefault,
+                self.sort.0.get(),
+            )))
+        } else {
+            self.id.as_rexp(f)
+        }
     }
 }
 
@@ -69,7 +76,7 @@ rexp_debug!(UExp);
 
 impl DisplayInterned for UExp {
     fn fmt(&self, i: &InternInfo, f: &mut Formatter<'_>) -> std::fmt::Result {
-        write!(f, "(as @v{:?} {})", self.id(), self.sort().with_intern(i))
+        write!(f, "(as {:?} {})", self, self.sort().with_intern(i))
     }
 }
 
@@ -79,6 +86,11 @@ impl HasSort for UExp {
     }
     fn can_have_sort(s: Sort) -> bool {
         s != BOOL_SORT
+    }
+}
+impl ExpLike for UExp {
+    fn default_with_sort(s: Sort) -> Self {
+        UExp::new(Id::from(0), s)
     }
 }
 
@@ -101,14 +113,26 @@ impl<R: Recorder> FullTheory<R> for Euf {
 }
 
 impl Euf {
-    fn sorted_fn_id<'a>(
+    fn model_sorted_fn(&mut self, f: Op, children: Children, target_sort: Sort) -> (Exp, bool) {
+        let node = SymbolLang::new(f, children);
+        if let Some(id) = self.egraph.lookup(node) {
+            (self.id_to_exp(id), false)
+        } else {
+            (Exp::default_with_sort(target_sort), false)
+        }
+    }
+
+    fn sorted_fn<'a>(
         &mut self,
         f: Op,
         children: Children,
         target_sort: Sort,
         ctx: ExprContext<Exp>,
         acts: &mut impl SatTheoryArgT<'a, M = PushInfo>,
-    ) -> (Id, Exp, bool) {
+    ) -> (Exp, bool) {
+        if acts.in_model() {
+            return self.model_sorted_fn(f, children, target_sort);
+        }
         let mut added = false;
         let id = self.egraph.add(f.into(), children, |id, children| {
             acts.log_def(
@@ -136,7 +160,7 @@ impl Euf {
         if let ExprContext::AssertEq(exp) = ctx {
             if exp.sort() == target_sort {
                 self.union_exp(exp, id, acts);
-                return (id, exp, added);
+                return (exp, added);
             }
         }
         let intern = acts.intern();
@@ -150,7 +174,7 @@ impl Euf {
                 exp.sort().with_intern(intern)
             )
         };
-        (id, exp, added)
+        (exp, added)
     }
 
     pub(super) fn add_eq_node<'a>(
@@ -165,8 +189,8 @@ impl Euf {
         if cid1 == cid2 {
             return (false, acts.collapse_const(true, ctx));
         }
-        let (_, exp, added) =
-            self.sorted_fn_id(EQ_OP, children![cid1, cid2], BOOL_SORT, ctx.upcast(), acts);
+        let (exp, added) =
+            self.sorted_fn(EQ_OP, children![cid1, cid2], BOOL_SORT, ctx.upcast(), acts);
         let exp: BoolExp = exp.downcast().unwrap();
         if added {
             if let Ok(l) = exp.to_lit() {
@@ -380,7 +404,7 @@ impl<'a, I: Iterator<Item = Exp>, A: SatTheoryArgT<'a, M = PushInfo>> Collapse<U
         ctx: ExprContext<Exp>,
     ) -> Exp {
         let children = self.resolve_children(children, acts);
-        self.sorted_fn_id(f.into(), children, sort, ctx, acts).1
+        self.sorted_fn(f.into(), children, sort, ctx, acts).0
     }
 
     fn placeholder(&self, &UFn(_, _, sort): &UFn<I>) -> Exp {
@@ -485,11 +509,11 @@ impl<R: Recorder, E: SubExp<Exp, MS> + Copy, M, MS, I: ParserFragment<E, EufSolv
     ) -> Result<E, AddSexpError> {
         let Some(children_ids) = solver.solver.open(
             |euf, acts| {
-                let chilren_ids: Children = children
+                let children_ids: Children = children
                     .iter()
                     .map(|&x| euf.id_for_exp(x.upcast(), acts, true))
                     .collect();
-                Some(chilren_ids)
+                Some(children_ids)
             },
             None,
         ) else {
@@ -521,7 +545,7 @@ impl<R: Recorder, E: SubExp<Exp, MS> + Copy, M, MS, I: ParserFragment<E, EufSolv
             let res: Exp = res.upcast();
             solver.solver.open(
                 |euf, acts| {
-                    euf.sorted_fn_id(
+                    euf.sorted_fn(
                         enode.op(),
                         enode.children_owned(),
                         res.sort(),

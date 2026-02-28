@@ -8,6 +8,7 @@ use core::fmt::{Debug, Display, Formatter};
 pub enum Namespace {
     Bool,
     Uninterpreted,
+    SortDefault,
     Number,
     BitVec,
     ConcreteInt,
@@ -17,8 +18,9 @@ impl Into<&'static str> for Namespace {
     fn into(self) -> &'static str {
         match self {
             Namespace::Bool => "b",
-            Namespace::Number => "n",
             Namespace::Uninterpreted => "v",
+            Namespace::SortDefault => "d",
+            Namespace::Number => "n",
             Namespace::BitVec => "bv",
             Namespace::ConcreteInt => "",
         }
@@ -103,73 +105,3 @@ macro_rules! rexp_debug {
 }
 
 pub(crate) use rexp_debug;
-
-//
-// trait RExpReceiver<Base> {
-//     fn start_list(&mut self, x: Symbol);
-//
-//     fn end_list(&mut self);
-//
-//     fn handle_single(&mut self, x: Base);
-// }
-//
-// impl<'a, 'b, X: DisplayInterned> RExpReceiver<X> for (&'a mut Formatter<'b>,  &'a InternInfo){
-//     fn start_list(&mut self, x: Symbol) {
-//         write!(self.0, "({}", x.with_intern(self.1));
-//     }
-//
-//     fn end_list(&mut self) {
-//         write!(self.0, ") ");
-//     }
-//
-//     fn handle_single(&mut self, x: X) {
-//         x.fmt(self.1, self.0);
-//     }
-// }
-//
-// impl<'a, X: Debug> RExpReceiver<X> for Formatter<'a> {
-//     fn start_list(&mut self, x: Symbol) {
-//         write!(self, "({}", resolve_or_fail(x));
-//     }
-//
-//     fn end_list(&mut self) {
-//         write!(self, ") ");
-//     }
-//
-//     fn handle_single(&mut self, x: X) {
-//         x.fmt(self);
-//     }
-// }
-//
-// trait RExp<T> {
-//     fn receive(&self, reciever: &mut impl RExpReceiver<T>);
-//
-// }
-//
-// pub fn rexp_fmt<T: Debug>(x: impl RExp<T>) -> impl Display {
-//     DisplayFn(move |f| Ok(x.receive(f)))
-// }
-//
-// pub struct RExpFn<R>(Symbol, R);
-// impl<T, R: RExp<T>> RExp<T> for RExpFn<R> {
-//     fn receive(&self, reciever: &mut impl RExpReceiver<T>) {
-//         reciever.start_list(self.0);
-//         self.1.receive(reciever);
-//         reciever.end_list()
-//     }
-// }
-//
-// impl<T, R1: RExp<T>, R2: RExp<T>> RExp<T> for (R1, R2) {
-//     fn receive(&self, reciever: &mut impl RExpReceiver<T>) {
-//         self.0.receive(reciever);
-//         self.1.receive(reciever)
-//     }
-// }
-//
-// pub struct RExpSingle<X>(X);
-//
-// impl<X> RExp<X> for RExpSingle<X> {
-//     fn receive(&self, reciever: &mut impl RExpReceiver<X>) {
-//         todo!()
-//     }
-// }

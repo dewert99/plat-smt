@@ -12,7 +12,7 @@
 (declare-const c S2)
 (assert (= b (g c)))
 (check-sat)
-(get-model)
+(get-value (a b c (f a) (g c)))
 (assert (not (f (g c))))
 (check-sat)
 (get-unsat-core)
