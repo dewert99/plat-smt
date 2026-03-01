@@ -1,5 +1,5 @@
-use crate::std::prelude::v1::vec;
 use crate::util::DebugIter;
+use alloc::vec;
 use alloc::vec::Vec;
 use core::fmt::{Debug, Formatter};
 use core::marker::PhantomData;

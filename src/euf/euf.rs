@@ -160,7 +160,7 @@ impl BoolClass {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 enum MergeInfo {
     Both(bool),
     Left(LitVec),
@@ -180,7 +180,7 @@ pub(super) fn id_for_bool(b: bool) -> Id {
     Id::from(b as usize + 1)
 }
 
-#[derive(Debug, Default)]
+#[derive(Debug, Default, Clone)]
 pub(super) struct LitInfo {
     ids: LMap<LitId>,
     log: Vec<Lit>,
@@ -203,7 +203,7 @@ impl LitInfo {
     }
 }
 
-#[derive(Debug, Default)]
+#[derive(Debug, Default, Clone)]
 pub struct Euf {
     pub(super) egraph: EGraph<EClass>,
     bool_class_history: Vec<MergeInfo>,
@@ -894,7 +894,7 @@ impl Euf {
     }
 }
 
-#[perfect_derive(Default, Debug)]
+#[perfect_derive(Default, Debug, Clone)]
 struct FunctionInfo {
     indices: HashMap<Symbol, Range<usize>>,
     data: Vec<(SymbolLang, Id)>,

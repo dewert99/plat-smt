@@ -121,6 +121,7 @@ const fn base_sort(name: Symbol, children: &[Sort]) -> Sort {
 
 pub const BOOL_SORT: Sort = base_sort(BOOL_SYM, &[]);
 
+#[derive(Clone)]
 pub struct SymbolInfo {
     symbol_data: String,
     symbol_indices: Vec<usize>,
@@ -210,6 +211,7 @@ fn test_symbols() {
     assert_eq!(symbols.resolve(TRUE_SYM), "true")
 }
 
+#[derive(Clone)]
 pub struct RecInfo<T> {
     sort_args: Vec<T>,
     sorts: Vec<(Symbol, u32)>,
@@ -331,7 +333,7 @@ impl RecInfoArg for Sort {
     }
 }
 
-#[derive(Default)]
+#[derive(Default, Clone)]
 pub struct InternInfo {
     pub sorts: SortInfo,
     pub symbols: SymbolInfo,
