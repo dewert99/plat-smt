@@ -64,7 +64,7 @@ impl Debug for EqIdInfo {
     }
 }
 
-#[perfect_derive(Debug, Default)]
+#[perfect_derive(Debug, Default, Clone)]
 pub(crate) struct EqIds {
     map: HashMap<[Id; 2], EqIdInfo, DefaultHashBuilder>,
     /// equalities we would like to have literals for

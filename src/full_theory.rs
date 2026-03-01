@@ -1,12 +1,15 @@
 use crate::collapse::{Collapse, CollapseOut};
 use crate::exp::ExpLike;
 use crate::intern::Symbol;
+use crate::recorder::Recorder;
 use crate::theory::{ExplainTheoryArg, Incremental, Theory, TheoryArg};
-use crate::Sort;
+use crate::{Solver, Sort};
 use core::convert::Infallible;
+use platsat::{lbool, Lit, SolverInterface};
 use smallvec::SmallVec;
 
 pub trait FullTheory<R>: Incremental
+    + Clone
     + for<'a> Theory<TheoryArg<'a, Self::LevelMarker, R>, ExplainTheoryArg<'a, Self::LevelMarker, R>>
 {
     type Exp: ExpLike;
@@ -26,6 +29,15 @@ pub trait FullTheory<R>: Incremental
     /// `self` must not have been mutated since the last call to
     /// [`init_function_info`](Self::init_function_info)
     fn get_function_info(&self, f: Symbol) -> Self::FunctionInfo<'_>;
+
+    fn solve_limited_preserving_trail(solver: &mut Solver<Self, R>, assumptions: &[Lit]) -> lbool
+    where
+        R: Recorder,
+    {
+        solver
+            .sat
+            .solve_limited_preserving_trail_th(&mut solver.th, assumptions)
+    }
 }
 
 pub trait FunctionAssignmentT<Exp>: Iterator<Item = (Self::H, Exp)> {
