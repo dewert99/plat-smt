@@ -82,3 +82,5 @@ pub trait Collapse<T: CollapseOut, Arg, Marker> {
     /// [`Collapse::collapse`]
     fn placeholder(&self, t: &T) -> T::Out;
 }
+
+pub struct BaseMarker<T = ()>(T);

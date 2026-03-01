@@ -1,4 +1,4 @@
-use crate::collapse::{Collapse, ExprContext};
+use crate::collapse::{BaseMarker, Collapse, ExprContext};
 use crate::core_ops::{CoreOpsPf, Distinct, Eq};
 use crate::full_theory::FullTheory;
 use crate::intern::Symbol;
@@ -19,8 +19,6 @@ pub struct EmptyTheory;
 
 #[derive(Copy, Clone, Debug)]
 pub struct PushInfo;
-
-pub struct EmptyTheoryMarker;
 
 impl<'a, A: SatTheoryArgT<'a>> Theory<A, A::Explain<'a>> for EmptyTheory {
     fn learn(&mut self, _: Lit, _: &mut A) -> Result<(), ()> {
@@ -62,7 +60,7 @@ impl<R: Recorder> FullTheory<R> for EmptyTheory {
     }
 }
 
-impl<'a, A: SatTheoryArgT<'a>> Collapse<Eq<BoolExp>, A, EmptyTheoryMarker> for EmptyTheory {
+impl<'a, A: SatTheoryArgT<'a>> Collapse<Eq<BoolExp>, A, BaseMarker> for EmptyTheory {
     fn collapse(&mut self, t: Eq<BoolExp>, acts: &mut A, ctx: ExprContext<BoolExp>) -> BoolExp {
         !acts.xor(t.0, t.1, ctx.negate())
     }
@@ -72,9 +70,7 @@ impl<'a, A: SatTheoryArgT<'a>> Collapse<Eq<BoolExp>, A, EmptyTheoryMarker> for E
     }
 }
 
-impl<'a, 'b, A: SatTheoryArgT<'a>> Collapse<Distinct<'b, BoolExp>, A, EmptyTheoryMarker>
-    for EmptyTheory
-{
+impl<'a, 'b, A: SatTheoryArgT<'a>> Collapse<Distinct<'b, BoolExp>, A, BaseMarker> for EmptyTheory {
     fn collapse(
         &mut self,
         t: Distinct<'b, BoolExp>,
@@ -93,13 +89,15 @@ impl<'a, 'b, A: SatTheoryArgT<'a>> Collapse<Distinct<'b, BoolExp>, A, EmptyTheor
     }
 }
 
-type EmptySolver<R> =
-    SolverWithBound<Solver<EmptyTheory, R>, HashMap<Symbol, Bound<BoolExp, Infallible>>>;
+type ConstOnlySolver<Th, R> =
+    SolverWithBound<Solver<Th, R>, HashMap<Symbol, Bound<<Th as FullTheory<R>>::Exp, Infallible>>>;
 
 #[derive(Default)]
 pub struct ConstantPf;
 
-impl<R: Recorder> ParserFragment<BoolExp, EmptySolver<R>, EmptyTheoryMarker> for ConstantPf {
+impl<Th: FullTheory<R>, R: Recorder> ParserFragment<Th::Exp, ConstOnlySolver<Th, R>, BaseMarker>
+    for ConstantPf
+{
     fn supports(&self, _: Symbol) -> bool {
         true
     }
@@ -107,10 +105,10 @@ impl<R: Recorder> ParserFragment<BoolExp, EmptySolver<R>, EmptyTheoryMarker> for
     fn handle_non_terminal(
         &self,
         f: Symbol,
-        children: &mut [BoolExp],
-        solver: &mut EmptySolver<R>,
-        _: ExprContext<BoolExp>,
-    ) -> Result<BoolExp, AddSexpError> {
+        children: &mut [Th::Exp],
+        solver: &mut ConstOnlySolver<Th, R>,
+        _: ExprContext<Th::Exp>,
+    ) -> Result<Th::Exp, AddSexpError> {
         use crate::parser_fragment::AddSexpError::*;
         solver
             .solver

@@ -1,10 +1,10 @@
 use super::egraph::{children, Children, Op, SymbolLang, EQ_OP};
 use super::euf::{litvec, BoolClass, EClass, Euf, Exp, FunctionInfoIter, PushInfo};
 use super::explain::Justification;
-use crate::collapse::{Collapse, CollapseOut, ExprContext};
+use crate::collapse::{BaseMarker, Collapse, CollapseOut, ExprContext};
 use crate::core_ops::{Distinct, DistinctPf, Eq, EqPf, ItePf};
 use crate::exp::Fresh;
-use crate::full_theory::{FnSort, FullTheory};
+use crate::full_theory::{FnSort, FullTheory, TopLevelCollapse};
 use crate::intern::{
     DisplayInterned, InternInfo, Symbol, BOOL_SORT, DISTINCT_SYM, DISTINGUISHER_SYM,
 };
@@ -14,13 +14,16 @@ use crate::parser_fragment::{index_iter, ParserFragment, PfResult};
 use crate::recorder::{dep_checker, Recorder};
 use crate::rexp::{rexp_debug, AsRexp, Namespace, NamespaceVar, Rexp};
 use crate::solver::{SolverCollapse, SolverWithBound};
+use crate::theory::Incremental;
 use crate::tseitin::{BoolOpPf, SatExplainTheoryArgT, SatTheoryArgT};
 use crate::util::{pairwise_sym, HashMap};
 use crate::{AddSexpError, BoolExp, Conjunction, ExpLike, HasSort, Solver, Sort, SubExp, SuperExp};
 use core::fmt::Formatter;
+use core::slice::Iter;
 use plat_egg::raw::Language;
 use plat_egg::Id;
 use platsat::Lit;
+use std::iter::Copied;
 
 #[derive(Copy, Clone, Eq, PartialEq, Hash, Ord, PartialOrd)]
 pub struct UExp {
@@ -253,9 +256,7 @@ impl Euf {
     }
 }
 
-pub struct EufMarker;
-
-impl<'a, Arg> Collapse<UExp, Arg, EufMarker> for Euf {
+impl<'a, Arg> Collapse<UExp, Arg, BaseMarker> for Euf {
     fn collapse(&mut self, t: UExp, _: &mut Arg, _: ExprContext<UExp>) -> UExp {
         UExp::new(self.find(t.id), t.sort)
     }
@@ -265,7 +266,7 @@ impl<'a, Arg> Collapse<UExp, Arg, EufMarker> for Euf {
     }
 }
 
-impl<'a, Arg> Collapse<Fresh<UExp>, Arg, EufMarker> for Euf {
+impl<'a, Arg> Collapse<Fresh<UExp>, Arg, BaseMarker> for Euf {
     fn collapse(&mut self, fresh: Fresh<UExp>, _: &mut Arg, _: ExprContext<UExp>) -> UExp {
         let mut added = false;
         let id = self.egraph.add(fresh.name.into(), Children::new(), |_, _| {
@@ -280,7 +281,9 @@ impl<'a, Arg> Collapse<Fresh<UExp>, Arg, EufMarker> for Euf {
     }
 }
 
-impl<'a, 'b, A: SatTheoryArgT<'a, M = PushInfo>> Collapse<Distinct<'b, Exp>, A, EufMarker> for Euf {
+impl<'a, 'b, A: SatTheoryArgT<'a, M = PushInfo>> Collapse<Distinct<'b, Exp>, A, BaseMarker>
+    for Euf
+{
     fn collapse(
         &mut self,
         Distinct(exps): Distinct<Exp>,
@@ -349,7 +352,7 @@ impl<'a, 'b, A: SatTheoryArgT<'a, M = PushInfo>> Collapse<Distinct<'b, Exp>, A, 
     }
 }
 
-impl<'a, A: SatTheoryArgT<'a, M = PushInfo>> Collapse<Eq<Exp>, A, EufMarker> for Euf {
+impl<'a, A: SatTheoryArgT<'a, M = PushInfo>> Collapse<Eq<Exp>, A, BaseMarker> for Euf {
     fn collapse(
         &mut self,
         Eq(e1, e2): Eq<Exp>,
@@ -392,12 +395,15 @@ impl<'a, I: Iterator> UFn<I> {
     }
 }
 
-impl<I: Iterator<Item = Exp>> CollapseOut for UFn<I> {
-    type Out = Exp;
+impl<I: Iterator> CollapseOut for UFn<I>
+where
+    I::Item: ExpLike,
+{
+    type Out = I::Item;
 }
 
-impl<'a, I: Iterator<Item = Exp>, A: SatTheoryArgT<'a, M = PushInfo>> Collapse<UFn<I>, A, EufMarker>
-    for Euf
+impl<'a, I: Iterator<Item = Exp>, A: SatTheoryArgT<'a, M = PushInfo>>
+    Collapse<UFn<I>, A, BaseMarker> for Euf
 {
     fn collapse(
         &mut self,
@@ -418,12 +424,25 @@ impl<'a, I: Iterator<Item = Exp>, A: SatTheoryArgT<'a, M = PushInfo>> Collapse<U
     }
 }
 
-type EufSolver<R> = SolverWithBound<Solver<Euf, R>, HashMap<Symbol, Bound<Exp, FnSort>>>;
+type FnSortSolver<Th, R> =
+    SolverWithBound<Solver<Th, R>, HashMap<Symbol, Bound<<Th as FullTheory<R>>::Exp, FnSort>>>;
 
 #[derive(Default)]
 pub struct UFnPf;
 
-impl<R: Recorder> ParserFragment<Exp, EufSolver<R>, EufMarker> for UFnPf {
+impl<
+        M,
+        MExp,
+        MEq,
+        Th: Incremental
+            + FullTheory<R>
+            + TopLevelCollapse<Th::Exp, MExp, R>
+            + TopLevelCollapse<Eq<Th::Exp>, MEq, R>,
+        R: Recorder,
+    > ParserFragment<Th::Exp, FnSortSolver<Th, R>, (M, MExp, MEq)> for UFnPf
+where
+    Solver<Th, R>: for<'a> SolverCollapse<UFn<Copied<Iter<'a, Th::Exp>>>, M>,
+{
     fn supports(&self, _: Symbol) -> bool {
         true
     }
@@ -431,10 +450,10 @@ impl<R: Recorder> ParserFragment<Exp, EufSolver<R>, EufMarker> for UFnPf {
     fn handle_non_terminal(
         &self,
         f: Symbol,
-        children: &mut [Exp],
-        solver: &mut EufSolver<R>,
-        ctx: ExprContext<Exp>,
-    ) -> Result<Exp, AddSexpError> {
+        children: &mut [Th::Exp],
+        solver: &mut FnSortSolver<Th, R>,
+        ctx: ExprContext<Th::Exp>,
+    ) -> Result<Th::Exp, AddSexpError> {
         use AddSexpError::*;
         solver
             .solver
@@ -487,8 +506,13 @@ impl<R: Recorder> ParserFragment<Exp, EufSolver<R>, EufMarker> for UFnPf {
 #[derive(Default)]
 pub struct EgraphPf<I>(I);
 
-impl<R: Recorder, E: SubExp<Exp, MS> + Copy, M, MS, I: ParserFragment<E, EufSolver<R>, M>>
-    ParserFragment<E, EufSolver<R>, (M, MS)> for EgraphPf<I>
+impl<
+        R: Recorder,
+        E: SubExp<Exp, MS> + Copy,
+        M,
+        MS,
+        I: ParserFragment<E, FnSortSolver<Euf, R>, M>,
+    > ParserFragment<E, FnSortSolver<Euf, R>, (M, MS)> for EgraphPf<I>
 {
     fn supports(&self, s: Symbol) -> bool {
         self.0.supports(s)
@@ -496,7 +520,7 @@ impl<R: Recorder, E: SubExp<Exp, MS> + Copy, M, MS, I: ParserFragment<E, EufSolv
     fn handle_terminal(
         &self,
         x: SexpTerminal,
-        solver: &mut EufSolver<R>,
+        solver: &mut FnSortSolver<Euf, R>,
         ctx: ExprContext<E>,
     ) -> PfResult<E> {
         self.0.handle_terminal(x, solver, ctx)
@@ -506,7 +530,7 @@ impl<R: Recorder, E: SubExp<Exp, MS> + Copy, M, MS, I: ParserFragment<E, EufSolv
         &self,
         f: Symbol,
         children: &mut [E],
-        solver: &mut EufSolver<R>,
+        solver: &mut FnSortSolver<Euf, R>,
         ctx: ExprContext<E>,
     ) -> Result<E, AddSexpError> {
         let Some(children_ids) = solver.solver.open(

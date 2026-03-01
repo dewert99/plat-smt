@@ -35,7 +35,7 @@ pub enum Approx {
     Approx(bool),
 }
 
-#[derive(Default)]
+#[derive(Default, Clone)]
 pub(crate) struct NoCb;
 impl Callbacks for NoCb {}
 type BatSolver = platsat::Solver<NoCb>;
@@ -43,6 +43,7 @@ type BatSolver = platsat::Solver<NoCb>;
 /// The main solver structure including the sat solver and egraph.
 ///
 /// It allows constructing and asserting expressions [`Exp`] within the solver
+#[derive(Clone)]
 pub struct Solver<Euf: FullTheory<R>, R> {
     pub(crate) th: TheoryWrapper<Euf, R>,
     pub(crate) sat: BatSolver,
@@ -246,9 +247,7 @@ impl<Th: FullTheory<R>, R: Recorder> Solver<Th, R> {
     pub fn check_sat_assuming_preserving_trail(&mut self, c: &Conjunction) -> SolveResult {
         let res = match c.lits() {
             None => lbool::FALSE,
-            Some(lits) => self
-                .sat
-                .solve_limited_preserving_trail_th(&mut self.th, lits),
+            Some(lits) => Th::solve_limited_preserving_trail(self, lits),
         };
         self.in_model = true;
         if res == lbool::FALSE {

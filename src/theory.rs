@@ -44,7 +44,7 @@ struct PushInfo<X> {
     model_len: u32,
 }
 
-#[perfect_derive(Default, Debug)]
+#[perfect_derive(Default, Debug, Clone)]
 pub struct TheoryWrapper<Th: Incremental, R> {
     th: Th,
     prev_model_len: u32,
@@ -53,7 +53,7 @@ pub struct TheoryWrapper<Th: Incremental, R> {
     pub(crate) arg: IncrementalArgData<Th::LevelMarker, R>,
 }
 
-#[perfect_derive(Default)]
+#[perfect_derive(Default, Clone)]
 pub struct IncrementalArgData<M, R> {
     total_level: u32,
     push_log: Vec<PushInfo<M>>,
