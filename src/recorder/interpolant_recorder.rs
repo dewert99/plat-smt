@@ -73,7 +73,7 @@ enum ErrorReason<'a> {
     MixedTerm(DefExp),
     MissedAssumption(&'a str),
 }
-use crate::parser_core::SpanRange;
+use crate::parser::SpanRange;
 use crate::recorder::recorder::{Feature, InterpolantGroup};
 use ErrorReason::*;
 
@@ -260,6 +260,10 @@ impl InterpolantRecorder {
             (self.tseiten_clauses.len() + assumptions + self.clause_proofs.len() + theory_clauses)
                 as isize
                 - 1;
+        if self.clause_proofs[0].len() == 0 {
+            self.def_stack.push(TRUE_DEF_EXP);
+            return;
+        }
         for proof in self.clause_proofs.iter().rev() {
             let (first, rest) = proof.split_first().unwrap();
             let def = self.def_stack[max_idx as usize - first.clause as usize];

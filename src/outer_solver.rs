@@ -472,6 +472,10 @@ impl<L: Logic> OuterSolver<L> {
         &mut self.inner.solver
     }
 
+    pub fn recorder_mut(&mut self) -> &mut L::R {
+        &mut self.solver_mut().th.arg.recorder
+    }
+
     pub fn solver_mut_with_def<'a>(
         &'a mut self,
     ) -> (
