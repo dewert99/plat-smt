@@ -9,7 +9,7 @@ use crate::intern::{
     DisplayInterned, InternInfo, Symbol, BOOL_SORT, DISTINCT_SYM, DISTINGUISHER_SYM,
 };
 use crate::outer_solver::Bound;
-use crate::parser_core::SexpTerminal;
+use crate::parser::SexpTerminal;
 use crate::parser_fragment::{index_iter, ParserFragment, PfResult};
 use crate::recorder::{dep_checker, Recorder};
 use crate::rexp::{rexp_debug, AsRexp, Namespace, NamespaceVar, Rexp};

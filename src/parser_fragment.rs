@@ -1,6 +1,6 @@
 use crate::collapse::ExprContext;
 use crate::intern::Symbol;
-use crate::parser_core::SexpTerminal;
+use crate::parser::SexpTerminal;
 use crate::{BoolExp, ExpLike, Sort, StaticSort, SubExp, SuperExp};
 use alloc::borrow::Cow;
 use AddSexpError::*;

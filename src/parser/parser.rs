@@ -5,8 +5,10 @@ use crate::outer_solver::{
     Bound, BoundDefinition, BoundL, DefineError, FnSort, Logic, MaybeFnSort, OuterSolver,
     StartExpCtx,
 };
-use crate::parser::Error::*;
-use crate::parser_core::{ParseError, SexpParser, SexpTerminal, SexpToken, SexpVisitor, SpanRange};
+use crate::parser::parser::Error::*;
+use crate::parser::parser_core::{
+    ParseError, SexpLexer, SexpParser, SexpTerminal, SexpToken, SexpVisitor, SpanRange,
+};
 use crate::recorder::recorder::{Feature, InterpolantGroup};
 use crate::recorder::{dep_checker, Recorder};
 use crate::solver::{SolveResult, SolverCollapse, UnsatCoreConjunction};
@@ -24,8 +26,8 @@ use std::fmt::Formatter;
 use std::fmt::Write;
 use std::iter;
 
-struct PrintSuccessWriter<W> {
-    writer: W,
+pub(super) struct PrintSuccessWriter<W> {
+    pub(super) writer: W,
     print_success: bool,
 }
 
@@ -357,7 +359,7 @@ struct LevelMarker<L: Logic> {
     solver: solver::LevelMarker<L::LevelMarker, L::RLevelMarker>,
 }
 
-struct Parser<W: Write, L: Logic> {
+pub(super) struct Parser<W: Write, L: Logic> {
     /// List of global variables in the order defined
     /// Used to remove global variable during `(pop)`
     global_stack: Vec<Symbol>,
@@ -378,7 +380,7 @@ struct Parser<W: Write, L: Logic> {
     old_named_assertions: u32,
     push_info: Vec<LevelMarker<L>>,
     core: OuterSolver<L>,
-    writer: PrintSuccessWriter<W>,
+    pub(super) writer: PrintSuccessWriter<W>,
     state: State,
     command_level_marker: Option<solver::LevelMarker<L::LevelMarker, L::RLevelMarker>>,
     options: Options,
@@ -648,7 +650,7 @@ impl<'a, W: Write, L: Logic> SexpVisitor for ExpVisitor<'a, W, L> {
 }
 
 impl<W: Write, L: Logic> Parser<W, L> {
-    fn new(writer: W) -> Self {
+    pub(super) fn new(writer: W) -> Self {
         let mut res = Parser {
             global_stack: Default::default(),
             let_bound_stack: Default::default(),
@@ -796,10 +798,7 @@ impl<W: Write, L: Logic> Parser<W, L> {
             self.truncate_named_assertions();
             let interpolant_enabled = self
                 .core
-                .solver_mut()
-                .th
-                .arg
-                .recorder
+                .recorder_mut()
                 .feature_enabled(Feature::Interpolant);
             if interpolant_enabled {
                 if let Some(marker) = self.command_level_marker.clone() {
@@ -1026,10 +1025,7 @@ impl<W: Write, L: Logic> Parser<W, L> {
                     "interpolation-method" => {
                         let enabled = self
                             .core
-                            .solver_mut()
-                            .th
-                            .arg
-                            .recorder
+                            .recorder_mut()
                             .feature_enabled(Feature::Interpolant);
                         let method = if enabled { "basic" } else { "unsupported" };
                         writeln!(&mut self.writer, "(:{s} {})", method)
@@ -1109,10 +1105,7 @@ impl<W: Write, L: Logic> Parser<W, L> {
                         }
                         if !self
                             .core
-                            .solver_mut()
-                            .th
-                            .arg
-                            .recorder
+                            .recorder_mut()
                             .set_feature_enabled(Feature::Interpolant, x)
                         {
                             return Err(custom_err("unsupported interpolants"));
@@ -1147,10 +1140,7 @@ impl<W: Write, L: Logic> Parser<W, L> {
                 };
                 if !self
                     .core
-                    .solver_mut()
-                    .th
-                    .arg
-                    .recorder
+                    .recorder_mut()
                     .feature_enabled(Feature::Interpolant)
                 {
                     return Err(not_enabled!("produce-interpolants"));
@@ -1199,7 +1189,7 @@ impl<W: Write, L: Logic> Parser<W, L> {
         Ok(name)
     }
 
-    fn clear(&mut self) {
+    pub(super) fn clear(&mut self) {
         self.push_info.clear();
         self.global_stack.clear();
         self.core.full_clear();
@@ -1440,9 +1430,12 @@ impl<W: Write, L: Logic> Parser<W, L> {
         }
     }
 
-    fn interp_smt2(&mut self, data: impl FullBufRead, mut err: impl Write) {
-        SexpParser::parse_stream_keep_going(
-            data,
+    pub(super) fn interp_smt2(
+        &mut self,
+        lexer: &mut SexpLexer<impl FullBufRead>,
+        mut err: impl Write,
+    ) {
+        lexer.parse_stream_keep_going(
             self,
             |this, t| this.parse_command_token(t?),
             |this, e| writeln!(err, "{}", e.map(|x| x.with_intern(this.core.intern()))).unwrap(),
@@ -1490,5 +1483,5 @@ fn write_body<'a, W: Write, L: Logic>(
 /// `stderr`
 pub fn interp_smt2<L: Logic>(data: impl FullBufRead, out: impl Write, err: impl Write) {
     let mut p = Parser::<_, L>::new(out);
-    p.interp_smt2(data, err)
+    p.interp_smt2(&mut SexpLexer::new(data), err)
 }

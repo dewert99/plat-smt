@@ -1,6 +1,6 @@
 use crate::full_theory::FullTheory;
 use crate::intern::{DisplayInterned, InternInfo, Symbol};
-use crate::parser_core::SpanRange;
+use crate::parser::SpanRange;
 use crate::recorder::dep_checker::DepCheckerAction;
 use crate::rexp::AsRexp;
 use crate::solver::{LevelMarker, UnsatCoreConjunction};

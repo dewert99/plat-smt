@@ -1,5 +1,5 @@
 use crate::intern::Symbol;
-use crate::parser_core::SpanRange;
+use crate::parser::SpanRange;
 use crate::recorder::interpolant_recorder::{BOTH, NEITHER};
 use crate::theory::Incremental;
 use crate::util::HashMap;

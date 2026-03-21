@@ -13,8 +13,7 @@ mod full_buf_read;
 pub mod intern;
 pub mod junction;
 pub mod outer_solver;
-mod parser;
-pub mod parser_core;
+pub mod parser;
 mod reborrow;
 mod solver;
 mod theory;
@@ -37,6 +36,6 @@ pub use intern::Sort;
 #[doc(inline)]
 pub use junction::{Conjunction, Disjunction};
 pub use outer_solver::OuterSolver;
-pub use parser::interp_smt2;
+pub use parser::{incremental_parser::IncrementalParser, parser::interp_smt2};
 pub use parser_fragment::AddSexpError;
 pub use solver::{Approx, BLit, SolveResult, Solver};
