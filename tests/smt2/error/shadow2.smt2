@@ -1,0 +1,5 @@
+(declare-sort U)
+(declare-fun b (U U) U)
+(declare-fun v () U)
+(declare-fun v () U)
+(assert (= (b v v)))

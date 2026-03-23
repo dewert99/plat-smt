@@ -267,10 +267,12 @@ impl<'a, Arg> Collapse<UExp, Arg, EufMarker> for Euf {
 
 impl<'a, Arg> Collapse<Fresh<UExp>, Arg, EufMarker> for Euf {
     fn collapse(&mut self, fresh: Fresh<UExp>, _: &mut Arg, _: ExprContext<UExp>) -> UExp {
+        let mut added = false;
         let id = self.egraph.add(fresh.name.into(), Children::new(), |_, _| {
+            added = true;
             EClass::Uninterpreted(fresh.sort)
         });
-        UExp::new(id, fresh.sort)
+        UExp::new(if added { id } else { Id::MAX }, fresh.sort)
     }
 
     fn placeholder(&self, fresh: &Fresh<UExp>) -> UExp {

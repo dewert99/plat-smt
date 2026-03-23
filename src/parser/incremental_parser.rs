@@ -2,6 +2,8 @@ use crate::outer_solver::Logic;
 use crate::parser::parser::Parser;
 use crate::parser::parser_core::SexpLexer;
 use crate::FullBufRead;
+use core::fmt::Display;
+use core::fmt::Write;
 use std::string::String;
 
 pub struct IncrementalParser<L: Logic> {
@@ -33,8 +35,8 @@ impl<L: Logic> Default for IncrementalParser<L> {
 impl<L: Logic> IncrementalParser<L> {
     /// Interprets `commands` which must be a whitespace separated list of smt2 commands
     /// Updates self.out() and self.err()
-    pub fn interp_smt2_commands(&mut self, commands: &str) {
-        self.lexer.reader.push_str(commands);
+    pub fn interp_smt2_commands(&mut self, commands: impl Display) {
+        write!(&mut self.lexer.reader, "{commands}").unwrap();
         self.parser.interp_smt2(&mut self.lexer, &mut self.err)
     }
 

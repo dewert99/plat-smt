@@ -389,7 +389,9 @@ impl Incremental for InterpolantRecorder {
     }
 
     fn clear(&mut self) {
-        debug_assert!(matches!(self.state, State::Solving));
+        if !matches!(self.state, State::Solving) {
+            self.exit_solved_state();
+        }
         self.defs.clear();
         self.clauses.clear();
         self.dep_checker.clear();
