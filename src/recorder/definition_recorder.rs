@@ -375,7 +375,7 @@ impl<'a> Display for DisplayStandAloneDefExp<'a> {
             if uses.0 > 1 {
                 writeln!(
                     f,
-                    "(let (@d{} {})",
+                    "(let ((@d{} {}))",
                     i,
                     DisplayDefExp {
                         def_exp,
