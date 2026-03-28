@@ -9,7 +9,7 @@ use crate::recorder::{dep_checker, ClauseKind, Recorder};
 use crate::rexp::{AsRexp, NamespaceVar};
 use crate::solver::{LevelMarker as SolverMarker, UnsatCoreConjunction, UnsatCoreInfo};
 use crate::theory::Incremental;
-use crate::util::{display_sexp, DebugIter, DisplayFn, HashMap};
+use crate::util::{display_sexp, minmax, DebugIter, DisplayFn, HashMap};
 use crate::{BoolExp, Conjunction, ExpLike, Solver};
 use alloc::borrow::Cow;
 use alloc::format;
@@ -425,7 +425,7 @@ impl Recorder for InterpolantRecorder {
     fn log_clause(&mut self, clause: &[Lit], kind: ClauseKind) {
         trace!("Adding clause {:?} {:?} in {:?}", clause, kind, self.state);
         match (self.state, &kind) {
-            (State::Solving, ClauseKind::Sat)
+            (State::Solving, ClauseKind::Sat | ClauseKind::TheoryConflict(true))
             | (State::Proving, ClauseKind::TheoryExplain | ClauseKind::TheoryConflict(_)) => {
                 debug!("Adding clause {:?} {:?} in {:?}", clause, kind, self.state);
                 self.clauses.push(clause)
@@ -836,6 +836,7 @@ impl<'a> InterpolateArg<'a> {
                     self.defs.intern_call(NOT_SYM, &[d])
                 }
             }
+            (EQ_SYM, &mut [x, y]) => self.defs.intern_call(s, &minmax(x, y)),
             _ => self.defs.intern_call(s, &self.def_stack[from..]),
         };
         self.def_stack.truncate(from);

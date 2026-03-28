@@ -1,0 +1,3 @@
+unsat
+(smtcomp3 smtcomp2 smtcomp1)
+(= x y)
