@@ -90,7 +90,7 @@ impl<
 {
     fn collapse(&mut self, t: Ite<Exp>, acts: &mut A, ctx: ExprContext<Exp>) -> Exp {
         match t.0.to_lit() {
-            Ok(i) => {
+            Ok(_) => {
                 let res = match ctx {
                     ExprContext::AssertEq(x) if x.sort() == t.1.sort() => x,
                     _ => {
@@ -112,16 +112,8 @@ impl<
 
                 let eq1 = self.collapse(Eq::new_unchecked(res, t.1), acts, ExprContext::Exact);
                 let eq2 = self.collapse(Eq::new_unchecked(res, t.2), acts, ExprContext::Exact);
-                match eq1.to_lit() {
-                    Ok(l) => acts.add_clause_unchecked([!i, l]),
-                    Err(true) => {}
-                    Err(false) => acts.add_clause_unchecked([!i]),
-                }
-                match eq2.to_lit() {
-                    Ok(l) => acts.add_clause_unchecked([i, l]),
-                    Err(true) => {}
-                    Err(false) => acts.add_clause_unchecked([i]),
-                }
+                acts.add_clause([!t.0, eq1]);
+                acts.add_clause([t.0, eq2]);
                 res
             }
             Err(true) => t.1,
