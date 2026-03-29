@@ -13,3 +13,4 @@ wasm-bindgen = "0.2.91"
 [profile.release]
 lto = true
 codegen-units = 1
+panic = "unwind"

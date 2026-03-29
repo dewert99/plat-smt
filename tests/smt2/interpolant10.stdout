@@ -1,8 +1,8 @@
 unsat
 (p b)
-(not (= d a))
-(= d a)
-(not (= d a))
-(= d a)
-(and bc (not (= d a)))
+(not (= a d))
+(= a d)
+(not (= a d))
+(= a d)
+(and bc (not (= a d)))
 (and ab cd)

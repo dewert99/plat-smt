@@ -1,0 +1,5 @@
+(declare-const x Bool)
+(assert (not x))
+(assert x)
+(check-sat)
+(get-interpolants (and) (and))

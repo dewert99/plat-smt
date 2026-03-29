@@ -4,7 +4,7 @@ use crate::exp::*;
 use crate::full_theory::{FullTheory, TopLevelCollapse};
 use crate::intern::*;
 use crate::junction::*;
-use crate::parser_core::SpanRange;
+use crate::parser::SpanRange;
 use crate::recorder::Recorder;
 use crate::theory::{TheoryArg, TheoryWrapper};
 use crate::tseitin::SatTheoryArgT;

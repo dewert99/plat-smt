@@ -9,7 +9,7 @@ use crate::recorder::{dep_checker, ClauseKind, Recorder};
 use crate::rexp::{AsRexp, NamespaceVar};
 use crate::solver::{LevelMarker as SolverMarker, UnsatCoreConjunction, UnsatCoreInfo};
 use crate::theory::Incremental;
-use crate::util::{display_sexp, DebugIter, DisplayFn, HashMap};
+use crate::util::{display_sexp, minmax, DebugIter, DisplayFn, HashMap};
 use crate::{BoolExp, Conjunction, ExpLike, Solver};
 use alloc::borrow::Cow;
 use alloc::format;
@@ -73,7 +73,7 @@ enum ErrorReason<'a> {
     MixedTerm(DefExp),
     MissedAssumption(&'a str),
 }
-use crate::parser_core::SpanRange;
+use crate::parser::SpanRange;
 use crate::recorder::recorder::{Feature, InterpolantGroup};
 use ErrorReason::*;
 
@@ -260,6 +260,10 @@ impl InterpolantRecorder {
             (self.tseiten_clauses.len() + assumptions + self.clause_proofs.len() + theory_clauses)
                 as isize
                 - 1;
+        if self.clause_proofs[0].len() == 0 {
+            self.def_stack.push(TRUE_DEF_EXP);
+            return;
+        }
         for proof in self.clause_proofs.iter().rev() {
             let (first, rest) = proof.split_first().unwrap();
             let def = self.def_stack[max_idx as usize - first.clause as usize];
@@ -385,7 +389,9 @@ impl Incremental for InterpolantRecorder {
     }
 
     fn clear(&mut self) {
-        debug_assert!(matches!(self.state, State::Solving));
+        if !matches!(self.state, State::Solving) {
+            self.exit_solved_state();
+        }
         self.defs.clear();
         self.clauses.clear();
         self.dep_checker.clear();
@@ -419,7 +425,7 @@ impl Recorder for InterpolantRecorder {
     fn log_clause(&mut self, clause: &[Lit], kind: ClauseKind) {
         trace!("Adding clause {:?} {:?} in {:?}", clause, kind, self.state);
         match (self.state, &kind) {
-            (State::Solving, ClauseKind::Sat)
+            (State::Solving, ClauseKind::Sat | ClauseKind::TheoryConflict(true))
             | (State::Proving, ClauseKind::TheoryExplain | ClauseKind::TheoryConflict(_)) => {
                 debug!("Adding clause {:?} {:?} in {:?}", clause, kind, self.state);
                 self.clauses.push(clause)
@@ -830,6 +836,7 @@ impl<'a> InterpolateArg<'a> {
                     self.defs.intern_call(NOT_SYM, &[d])
                 }
             }
+            (EQ_SYM, &mut [x, y]) => self.defs.intern_call(s, &minmax(x, y)),
             _ => self.defs.intern_call(s, &self.def_stack[from..]),
         };
         self.def_stack.truncate(from);

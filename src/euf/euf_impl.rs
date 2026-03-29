@@ -9,7 +9,7 @@ use crate::intern::{
     DisplayInterned, InternInfo, Symbol, BOOL_SORT, DISTINCT_SYM, DISTINGUISHER_SYM,
 };
 use crate::outer_solver::Bound;
-use crate::parser_core::SexpTerminal;
+use crate::parser::SexpTerminal;
 use crate::parser_fragment::{index_iter, ParserFragment, PfResult};
 use crate::recorder::{dep_checker, Recorder};
 use crate::rexp::{rexp_debug, AsRexp, Namespace, NamespaceVar, Rexp};
@@ -268,10 +268,12 @@ impl<'a, Arg> Collapse<UExp, Arg, BaseMarker> for Euf {
 
 impl<'a, Arg> Collapse<Fresh<UExp>, Arg, BaseMarker> for Euf {
     fn collapse(&mut self, fresh: Fresh<UExp>, _: &mut Arg, _: ExprContext<UExp>) -> UExp {
+        let mut added = false;
         let id = self.egraph.add(fresh.name.into(), Children::new(), |_, _| {
+            added = true;
             EClass::Uninterpreted(fresh.sort)
         });
-        UExp::new(id, fresh.sort)
+        UExp::new(if added { id } else { Id::MAX }, fresh.sort)
     }
 
     fn placeholder(&self, fresh: &Fresh<UExp>) -> UExp {

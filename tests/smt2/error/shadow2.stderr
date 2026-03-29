@@ -1,0 +1,4 @@
+the identifier `v` shadows a global constant at 4:20
+(declare-fun v () U)
+                   ^
+
