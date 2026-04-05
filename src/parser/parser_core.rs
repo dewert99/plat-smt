@@ -102,6 +102,7 @@ impl<'a, T> Spanned<'a, T> {
     }
 }
 
+#[derive(Clone)]
 pub struct SexpLexer<R> {
     pub(super) reader: R,
     current_line: usize,
@@ -497,6 +498,17 @@ impl<'a> SexpParser<'a, &'static [u8]> {
 }
 
 impl<'a, R: FullBufRead> SexpParser<'a, R> {
+    pub fn new(lex: &'a mut SexpLexer<R>) -> Self {
+        SexpParser(lex)
+    }
+
+    pub fn clone_lex(&self) -> SexpLexer<R>
+    where
+        R: Clone,
+    {
+        self.0.clone()
+    }
+
     pub fn lookup_range(&self, r: SpanRange) -> &str {
         core::str::from_utf8(&self.0.reader.data()[r.0..r.1]).unwrap()
     }
