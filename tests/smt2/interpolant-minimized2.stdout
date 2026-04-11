@@ -1,0 +1,4 @@
+unsat
+(and smtcomp4 smtcomp5)
+(let ((@d17 (f y)))
+  (and (not (= y (f @d17))) (not (= x @d17))))
