@@ -428,7 +428,7 @@ impl Recorder for InterpolantRecorder {
             (State::Solving, ClauseKind::Sat | ClauseKind::TheoryConflict(true))
             | (State::Proving, ClauseKind::TheoryExplain | ClauseKind::TheoryConflict(_)) => {
                 debug!("Adding clause {:?} {:?} in {:?}", clause, kind, self.state);
-                self.clauses.push(clause)
+                self.clauses.push_dedup(clause)
             }
             _ => {}
         }
@@ -606,6 +606,7 @@ fn initialize_interpolant_info<Th: FullTheory<InterpolantRecorder>>(
     for &l in assumption_lits {
         solver.sat.add_exact_clause([l])
     }
+    debug!("Start creating levels");
     for i in 0..solver.th.arg.recorder.clauses.len() {
         let level = solver.create_level();
         if !solver.is_ok() {
@@ -613,6 +614,7 @@ fn initialize_interpolant_info<Th: FullTheory<InterpolantRecorder>>(
         }
         levels.push(level);
         let clause = &solver.th.arg.recorder.clauses[i];
+        debug!("Added clause {:?}", clause);
         solver.sat.add_exact_clause(clause.iter().copied());
     }
 

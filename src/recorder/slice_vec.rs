@@ -31,6 +31,25 @@ impl<T, I> SliceVec<T, I> {
         self.indices.push(self.elements.len());
     }
 
+    pub fn push_dedup<It: IntoIterator>(&mut self, i: It)
+    where
+        Vec<T>: Extend<It::Item>,
+        T: Ord,
+    {
+        let old_len = self.elements.len();
+        self.elements.extend(i);
+        self.elements[old_len..].sort_unstable();
+        let mut deduped = old_len + 1;
+        for i in deduped..self.elements.len() {
+            if self.elements[i - 1] != self.elements[i] {
+                self.elements.swap(deduped, i);
+                deduped += 1;
+            }
+        }
+        self.elements.truncate(deduped);
+        self.indices.push(deduped);
+    }
+
     pub fn len(&self) -> usize {
         self.indices.len() - 1
     }
