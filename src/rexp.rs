@@ -47,6 +47,12 @@ impl Display for NamespaceVar {
     }
 }
 
+impl Debug for NamespaceVar {
+    fn fmt(&self, f: &mut Formatter<'_>) -> core::fmt::Result {
+        Display::fmt(self, f)
+    }
+}
+
 #[derive(Copy, Clone)]
 pub enum Rexp<'a> {
     Nv(NamespaceVar),

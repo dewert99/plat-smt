@@ -38,16 +38,18 @@ impl<T, I> SliceVec<T, I> {
     {
         let old_len = self.elements.len();
         self.elements.extend(i);
-        self.elements[old_len..].sort_unstable();
-        let mut deduped = old_len + 1;
-        for i in deduped..self.elements.len() {
-            if self.elements[i - 1] != self.elements[i] {
-                self.elements.swap(deduped, i);
-                deduped += 1;
+        if self.elements.len() != old_len {
+            self.elements[old_len..].sort_unstable();
+            let mut target = old_len;
+            for i in old_len + 1..self.elements.len() {
+                if self.elements[target] != self.elements[i] {
+                    target += 1;
+                    self.elements.swap(target, i);
+                }
             }
+            self.elements.truncate(target + 1);
         }
-        self.elements.truncate(deduped);
-        self.indices.push(deduped);
+        self.indices.push(self.elements.len());
     }
 
     pub fn len(&self) -> usize {
