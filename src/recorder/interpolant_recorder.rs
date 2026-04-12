@@ -627,6 +627,12 @@ fn initialize_interpolant_info<Th: FullTheory<InterpolantRecorder>>(
             .defs
             .dump_global_defs(&solver.th.arg.intern)
     );
+    solver
+        .th
+        .arg
+        .recorder
+        .defs
+        .trace_defs(&solver.th.arg.intern);
     analyze_final_clause(solver);
 
     // analyze each learned clause
@@ -680,8 +686,10 @@ fn analyze_clause<Th: FullTheory<InterpolantRecorder>>(
     solver.th.arg.recorder.start_new_clause_proof(cr)?;
     solver.open(
         |_, acts| {
-            for l in acts.incr.recorder.clauses[i].iter().copied() {
-                let l = !l;
+            let clause = &acts.incr.recorder.clauses[i];
+            debug!("Analyzing clause {:?}", clause);
+            for l in clause {
+                let l = !*l;
                 if acts.sat.value_lit(l) == lbool::UNDEF {
                     acts.sat.add_clause_unchecked([l]);
                 } else {

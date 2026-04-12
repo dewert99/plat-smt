@@ -11,7 +11,7 @@ use core::cmp::max;
 use core::fmt::{Display, Formatter};
 use core::num::{NonZeroU32, Saturating};
 use default_vec2::DefaultVec;
-use log::debug;
+use log::{debug, trace, Level};
 use platsat::Lit;
 
 #[derive(Copy, Clone, Eq, PartialEq, Hash, Ord, PartialOrd, Debug)]
@@ -178,6 +178,40 @@ impl DefinitionRecorder {
                 )
             })
         })
+    }
+
+    pub fn trace_defs(&self, interner: &InternInfo) {
+        if Level::Trace > log::STATIC_MAX_LEVEL || Level::Trace > log::max_level() {
+            return;
+        }
+
+        let mut max_def_exp = None;
+        let mut nvs = DefaultVec::<Vec<_>, _>::default();
+        for (k, v) in &self.var_defs {
+            nvs.get_mut(*v).push(*k);
+            if let Some(x) = max_def_exp {
+                max_def_exp = Some(max(x, v));
+            } else {
+                max_def_exp = Some(v)
+            }
+        }
+
+        let Some(last) = max_def_exp else { return };
+
+        for i in 1..last.0.get() + 1 {
+            let def_exp = DefExp(NonZeroU32::new(i).unwrap());
+            trace!(
+                "@d{} := {} {:?}",
+                i,
+                DisplayDefExp {
+                    def_exp,
+                    recorder: self,
+                    interner,
+                    uses: Saturating(0)
+                },
+                nvs.get_mut(def_exp)
+            );
+        }
     }
 
     pub(crate) fn display_clause<'a, I: Iterator<Item = Lit> + Clone>(

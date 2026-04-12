@@ -151,9 +151,22 @@ fn test_sequential_push_pop() {
 mod test_smtlib_benchmarks {
     use super::*;
     use plat_smt::recorder::LoggingRecorder;
+    use plat_smt::IncrementalParser;
+    use std::env;
+    use std::fmt::Display;
     use std::io::{stderr, Seek, Write};
     use std::process::{Command, Stdio};
     use walkdir::WalkDir;
+
+    fn take_suffix(s: &mut String, suffix: &str) {
+        let new_len = s.len() - suffix.len();
+        assert_eq!(&s[new_len..], suffix);
+        s.truncate(new_len);
+    }
+
+    fn write_fmt(s: &mut String, x: impl Display) {
+        std::fmt::Write::write_fmt(s, format_args!("{x}")).unwrap()
+    }
 
     #[test]
     fn test_incremental() {
@@ -191,12 +204,17 @@ mod test_smtlib_benchmarks {
         }
     }
 
+    const ASSUMP_NAME: &str = "smtcomp";
+
     #[test]
     fn test_model_unsat_core() {
-        let mut out = String::new();
-        let mut err = String::new();
+        let mut incr = IncrementalParser::<(Euf, EufPf, InterpolantRecorder, _)>::default();
+        let mut interp_a = String::new();
+        let mut interp_b = String::new();
+        let mut yices_in = String::new();
         let mut file_buf = Vec::new();
-        if let Ok(x) = std::env::var("SEED") {
+        let scramble_seed = env::var("SCRAMBLE_SEED").unwrap_or("0".to_owned());
+        if let Ok(x) = env::var("SEED") {
             writeln!(file_buf, "(set-option :sat.random_seed {x})").unwrap();
             writeln!(file_buf, "(set-option :sat.rnd_init_act true)").unwrap();
         }
@@ -206,79 +224,120 @@ mod test_smtlib_benchmarks {
             let path = x.path();
             if path.extension() == Some("smt2".as_ref()) {
                 use std::io::Write;
-                writeln!(stderr(), "Testing file {:?}", path).unwrap();
                 let mut base_file = File::open(&path).unwrap();
                 base_file.read_to_end(&mut file_buf).unwrap();
                 base_file.rewind().unwrap();
                 let mut scrambled_file = File::create("tmp.smt2").unwrap();
                 let mut output_file = File::create("tmp.rsmt2").unwrap();
-                interp_smt2::<(Euf, EufPf, LoggingRecorder, _)>(&*file_buf, &mut out, &mut err);
-                assert_eq!(&err, "");
+                write!(stderr(), "Testing file {path:?}").unwrap();
+                incr.clear();
+                incr.interp_smt2_commands(str::from_utf8(&*file_buf).unwrap());
+                assert_eq!(incr.err(), "");
                 file_buf.truncate(base_len);
-                match &*out {
+                write!(stderr(), ": {}", incr.out()).unwrap();
+                match incr.out() {
                     "sat\n" => {
                         let scrambler_out = Command::new("./scrambler")
-                            .args(["-gen-model-val", "true"])
+                            .args(["-gen-model-val", "true", "-seed", &scramble_seed])
                             .stdin(base_file)
                             .output()
                             .unwrap();
                         assert!(scrambler_out.stderr.is_empty() && scrambler_out.status.success());
                         let scrambled = scrambler_out.stdout;
-                        out.clear();
-                        interp_smt2::<(Euf, EufPf, LoggingRecorder, _)>(
-                            &*scrambled,
-                            &mut out,
-                            &mut err,
-                        );
-                        assert_eq!(&err, "");
+                        incr.clear();
+                        incr.interp_smt2_commands(str::from_utf8(&*scrambled).unwrap());
+                        assert_eq!(incr.err(), "");
                         scrambled_file.write_all(&*scrambled).unwrap();
                         drop(scrambled_file);
-                        output_file.write_all(out.as_bytes()).unwrap();
-                        out.clear();
+                        output_file.write_all(incr.out().as_bytes()).unwrap();
                         let validator_out = Command::new("./dolmen")
                             .args(["--check-model=true", "-r", "tmp.rsmt2", "tmp.smt2"])
                             .output()
                             .unwrap();
                         if !validator_out.status.success() {
-                            std::io::stderr().write(&validator_out.stderr).unwrap();
+                            stderr().write(&validator_out.stderr).unwrap();
                             panic!();
                         }
                     }
                     "unsat\n" => {
                         let scrambler_out = Command::new("./scrambler")
-                            .args(["-gen-unsat-core", "true"])
+                            .args(["-gen-unsat-core", "true", "-seed", &scramble_seed])
                             .stdin(base_file)
                             .output()
                             .unwrap();
                         assert!(scrambler_out.stderr.is_empty() && scrambler_out.status.success());
-                        let scrambled = scrambler_out.stdout;
-                        out.clear();
-                        interp_smt2::<(Euf, EufPf, LoggingRecorder, _)>(
-                            &*scrambled,
-                            &mut out,
-                            &mut err,
+                        let mut scrambled = String::from_utf8(scrambler_out.stdout).unwrap();
+                        take_suffix(&mut scrambled, "(exit)\n");
+                        incr.clear();
+                        incr.interp_smt2_commands(&scrambled);
+                        assert_eq!(incr.err(), "");
+                        assert_eq!(&incr.out()[..7], "unsat\n(");
+                        assert_eq!(&incr.out()[incr.out().len() - 2..], ")\n");
+                        let unsat_core_range = 7..incr.out().len() - 2;
+                        take_suffix(&mut scrambled, "(get-unsat-core)\n");
+                        take_suffix(&mut scrambled, "(check-sat)\n");
+                        let start_idx = scrambled.rfind(ASSUMP_NAME).unwrap() + ASSUMP_NAME.len();
+                        let end_idx = start_idx + scrambled[start_idx..].find(")").unwrap();
+
+                        let last_assump_idx: u32 = scrambled[start_idx..end_idx].parse().unwrap();
+                        interp_a.clear();
+                        interp_b.clear();
+                        for i in 1..=last_assump_idx {
+                            if i & 4 > 0 {
+                                write_fmt(&mut interp_a, format_args!("{ASSUMP_NAME}{i} "));
+                            } else {
+                                write_fmt(&mut interp_b, format_args!("{ASSUMP_NAME}{i} "));
+                            }
+                        }
+                        let old_len = incr.out().len();
+                        incr.interp_smt2_commands(format_args!(
+                            "(get-interpolants (and {interp_a}) (and {interp_b}))"
+                        ));
+                        assert_eq!(incr.err(), "");
+                        let interpolant = &incr.out()[old_len..];
+                        let unsat_core = &incr.out()[unsat_core_range];
+                        yices_in.clear();
+                        let mut i = 1;
+                        for line in scrambled.lines() {
+                            if let Some(rest) = line.strip_prefix("(assert (! ") {
+                                let exp = &rest[..rest.find(":named").unwrap()];
+                                write_fmt(
+                                    &mut yices_in,
+                                    format_args!("(define-fun {ASSUMP_NAME}{i} () Bool {exp})\n"),
+                                );
+                                i += 1;
+                            } else if !line.starts_with("(set-option") {
+                                write_fmt(&mut yices_in, format_args!("{line}\n"));
+                            }
+                        }
+                        write_fmt(
+                            &mut yices_in,
+                            format_args!("(define-fun interpolant () Bool {interpolant})\n"),
                         );
-                        assert_eq!(&err, "");
-                        scrambled_file.write_all(&*scrambled).unwrap();
-                        drop(scrambled_file);
-                        output_file.write_all(out.as_bytes()).unwrap();
-                        out.clear();
-                        let scrambled_file = File::open("tmp.smt2").unwrap(); // open in read mode
-                        let mut cored_child = Command::new("./scrambler")
-                            .args(["-seed", "0", "-core", "tmp.rsmt2"])
-                            .stdin(scrambled_file)
-                            .stdout(Stdio::piped())
-                            .spawn()
-                            .unwrap();
+                        write_fmt(
+                            &mut yices_in,
+                            format_args!("(check-sat-assuming ({unsat_core}))\n"),
+                        );
+                        write_fmt(
+                            &mut yices_in,
+                            format_args!("(check-sat-assuming ({interp_a}(not interpolant)))\n"),
+                        );
+                        write_fmt(
+                            &mut yices_in,
+                            format_args!("(check-sat-assuming ({interp_b} interpolant))\n"),
+                        );
+                        scrambled_file.write_all(yices_in.as_bytes()).unwrap();
                         let yices_out = Command::new("./yices-smt2")
-                            .stdin(cored_child.stdout.take().unwrap())
+                            .args(["--incremental", "tmp.smt2"])
                             .output()
                             .unwrap();
-                        assert_eq!(String::from_utf8_lossy(&yices_out.stdout), "unsat\n");
                         assert_eq!(String::from_utf8_lossy(&yices_out.stderr), "");
-                        cored_child.wait().unwrap();
+                        assert_eq!(
+                            String::from_utf8_lossy(&yices_out.stdout),
+                            "unsat\nunsat\nunsat\n"
+                        );
                     }
-                    _ => panic!("unexpected output:\n{out}"),
+                    _ => panic!("unexpected output:\n{}", incr.out()),
                 }
             }
         }
