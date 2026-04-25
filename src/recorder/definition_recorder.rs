@@ -13,6 +13,7 @@ use core::num::{NonZeroU32, Saturating};
 use default_vec2::DefaultVec;
 use log::{debug, trace, Level};
 use platsat::Lit;
+use smallvec::SmallVec;
 
 #[derive(Copy, Clone, Eq, PartialEq, Hash, Ord, PartialOrd, Debug)]
 pub struct DefExp(NonZeroU32);
@@ -315,22 +316,38 @@ pub struct DisplayDefExp<'a> {
 
 impl<'a> Display for DisplayDefExp<'a> {
     fn fmt(&self, f: &mut Formatter<'_>) -> core::fmt::Result {
-        if let Some(v) = self.recorder.aliases.get(&self.def_exp) {
-            DisplayInterned::fmt(v, self.interner, f)
-        } else if self.uses.0 > 1 {
-            write!(f, "@d{}", self.def_exp.0)
-        } else {
-            let (sym, children) = self.recorder.defs.resolve(self.def_exp);
-            if children.len() == 0 {
-                DisplayInterned::fmt(&sym, self.interner, f)
+        let mut v = SmallVec::<[Option<DefExp>; 8]>::new();
+        let mut def = self.def_exp;
+        let mut uses = self.uses;
+        loop {
+            if let Some(v) = self.recorder.aliases.get(&def) {
+                DisplayInterned::fmt(v, self.interner, f)?
+            } else if uses.0 > 1 {
+                write!(f, "@d{}", def.0)?
             } else {
-                let disp = display_sexp(
-                    sym.with_intern(&self.interner),
-                    children
-                        .iter()
-                        .map(|&def_exp| self.recorder.display_def(def_exp, self.interner)),
-                );
-                Display::fmt(&disp, f)
+                let (sym, children) = self.recorder.defs.resolve(def);
+                if children.len() == 0 {
+                    DisplayInterned::fmt(&sym, self.interner, f)?
+                } else {
+                    write!(f, "({}", sym.with_intern(&self.interner))?;
+                    v.push(None);
+                    v.extend(children.iter().rev().copied().map(Some));
+                }
+            }
+
+            loop {
+                match v.pop() {
+                    None => return Ok(()),
+                    Some(None) => {
+                        write!(f, ")")?;
+                    }
+                    Some(Some(d)) => {
+                        def = d;
+                        uses = self.recorder.uses.get(d);
+                        write!(f, " ")?;
+                        break;
+                    }
+                }
             }
         }
     }
