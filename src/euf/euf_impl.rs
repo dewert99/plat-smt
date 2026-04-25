@@ -257,7 +257,7 @@ impl Euf {
 }
 
 impl<'a, Arg> Collapse<UExp, Arg, BaseMarker> for Euf {
-    fn collapse(&mut self, t: UExp, _: &mut Arg, _: ExprContext<UExp>) -> UExp {
+    fn collapse_h(&mut self, t: UExp, _: &mut Arg, _: ExprContext<UExp>) -> UExp {
         UExp::new(self.find(t.id), t.sort)
     }
 
@@ -267,7 +267,7 @@ impl<'a, Arg> Collapse<UExp, Arg, BaseMarker> for Euf {
 }
 
 impl<'a, Arg> Collapse<Fresh<UExp>, Arg, BaseMarker> for Euf {
-    fn collapse(&mut self, fresh: Fresh<UExp>, _: &mut Arg, _: ExprContext<UExp>) -> UExp {
+    fn collapse_h(&mut self, fresh: Fresh<UExp>, _: &mut Arg, _: ExprContext<UExp>) -> UExp {
         let mut added = false;
         let id = self.egraph.add(fresh.name.into(), Children::new(), |_, _| {
             added = true;
@@ -284,7 +284,7 @@ impl<'a, Arg> Collapse<Fresh<UExp>, Arg, BaseMarker> for Euf {
 impl<'a, 'b, A: SatTheoryArgT<'a, M = PushInfo>> Collapse<Distinct<'b, Exp>, A, BaseMarker>
     for Euf
 {
-    fn collapse(
+    fn collapse_h(
         &mut self,
         Distinct(exps): Distinct<Exp>,
         acts: &mut A,
@@ -353,7 +353,7 @@ impl<'a, 'b, A: SatTheoryArgT<'a, M = PushInfo>> Collapse<Distinct<'b, Exp>, A, 
 }
 
 impl<'a, A: SatTheoryArgT<'a, M = PushInfo>> Collapse<Eq<Exp>, A, BaseMarker> for Euf {
-    fn collapse(
+    fn collapse_h(
         &mut self,
         Eq(e1, e2): Eq<Exp>,
         acts: &mut A,
@@ -405,7 +405,7 @@ where
 impl<'a, I: Iterator<Item = Exp>, A: SatTheoryArgT<'a, M = PushInfo>>
     Collapse<UFn<I>, A, BaseMarker> for Euf
 {
-    fn collapse(
+    fn collapse_h(
         &mut self,
         UFn(f, children, sort): UFn<I>,
         acts: &mut A,
@@ -506,13 +506,10 @@ where
 #[derive(Default)]
 pub struct EgraphPf<I>(I);
 
-impl<
-        R: Recorder,
-        E: SubExp<Exp, MS> + Copy,
-        M,
-        MS,
-        I: ParserFragment<E, FnSortSolver<Euf, R>, M>,
-    > ParserFragment<E, FnSortSolver<Euf, R>, (M, MS)> for EgraphPf<I>
+impl<R: Recorder, E: Copy + ExpLike, M, MS, I: ParserFragment<E, FnSortSolver<Euf, R>, M>>
+    ParserFragment<E, FnSortSolver<Euf, R>, (M, MS)> for EgraphPf<I>
+where
+    Exp: SuperExp<E, MS>,
 {
     fn supports(&self, s: Symbol) -> bool {
         self.0.supports(s)
@@ -533,56 +530,30 @@ impl<
         solver: &mut FnSortSolver<Euf, R>,
         ctx: ExprContext<E>,
     ) -> Result<E, AddSexpError> {
-        let Some(children_ids) = solver.solver.open(
+        let sort = self
+            .0
+            .handle_non_terminal(f, children, solver, ExprContext::Any)?
+            .sort();
+        let Some((exp, added)) = solver.solver.open(
             |euf, acts| {
                 let children_ids: Children = children
                     .iter()
                     .map(|&x| euf.id_for_exp(x.upcast(), acts, true))
                     .collect();
-                Some(children_ids)
+                let x = euf.sorted_fn(f.into(), children_ids, sort, ctx.upcast(), acts);
+                Some(x)
             },
             None,
         ) else {
             return self.0.handle_non_terminal(f, children, solver, ctx);
         };
-
-        let mut enode = SymbolLang::new(f.into(), children_ids);
-
-        if let Some(existing_id) = solver.solver.th.egraph.lookup(&mut enode) {
-            let res: Exp = match &*solver.solver.th.egraph[existing_id] {
-                EClass::Uninterpreted(s) => {
-                    UExp::new(solver.solver.th.egraph.find(existing_id), *s).upcast()
-                }
-                EClass::Bool(BoolClass::Const(b)) => BoolExp::from_bool(*b).upcast(),
-                EClass::Bool(BoolClass::Unknown(l)) => BoolExp::unknown(l[0]).upcast(),
-                _ => unreachable!(),
-            };
-            return Ok(E::from_downcast(res).unwrap());
+        let exp = exp.downcast().unwrap();
+        if added {
+            self.0
+                .handle_non_terminal(f, children, solver, ExprContext::AssertEq(exp))
+        } else {
+            Ok(exp)
         }
-
-        let ctx = match ctx {
-            ExprContext::AssertEq(x) => ExprContext::AssertEq(x),
-            _ => ExprContext::Exact,
-        };
-
-        let res = self.0.handle_non_terminal(f, children, solver, ctx);
-
-        if let Ok(res) = res {
-            let res: Exp = res.upcast();
-            solver.solver.open(
-                |euf, acts| {
-                    euf.sorted_fn(
-                        enode.op(),
-                        enode.children_owned(),
-                        res.sort(),
-                        ExprContext::AssertEq(res),
-                        acts,
-                    );
-                },
-                (),
-            );
-        }
-        res
     }
 
     fn sub_ctx(&self, f: Symbol, previous_children: &[E], ctx: ExprContext<E>) -> ExprContext<E> {

@@ -277,7 +277,7 @@ impl<E1: ExpLike, E2: ExpLike> CollapseOut for EitherExp<E1, E2> {
 impl<E1: ExpLike, E2: ExpLike, Arg, M1, M2, Th: Collapse<E1, Arg, M1> + Collapse<E2, Arg, M2>>
     Collapse<EitherExp<E1, E2>, Arg, (M1, M2)> for Th
 {
-    fn collapse(
+    fn collapse_h(
         &mut self,
         t: EitherExp<E1, E2>,
         acts: &mut Arg,
@@ -330,7 +330,7 @@ impl<
         Th: Collapse<Fresh<E1>, Arg, M1> + Collapse<Fresh<E2>, Arg, M2>,
     > Collapse<Fresh<EitherExp<E1, E2>>, Arg, (M1, M2)> for Th
 {
-    fn collapse(
+    fn collapse_h(
         &mut self,
         t: Fresh<EitherExp<E1, E2>>,
         acts: &mut Arg,
