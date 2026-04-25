@@ -409,7 +409,7 @@ impl<const IS_AND: bool> CollapseOut for Junction<IS_AND> {
 impl<'a, T, A: SatTheoryArgT<'a>, const IS_AND: bool> Collapse<Junction<IS_AND>, A, TseitenMarker>
     for T
 {
-    fn collapse(
+    fn collapse_h(
         &mut self,
         j: Junction<IS_AND>,
         acts: &mut A,
@@ -430,7 +430,7 @@ impl CollapseOut for Xor {
 }
 
 impl<'a, T, A: SatTheoryArgT<'a>> Collapse<Xor, A, TseitenMarker> for T {
-    fn collapse(&mut self, Xor(b1, b2): Xor, acts: &mut A, ctx: ExprContext<BoolExp>) -> BoolExp {
+    fn collapse_h(&mut self, Xor(b1, b2): Xor, acts: &mut A, ctx: ExprContext<BoolExp>) -> BoolExp {
         acts.xor(b1, b2, ctx)
     }
 
@@ -444,7 +444,7 @@ impl CollapseOut for BoolExp {
 }
 
 impl<'a, T, A: SatTheoryArgT<'a>> Collapse<BoolExp, A, TseitenMarker> for T {
-    fn collapse(&mut self, b: BoolExp, acts: &mut A, _: ExprContext<BoolExp>) -> BoolExp {
+    fn collapse_h(&mut self, b: BoolExp, acts: &mut A, _: ExprContext<BoolExp>) -> BoolExp {
         acts.canonize(b)
     }
 
@@ -454,7 +454,7 @@ impl<'a, T, A: SatTheoryArgT<'a>> Collapse<BoolExp, A, TseitenMarker> for T {
 }
 
 impl<'a, T, A: SatTheoryArgT<'a>> Collapse<Fresh<BoolExp>, A, TseitenMarker> for T {
-    fn collapse(&mut self, f: Fresh<BoolExp>, acts: &mut A, _: ExprContext<BoolExp>) -> BoolExp {
+    fn collapse_h(&mut self, f: Fresh<BoolExp>, acts: &mut A, _: ExprContext<BoolExp>) -> BoolExp {
         assert_eq!(f.sort, BOOL_SORT);
         BoolExp::unknown(Lit::new(acts.new_var_default(), true))
     }
