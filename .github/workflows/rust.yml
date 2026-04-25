@@ -42,9 +42,9 @@ jobs:
         with:
           channel: stable
           cache-target: release
-      - run: RUST_MIN_STACK=33554432 SCRAMBLE_SEED=1 cargo test --release --features test_add_more_mid_search_equalities --package plat-smt --test test test_smtlib_benchmarks
-      - run: RUST_MIN_STACK=33554432 SEED=1 SCRAMBLE_SEED=2 cargo test --release --features test_add_more_mid_search_equalities --package plat-smt --test test test_smtlib_benchmarks
-      - run: RUST_MIN_STACK=33554432 SEED=1 SCRAMBLE_SEED=3 cargo test --release --package plat-smt --test test test_smtlib_benchmarks
+      - run: SCRAMBLE_SEED=1 cargo test --release --features test_add_more_mid_search_equalities --package plat-smt --test test test_smtlib_benchmarks
+      - run: SEED=1 SCRAMBLE_SEED=2 cargo test --release --features test_add_more_mid_search_equalities --package plat-smt --test test test_smtlib_benchmarks
+      - run: SEED=1 SCRAMBLE_SEED=3 cargo test --release --package plat-smt --test test test_smtlib_benchmarks
 
   benchmarks:
     name: Simulation Benchmark
