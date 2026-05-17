@@ -1,0 +1,2 @@
+unsat
+(and (or (not (= va vc)) (= v8 ve)) (or (not (= v2 v4)) (= v0 (f v6))))
