@@ -307,28 +307,41 @@ impl<'a, X> DerefMut for ExplainState<'a, X> {
     }
 }
 
-struct InterpCtx {
+struct InterpCtx<'a> {
     right_a: bool,
     is_i: bool,
     last_shared: DefExp,
     first_shared: Option<DefExp>,
+    b_buf: &'a mut Vec<(DefExp, DefExp)>,
+    b_buf_len: usize,
 }
 
-impl InterpCtx {
-    fn new(last_shared: DefExp, left_a: bool, right_a: bool) -> Self {
+impl<'a> InterpCtx<'a> {
+    fn new(
+        last_shared: DefExp,
+        left_a: bool,
+        right_a: bool,
+        b_buf: &'a mut Vec<(DefExp, DefExp)>,
+    ) -> Self {
+        let b_buf_len = b_buf.len();
         InterpCtx {
             last_shared,
             right_a,
             is_i: !left_a,
             first_shared: None,
+            b_buf,
+            b_buf_len,
         }
     }
 
     fn add_shared(&mut self, shared: DefExp) {
         self.last_shared = shared;
         if self.first_shared == None {
-            self.is_i = !self.right_a;
-            self.first_shared = Some(shared)
+            if self.is_i == self.right_a {
+                self.is_i = !self.right_a;
+                self.b_buf_len = self.b_buf.len();
+            }
+            self.first_shared = Some(shared);
         }
     }
 }
@@ -464,8 +477,6 @@ impl<'x>
         right_a: bool,
         congruence_start: usize,
         interp: &mut InterpolateArg,
-        b_buf: &mut Vec<(DefExp, DefExp)>,
-        b_buf_len: usize,
         ctx: &mut InterpCtx,
     ) {
         let congruence_mid = self.deferred_explanations.len();
@@ -477,13 +488,13 @@ impl<'x>
         if *left_a != right_a && left != right {
             for i in congruence_start..congruence_mid {
                 let (left, right) = self.deferred_explanations[i];
-                self.explanation_interpolant_h(left, right, interp, b_buf, *left_a, *left_a);
+                self.explanation_interpolant_h(left, right, interp, ctx.b_buf, *left_a, *left_a);
             }
             let mut v = SmallVec::<[DefExp; 4]>::new();
             for i in congruence_mid..self.deferred_explanations.len() {
                 let (left, right) = self.deferred_explanations[i];
-                let mid =
-                    self.explanation_interpolant_h(left, right, interp, b_buf, *left_a, right_a);
+                let mid = self
+                    .explanation_interpolant_h(left, right, interp, ctx.b_buf, *left_a, right_a);
                 v.push(mid);
             }
             let f = self.raw.id_to_node(left).op().sym();
@@ -494,15 +505,7 @@ impl<'x>
             let mid_def = mid_intern.finish(f);
             drop(mid_intern);
             self.deferred_explanations.truncate(congruence_start);
-            Self::handle_interpolant_path_inner(
-                ctx.last_shared,
-                mid_def,
-                interp,
-                ctx.is_i,
-                *left_a,
-                b_buf,
-                b_buf_len,
-            );
+            Self::handle_interpolant_path_inner(ctx.last_shared, mid_def, interp, *left_a, ctx);
             *left_a = right_a;
             ctx.add_shared(mid_def);
         }
@@ -513,35 +516,31 @@ impl<'x>
         left: DefExp,
         right: DefExp,
         interp: &mut InterpolateArg<'_>,
-        is_i: bool,
         is_a: bool,
         congruence_start: usize,
-        b_buf: &mut Vec<(DefExp, DefExp)>,
-        b_buf_len: usize,
+        ctx: &mut InterpCtx,
     ) {
         for i in congruence_start..self.deferred_explanations.len() {
             let (left, right) = self.deferred_explanations[i];
-            self.explanation_interpolant_h(left, right, interp, b_buf, is_a, is_a);
+            self.explanation_interpolant_h(left, right, interp, ctx.b_buf, is_a, is_a);
         }
         self.deferred_explanations.truncate(congruence_start);
-        Self::handle_interpolant_path_inner(left, right, interp, is_i, is_a, b_buf, b_buf_len);
+        Self::handle_interpolant_path_inner(left, right, interp, is_a, ctx);
     }
 
     fn handle_interpolant_path_inner(
         left: DefExp,
         right: DefExp,
         interp: &mut InterpolateArg,
-        is_i: bool,
         is_a: bool,
-        b_buf: &mut Vec<(DefExp, DefExp)>,
-        b_buf_len: usize,
+        ctx: &mut InterpCtx,
     ) {
-        trace!("handle_interpolant path i:{is_i} a:{is_a}");
-        match (is_i, is_a) {
-            (false, false) => b_buf.push((left, right)),
+        trace!("handle_interpolant path i:{} a:{is_a}", ctx.is_i);
+        match (ctx.is_i, is_a) {
+            (false, false) => ctx.b_buf.push((left, right)),
             (true, true) => {
                 let mut interp_j = interp.scope();
-                for (i, j) in b_buf.drain(b_buf_len..) {
+                for (i, j) in ctx.b_buf.drain(ctx.b_buf_len..) {
                     let mut interp_eq = interp_j.scope();
                     interp_eq.add_def(i);
                     interp_eq.add_def(j);
@@ -581,14 +580,13 @@ impl<'x>
         outer_right_a: bool,
     ) -> DefExp {
         trace!("Start explanation_interpolant_h {left}({outer_left_a}) {right}({outer_right_a})");
-        let mut ctx = InterpCtx::new(interp.intern_exp(left), outer_left_a, outer_right_a);
+        let mut ctx = InterpCtx::new(interp.intern_exp(left), outer_left_a, outer_right_a, b_buf);
         let old_stack_len = self.stack.len();
         debug_assert_eq!(self.raw.find(left), self.raw.find(right));
         let mut args = (left, right);
         let mut left_congruence = left;
         let mut flip = false;
         let last_congruence_len = self.deferred_explanations.len();
-        let b_buf_len = b_buf.len();
         let mut was_last_a = outer_left_a;
         loop {
             let (left, right) = args;
@@ -634,8 +632,6 @@ impl<'x>
                             cur_a,
                             last_congruence_len,
                             interp,
-                            b_buf,
-                            b_buf_len,
                             &mut ctx,
                         );
                         if was_last_a != cur_a {
@@ -644,11 +640,9 @@ impl<'x>
                                 ctx.last_shared,
                                 def,
                                 interp,
-                                ctx.is_i,
                                 was_last_a,
                                 last_congruence_len,
-                                b_buf,
-                                b_buf_len,
+                                &mut ctx,
                             );
                             // we finished a path from last shared to next_left
                             // it was an a-path if was_last_a_only
@@ -667,8 +661,6 @@ impl<'x>
                             was_last_a2,
                             last_congruence_len,
                             interp,
-                            b_buf,
-                            b_buf_len,
                             &mut ctx,
                         );
                         trace!("id{next_left} = id{next_right} by {just:?}");
@@ -692,19 +684,15 @@ impl<'x>
             outer_right_a,
             last_congruence_len,
             interp,
-            b_buf,
-            b_buf_len,
             &mut ctx,
         );
         self.handle_interpolant_path(
             ctx.last_shared,
             interp.intern_exp(right),
             interp,
-            ctx.is_i,
             was_last_a,
             last_congruence_len,
-            b_buf,
-            b_buf_len,
+            &mut ctx,
         );
         trace!("End explanation_interpolant_h {left}({outer_left_a}) {right}({outer_right_a})");
         ctx.first_shared.unwrap_or_else(|| interp.intern_exp(right))
