@@ -19,6 +19,7 @@ pub enum ExprContext<Exp> {
     ///
     /// In the future this may also be used for over/under-approximating numeric expressions
     Approx(bool),
+    Any,
 }
 
 impl<Exp2> ExprContext<Exp2> {
@@ -27,6 +28,7 @@ impl<Exp2> ExprContext<Exp2> {
             ExprContext::Exact => ExprContext::Exact,
             ExprContext::AssertEq(x) => ExprContext::AssertEq(x.upcast()),
             ExprContext::Approx(b) => ExprContext::Approx(b),
+            ExprContext::Any => ExprContext::Any,
         }
     }
 
@@ -44,6 +46,7 @@ impl<Exp2> ExprContext<Exp2> {
                 }
             }
             ExprContext::Approx(b) => ExprContext::Approx(b),
+            ExprContext::Any => ExprContext::Any,
         }
     }
 
@@ -55,6 +58,7 @@ impl<Exp2> ExprContext<Exp2> {
             ExprContext::Exact => ExprContext::Exact,
             ExprContext::AssertEq(x) => ExprContext::AssertEq(x.with_intern(intern)),
             ExprContext::Approx(b) => ExprContext::Approx(b),
+            ExprContext::Any => ExprContext::Any,
         }
     }
 }
@@ -70,11 +74,24 @@ pub trait CollapseOut {
 ///
 /// See also: [`crate::Solver::collapse`].
 pub trait Collapse<T: CollapseOut, Arg, Marker> {
+    /// Helper used by [`collapse_h`](Collapse::collapse_h) for cases other than [`ExprContext::Any`]
+    fn collapse_h(&mut self, t: T, acts: &mut Arg, ctx: ExprContext<T::Out>) -> T::Out;
+
     /// Collapse a type representing an expression into a copiable handled that can be used later.
     ///
     /// The `ctx` argument may indicate possible assumptions that may allow for additional
     /// optimizations, but an implementor may choose to ignore it
-    fn collapse(&mut self, t: T, acts: &mut Arg, ctx: ExprContext<T::Out>) -> T::Out;
+    ///
+    /// Default implementation uses [`placeholder`](Collapse::placeholder) to handle
+    /// [`ExprContext::Any`] so implementors should implement [`collapse_h`](Collapse::collapse_h)
+    /// and ignore [`ExprContext::Any`].
+    fn collapse(&mut self, t: T, acts: &mut Arg, ctx: ExprContext<T::Out>) -> T::Out {
+        if ctx == ExprContext::Any {
+            (&*self).placeholder(&t)
+        } else {
+            self.collapse_h(t, acts, ctx)
+        }
+    }
 
     /// Return a placeholder in cases where the solver is already in an unsatisfiable state.
     ///

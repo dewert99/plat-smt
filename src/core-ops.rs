@@ -88,7 +88,7 @@ impl<
         Th: Collapse<Eq<Exp>, A, EqM> + Collapse<Fresh<Exp>, A, FM>,
     > Collapse<Ite<Exp>, A, IteMarker<EqM, FM>> for Th
 {
-    fn collapse(&mut self, t: Ite<Exp>, acts: &mut A, ctx: ExprContext<Exp>) -> Exp {
+    fn collapse_h(&mut self, t: Ite<Exp>, acts: &mut A, ctx: ExprContext<Exp>) -> Exp {
         match t.0.to_lit() {
             Ok(_) => {
                 let res = match ctx {
