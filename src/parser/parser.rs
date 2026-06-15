@@ -118,7 +118,7 @@ impl DisplayInterned for Error {
                 actual,
                 expected,
             }) => write!(fmt, "the {arg_n}th argument of the function {} has sort {} but should have sort {}", f.with_intern(i), actual.with_intern(i), expected.with_intern(i)),
-            AddSexp(f, Unsupported(u)) => write!(fmt, "unsupported feature {u} in the function {} ", f.with_intern(i)),
+            AddSexp(f, CustomSexpErr(u)) => write!(fmt, "{u} in the function {} ", f.with_intern(i)),
             AddSexp(f, AsSortMismatch {
                 actual,
                 expected
@@ -486,11 +486,19 @@ impl<'a, W: Write, L: Logic> ExpVisitor<'a, W, L> {
                     .end_exp_take()
                     .map_err(|(s, e)| AddSexp(s.into(), e))
             }
-            SexpTerminal::String(_) => Err(custom_err("unsupported strings")),
-            SexpTerminal::Number(_) => Err(custom_err("unsupported arithmetic")),
-            SexpTerminal::Decimal(_, _) => Err(custom_err("unsupported decimal")),
-            SexpTerminal::BitVec { .. } => Err(custom_err("unsupported bitvec")),
             SexpTerminal::Keyword(_) => Err(InvalidExp),
+            terminal => match self.0.core.try_handle_terminal(terminal, ctx) {
+                None => match terminal {
+                    SexpTerminal::String(_) => Err(custom_err("unsupported strings")),
+                    SexpTerminal::Number(_) => Err(custom_err("unsupported arithmetic")),
+                    SexpTerminal::Decimal(_, _) => Err(custom_err("unsupported decimal")),
+                    SexpTerminal::BitVec { .. } => Err(custom_err("unsupported bitvec")),
+                    _ => unreachable!(),
+                },
+                Some(Ok(res)) => Ok(res),
+                Some(Err(CustomSexpErr(e))) => Err(Custom(e)),
+                Some(Err(_)) => Err(custom_err("invalid constant")),
+            },
         }
     }
 
@@ -668,6 +676,7 @@ impl<W: Write, L: Logic> Parser<W, L> {
             options: Default::default(),
         };
         res.declared_sorts.insert(BOOL_SYM, 0);
+        res.declared_sorts.insert(REAL_SYM, 0);
         res
     }
 
@@ -749,14 +758,14 @@ impl<W: Write, L: Logic> Parser<W, L> {
         let len = params.len();
         match self.declared_sorts.get(&name) {
             None => Err(UnboundSort(name)),
-            Some(x) if (*x as usize) < len => Err(AddSexp(
+            Some(x) if len < (*x as usize) => Err(AddSexp(
                 name.into(),
                 MissingArgument {
                     expected: *x as usize,
                     actual: len,
                 },
             )),
-            Some(x) if *x as usize > len => Err(AddSexp(
+            Some(x) if len > *x as usize => Err(AddSexp(
                 name.into(),
                 ExtraArgument {
                     expected: *x as usize,

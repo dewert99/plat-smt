@@ -24,7 +24,7 @@ pub enum AddSexpError {
         expected: usize,
     },
     Unbound,
-    Unsupported(Cow<'static, str>),
+    CustomSexpErr(Cow<'static, str>),
 }
 
 #[derive(Copy, Clone)]

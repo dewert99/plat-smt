@@ -210,7 +210,7 @@ impl InterpolantRecorder {
         map_assumption: impl Fn(SpanRange) -> &'a str,
     ) {
         for &assumption in assumptions.iter() {
-            let def = self.defs.intern_exp(BoolExp::unknown(assumption));
+            let def = self.defs.intern_exp(BoolExp::unknown(assumption), intern);
             let partial_interpolant = match self.ab_defs.get(def) {
                 A_ONLY => FALSE_DEF_EXP,
                 B_ONLY => TRUE_DEF_EXP,
@@ -228,15 +228,15 @@ impl InterpolantRecorder {
         }
     }
 
-    fn tseiten_partial_interpolate(&mut self, sat: &TheoryArg) {
+    fn tseiten_partial_interpolate(&mut self, sat: &TheoryArg, intern: &mut InternInfo) {
         for tseiten in self.tseiten_clauses.iter().rev() {
             let tseiten = sat.resolve_clause_ref(*tseiten);
             let def_len = self.def_stack.len();
             for &l in tseiten {
-                let def = self.defs.intern_exp(l.var());
+                let def = self.defs.intern_exp(l.var(), intern);
                 if !self.is_a_only(def) {
                     self.def_stack
-                        .push(self.defs.intern_exp(BoolExp::unknown(l)));
+                        .push(self.defs.intern_exp(BoolExp::unknown(l), intern));
                 }
             }
             let added = &self.def_stack[def_len..];
@@ -254,7 +254,7 @@ impl InterpolantRecorder {
         }
     }
 
-    fn resolution_partial_interpolate(&mut self, assumptions: usize, intern: &InternInfo) {
+    fn resolution_partial_interpolate(&mut self, assumptions: usize, intern: &mut InternInfo) {
         let theory_clauses = self.clauses.len() - self.clause_boundary;
         let max_idx =
             (self.tseiten_clauses.len() + assumptions + self.clause_proofs.len() + theory_clauses)
@@ -273,6 +273,7 @@ impl InterpolantRecorder {
                 defs: &mut self.defs,
                 def_stack: &mut self.def_stack,
                 def_stack_len,
+                intern,
             };
             interp.add_def(def);
             let mut is_and = true;
@@ -352,13 +353,14 @@ impl InterpolantRecorder {
         }
     }
 
-    fn arg(&mut self) -> InterpolateArg<'_> {
+    fn arg<'a>(&'a mut self, intern: &'a mut InternInfo) -> InterpolateArg<'a> {
         let def_stack_len = self.def_stack.len();
         InterpolateArg {
             ab: &self.ab_defs,
             defs: &mut self.defs,
             def_stack: &mut self.def_stack,
             def_stack_len,
+            intern,
         }
     }
 }
@@ -404,7 +406,7 @@ impl Recorder for InterpolantRecorder {
         val: Exp,
         f: Symbol,
         arg: impl Iterator<Item = Exp2> + Clone,
-        intern: &InternInfo,
+        intern: &mut InternInfo,
     ) {
         self.defs.log_def(val, f, arg, intern)
     }
@@ -413,12 +415,12 @@ impl Recorder for InterpolantRecorder {
         &mut self,
         val: Exp,
         def: Exp2,
-        intern: &InternInfo,
+        intern: &mut InternInfo,
     ) {
         self.defs.log_def_exp(val, def, intern);
     }
 
-    fn log_alias<Exp: ExpLike>(&mut self, alias: Symbol, exp: Exp, intern: &InternInfo) {
+    fn log_alias<Exp: ExpLike>(&mut self, alias: Symbol, exp: Exp, intern: &mut InternInfo) {
         self.defs.log_alias(alias, exp, intern)
     }
 
@@ -728,7 +730,7 @@ fn theory_partial_interpolate<Th: FullTheory<InterpolantRecorder>>(
                 th.interpolate_clause(
                     arg,
                     |arg| &arg.incr.recorder.clauses[i],
-                    |arg| arg.incr.recorder.arg(),
+                    |arg| arg.incr.recorder.arg(&mut arg.incr.intern),
                 )
             },
             FALSE_DEF_EXP,
@@ -760,7 +762,9 @@ fn find_interpolant<'a, Th: FullTheory<InterpolantRecorder>>(
     theory_partial_interpolate(solver);
     solver.open(
         |_, arg| {
-            arg.incr.recorder.tseiten_partial_interpolate(&arg.sat);
+            arg.incr
+                .recorder
+                .tseiten_partial_interpolate(&arg.sat, &mut arg.incr.intern);
             arg.incr.recorder.assumption_partial_interpolate(
                 conj_lits,
                 &mut arg.incr.intern,
@@ -774,7 +778,7 @@ fn find_interpolant<'a, Th: FullTheory<InterpolantRecorder>>(
         .th
         .arg
         .recorder
-        .resolution_partial_interpolate(conj_lits.len(), &solver.th.arg.intern);
+        .resolution_partial_interpolate(conj_lits.len(), &mut solver.th.arg.intern);
     Ok(solver.th.arg.recorder.def_stack.pop().unwrap())
 }
 
@@ -784,6 +788,7 @@ pub struct InterpolateArg<'a> {
     defs: &'a mut DefinitionRecorder,
     def_stack: &'a mut Vec<DefExp>,
     def_stack_len: usize,
+    intern: &'a mut InternInfo,
 }
 
 impl<'a> InterpolateArg<'a> {
@@ -803,11 +808,11 @@ impl<'a> InterpolateArg<'a> {
     }
 
     pub fn intern_exp(&mut self, e: impl AsRexp) -> DefExp {
-        self.defs.intern_exp(e)
+        self.defs.intern_exp(e, self.intern)
     }
 
     pub fn add_exp(&mut self, e: impl AsRexp) {
-        let d = self.defs.intern_exp(e);
+        let d = self.defs.intern_exp(e, self.intern);
         self.add_def(d);
     }
 
@@ -860,6 +865,7 @@ impl<'a> InterpolateArg<'a> {
             ab: &self.ab,
             defs: &mut self.defs,
             def_stack: &mut self.def_stack,
+            intern: &mut self.intern,
             def_stack_len,
         }
     }
