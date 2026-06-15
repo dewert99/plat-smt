@@ -17,7 +17,7 @@ pub trait HasSort {
 }
 
 pub trait ExpLike:
-    Copy + DisplayInterned + AsRexp + HasSort + Eq + Hash + Ord + CollapseOut<Out = Self>
+    Copy + DisplayInterned + AsRexp + HasSort + Eq + Ord + CollapseOut<Out = Self>
 {
     /// Return a default instance with the given sort to be used as a placeholder in a model
     fn default_with_sort(s: Sort) -> Self;

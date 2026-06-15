@@ -163,6 +163,18 @@ impl<T, S: ReuseMem<T>, B> ReuseMem<T> for SolverWithBound<S, B> {
     }
 }
 
+pub trait SpecExp<T, M> {
+    type SpecExp;
+}
+
+impl<M, T, Th: SpecExp<T, M> + FullTheory<R>, R> SpecExp<T, M> for Solver<Th, R> {
+    type SpecExp = Th::SpecExp;
+}
+
+impl<M, T, S: SpecExp<T, M>, B> SpecExp<T, M> for SolverWithBound<S, B> {
+    type SpecExp = S::SpecExp;
+}
+
 impl<Th: FullTheory<R>, R: Recorder> Solver<Th, R> {
     pub fn is_ok(&self) -> bool {
         self.sat.is_ok()

@@ -60,7 +60,7 @@ impl<R: Recorder> FullTheory<R> for EmptyTheory {
     }
 }
 
-impl<'a, A: SatTheoryArgT<'a>> Collapse<Eq<BoolExp>, A, BaseMarker> for EmptyTheory {
+impl<'a, A: SatTheoryArgT<'a>, Th> Collapse<Eq<BoolExp>, A, BaseMarker> for Th {
     fn collapse(&mut self, t: Eq<BoolExp>, acts: &mut A, ctx: ExprContext<BoolExp>) -> BoolExp {
         !acts.xor(t.0, t.1, ctx.negate())
     }
@@ -70,7 +70,7 @@ impl<'a, A: SatTheoryArgT<'a>> Collapse<Eq<BoolExp>, A, BaseMarker> for EmptyThe
     }
 }
 
-impl<'a, 'b, A: SatTheoryArgT<'a>> Collapse<Distinct<'b, BoolExp>, A, BaseMarker> for EmptyTheory {
+impl<'a, 'b, Th, A: SatTheoryArgT<'a>> Collapse<Distinct<'b, BoolExp>, A, BaseMarker> for Th {
     fn collapse(
         &mut self,
         t: Distinct<'b, BoolExp>,

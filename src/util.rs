@@ -1,5 +1,5 @@
 use core::convert::Infallible;
-use core::fmt::{Debug, Display, Formatter};
+use core::fmt::{Debug, Display, Formatter, Write};
 use core::ops::ControlFlow;
 use internal_iterator::InternalIterator;
 use no_std_compat::prelude::v1::*;
@@ -165,3 +165,37 @@ pub(crate) fn pairwise_sym<T>(slice: &[T]) -> impl Iterator<Item = (&T, &T)> {
         .flat_map(move |i| (i + 1..slice.len()).map(move |j| (i, j)))
         .map(|(i, j)| (&slice[i], &slice[j]))
 }
+
+pub struct ArrayWrite<'a>(&'a mut [u8], usize);
+
+impl<'a> ArrayWrite<'a> {
+    pub fn new(buf: &'a mut [u8]) -> Self {
+        ArrayWrite(buf, 0)
+    }
+
+    pub fn as_str(&self) -> &str {
+        core::str::from_utf8(&self.0[..self.1]).unwrap()
+    }
+}
+
+impl<'a> Write for ArrayWrite<'a> {
+    fn write_str(&mut self, s: &str) -> core::fmt::Result {
+        if self.1 + s.len() > self.0.len() {
+            return Err(core::fmt::Error);
+        }
+        self.0[self.1..s.len()].copy_from_slice(s.as_bytes());
+        self.1 += s.len();
+        Ok(())
+    }
+}
+
+#[allow(unused)]
+macro_rules! dbg {
+    ($x:expr) => {{
+        log::debug!("{} = {:#?}", ::core::stringify!($x), $x);
+        $x
+    }};
+}
+
+#[allow(unused)]
+pub(crate) use dbg;

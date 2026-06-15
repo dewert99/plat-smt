@@ -2,7 +2,7 @@ use crate::collapse::ExprContext;
 use crate::exp::Fresh;
 use crate::full_theory::FullTheory;
 use crate::intern::*;
-use crate::parser_fragment::ParserFragment;
+use crate::parser_fragment::{ParserFragment, PfResult};
 use crate::recorder::Recorder;
 use crate::solver::{SolverCollapse, SolverWithBound};
 use crate::theory::{TheoryArg, TheoryArgT};
@@ -17,6 +17,7 @@ use log::info;
 use std::iter;
 
 pub use crate::full_theory::{FnSort, MaybeFnSort};
+use crate::parser::SexpTerminal;
 use crate::recorder::dep_checker::DepCheckerAction;
 
 #[allow(type_alias_bounds)]
@@ -331,11 +332,8 @@ impl<L: Logic> OuterSolver<L> {
         self.stack.clear();
     }
 
-    /// Starts an expression
-    ///
-    /// see [`OuterSolver`] documentation for more details
-    pub fn start_exp(&mut self, f: Symbol, expected: Option<Sort>, ctx: StartExpCtx) {
-        let ctx = match (ctx, self.stack.last()) {
+    fn resolve_ctx(&self, ctx: StartExpCtx) -> ExprContext<L::Exp> {
+        match (ctx, self.stack.last()) {
             (StartExpCtx::Assert, None) => ExprContext::AssertEq(BoolExp::TRUE.upcast()).into(),
             (StartExpCtx::Exact, _) => ExprContext::Exact.into(),
             (StartExpCtx::Opt, Some(x)) => self.child_context(x),
@@ -343,7 +341,14 @@ impl<L: Logic> OuterSolver<L> {
                 let not = if last.is_some() { "" } else { " not" };
                 panic!("Invalid ctx {ctx:?} when{not} building existing expression")
             }
-        };
+        }
+    }
+
+    /// Starts an expression
+    ///
+    /// see [`OuterSolver`] documentation for more details
+    pub fn start_exp(&mut self, f: Symbol, expected: Option<Sort>, ctx: StartExpCtx) {
+        let ctx = self.resolve_ctx(ctx);
         self.stack.push(Frame {
             ctx,
             f,
@@ -373,6 +378,15 @@ impl<L: Logic> OuterSolver<L> {
             }
         }
         Ok(res)
+    }
+
+    pub fn try_handle_terminal(
+        &mut self,
+        terminal: SexpTerminal,
+        ctx: StartExpCtx,
+    ) -> PfResult<L::Exp> {
+        let ctx = self.resolve_ctx(ctx);
+        self.parser.handle_terminal(terminal, &mut self.inner, ctx)
     }
 
     /// Ends an expression

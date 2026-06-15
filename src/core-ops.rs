@@ -1,4 +1,4 @@
-use crate::collapse::{Collapse, CollapseOut, ExprContext};
+use crate::collapse::{BaseMarker, Collapse, CollapseOut, ExprContext};
 use crate::exp::{EitherExp, Fresh};
 use crate::intern::{Symbol, DISTINCT_SYM, EQ_SYM, IF_SYM, ITE_SYM};
 use crate::parser_fragment::{exact_args, index_iter, mandatory_args, ParserFragment};
@@ -217,6 +217,38 @@ impl<'a, M1, M2, Exp: ExpLike + SuperExp<BoolExp, M1>, S: SolverCollapse<Ite<Exp
     ) -> Result<Exp, AddSexpError> {
         let [i, t, e] = exact_args(&mut index_iter(children))?;
         Ok(solver.collapse_in_ctx(Ite::try_new(i.downcast()?, t.exp(), e.exp())?, ctx))
+    }
+}
+
+pub trait DefaultEq {}
+
+impl<
+        'a,
+        Th: DefaultEq + Collapse<Eq<E1>, A, BaseMarker> + Collapse<Eq<E2>, A, BaseMarker>,
+        E1,
+        E2,
+        A: SatTheoryArgT<'a>,
+    > Collapse<Eq<EitherExp<E1, E2>>, A, BaseMarker> for Th
+{
+    fn collapse(
+        &mut self,
+        eq: Eq<EitherExp<E1, E2>>,
+        acts: &mut A,
+        ctx: ExprContext<BoolExp>,
+    ) -> BoolExp {
+        match (eq.0, eq.1) {
+            (EitherExp::Left(eq0), EitherExp::Left(eq1)) => {
+                self.collapse(Eq(eq0, eq1), acts, ctx.downcast()).upcast()
+            }
+            (EitherExp::Right(eq0), EitherExp::Right(eq1)) => {
+                self.collapse(Eq(eq0, eq1), acts, ctx.downcast()).upcast()
+            }
+            _ => unreachable!(),
+        }
+    }
+
+    fn placeholder(&self, _: &Eq<EitherExp<E1, E2>>) -> BoolExp {
+        BoolExp::TRUE
     }
 }
 

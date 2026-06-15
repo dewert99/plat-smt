@@ -42,7 +42,7 @@ pub trait Recorder: Default + Incremental + 'static {
         _val: Exp,
         _f: Symbol,
         _arg: impl Iterator<Item = Exp2> + Clone,
-        _intern: &InternInfo,
+        _intern: &mut InternInfo,
     ) {
     }
 
@@ -50,10 +50,10 @@ pub trait Recorder: Default + Incremental + 'static {
         &mut self,
         _val: Exp,
         _def: Exp2,
-        _intern: &InternInfo,
+        _intern: &mut InternInfo,
     ) {
     }
-    fn log_alias<Exp: ExpLike>(&mut self, _alias: Symbol, _exp: Exp, _intern: &InternInfo) {}
+    fn log_alias<Exp: ExpLike>(&mut self, _alias: Symbol, _exp: Exp, _intern: &mut InternInfo) {}
 
     fn log_clause(&mut self, _clause: &[Lit], _kind: ClauseKind) {}
 
@@ -120,7 +120,7 @@ impl Recorder for LoggingRecorder {
         val: Exp,
         f: Symbol,
         arg: impl Iterator<Item = Exp2> + Clone,
-        intern: &InternInfo,
+        intern: &mut InternInfo,
     ) {
         info!(
             "(define-const {val:?} {} {})",
@@ -134,7 +134,7 @@ impl Recorder for LoggingRecorder {
         &mut self,
         val: Exp,
         def: Exp2,
-        intern: &InternInfo,
+        intern: &mut InternInfo,
     ) {
         info!(
             "(define-const {val:?} {} {def:?})",
@@ -142,7 +142,7 @@ impl Recorder for LoggingRecorder {
         )
     }
     #[inline(always)]
-    fn log_alias<Exp: ExpLike>(&mut self, alias: Symbol, exp: Exp, intern: &InternInfo) {
+    fn log_alias<Exp: ExpLike>(&mut self, alias: Symbol, exp: Exp, intern: &mut InternInfo) {
         info!("(assert (= {} {exp:?}))", alias.with_intern(intern))
     }
     fn log_clause(&mut self, clause: &[Lit], _: ClauseKind) {

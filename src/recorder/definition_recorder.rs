@@ -4,10 +4,11 @@ use crate::intern::{
 use crate::recorder::{ClauseKind, Recorder};
 use crate::rexp::{AsRexp, NamespaceVar, Rexp};
 use crate::theory::Incremental;
-use crate::util::{display_sexp, DisplayFn, HashMap};
+use crate::util::{display_sexp, ArrayWrite, DisplayFn, HashMap};
 use crate::{BoolExp, ExpLike};
 use alloc::vec::Vec;
 use core::cmp::max;
+use core::fmt::Write;
 use core::fmt::{Display, Formatter};
 use core::num::{NonZeroU32, Saturating};
 use default_vec2::DefaultVec;
@@ -63,7 +64,7 @@ pub struct LevelMarker {
 }
 
 impl DefinitionRecorder {
-    fn intern_rexp_h(&mut self, r: &Rexp<'_>) {
+    fn intern_rexp_h(&mut self, r: &Rexp<'_>, intern: &mut InternInfo) {
         match r {
             Rexp::Nv(nv) => self.buf.push(
                 *self
@@ -73,16 +74,24 @@ impl DefinitionRecorder {
             ),
             Rexp::Call(s, args) => {
                 let buf_len = self.buf.len();
-                args.iter().for_each(|r| self.intern_rexp_h(r));
+                args.iter().for_each(|r| self.intern_rexp_h(r, intern));
                 let res = self.defs.intern(*s, &self.buf[buf_len..]);
                 self.buf.truncate(buf_len);
+                self.buf.push(res);
+            }
+            Rexp::Int(n) => {
+                let mut buf = [0u8; 40];
+                let mut writer = ArrayWrite::new(&mut buf);
+                write!(&mut writer, "{}", n).unwrap();
+                let s = intern.symbols.intern(writer.as_str());
+                let res = self.defs.intern(s, &[]);
                 self.buf.push(res);
             }
         }
     }
 
-    pub fn intern_exp<E: AsRexp>(&mut self, exp: E) -> DefExp {
-        exp.as_rexp(|rexp| self.intern_rexp_h(&rexp));
+    pub fn intern_exp<E: AsRexp>(&mut self, exp: E, intern: &mut InternInfo) -> DefExp {
+        exp.as_rexp(|rexp| self.intern_rexp_h(&rexp, intern));
         self.buf.pop().unwrap()
     }
 
@@ -281,24 +290,29 @@ impl Recorder for DefinitionRecorder {
         val: Exp,
         f: Symbol,
         arg: impl Iterator<Item = Exp2> + Clone,
-        _: &InternInfo,
+        intern: &mut InternInfo,
     ) {
         arg.clone()
-            .for_each(|exp| exp.as_rexp(|rexp| self.intern_rexp_h(&rexp)));
+            .for_each(|exp| exp.as_rexp(|rexp| self.intern_rexp_h(&rexp, intern)));
         let res = self.defs.intern(f, &self.buf);
         self.buf.clear();
         let nv = val.as_rexp(|rexp| rexp.unwrap_nv());
         self.define_nv(nv, res);
     }
 
-    fn log_def_exp<Exp: ExpLike, Exp2: AsRexp>(&mut self, val: Exp, def: Exp2, _: &InternInfo) {
-        let res = self.intern_exp(def);
+    fn log_def_exp<Exp: ExpLike, Exp2: AsRexp>(
+        &mut self,
+        val: Exp,
+        def: Exp2,
+        intern: &mut InternInfo,
+    ) {
+        let res = self.intern_exp(def, intern);
         let nv = val.as_rexp(|rexp| rexp.unwrap_nv());
         self.define_nv(nv, res);
     }
 
-    fn log_alias<Exp: ExpLike>(&mut self, alias: Symbol, exp: Exp, _: &InternInfo) {
-        let res = self.intern_exp(exp);
+    fn log_alias<Exp: ExpLike>(&mut self, alias: Symbol, exp: Exp, intern: &mut InternInfo) {
+        let res = self.intern_exp(exp, intern);
         self.aliases.insert(res, alias);
         self.alias_log.push(res);
     }
@@ -406,6 +420,7 @@ impl<'a> Display for DisplayRexp<'a> {
                 );
                 Display::fmt(&disp, f)
             }
+            Rexp::Int(n) => Display::fmt(&n, f),
         }
     }
 }

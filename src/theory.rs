@@ -125,7 +125,7 @@ pub trait TheoryArgT {
 
     fn junction_buf_mut(&mut self) -> &mut Vec<Lit>;
 
-    fn recorder_mut(&mut self) -> (&InternInfo, &mut Self::R);
+    fn recorder_mut(&mut self) -> (&mut InternInfo, &mut Self::R);
 
     fn should_explain_conflict_final(&mut self) -> bool {
         self.recorder_mut().1.should_explain_conflict_final()
@@ -182,8 +182,8 @@ impl<'a, S, M, R: Recorder> TheoryArgT for TheoryArgRaw<'a, S, M, R> {
         &mut self.incr.junction_buf
     }
 
-    fn recorder_mut(&mut self) -> (&InternInfo, &mut Self::R) {
-        (&self.incr.intern, &mut self.incr.recorder)
+    fn recorder_mut(&mut self) -> (&mut InternInfo, &mut Self::R) {
+        (&mut self.incr.intern, &mut self.incr.recorder)
     }
 }
 

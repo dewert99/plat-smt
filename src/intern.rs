@@ -27,6 +27,7 @@ impl Symbol {
 
 const BASE_SYMBOLS: &[&str] = &[
     "Bool",
+    "Real",
     "true",
     "false",
     "and",
@@ -42,6 +43,14 @@ const BASE_SYMBOLS: &[&str] = &[
     "let",
     "let*",
     "!",
+    "+",
+    "-",
+    "*",
+    "/",
+    "<",
+    "<=",
+    ">",
+    ">=",
 ];
 
 pub fn resolve_or_fail(s: Symbol) -> &'static str {
@@ -71,6 +80,7 @@ const fn base_symbol(s: &str) -> Symbol {
 }
 
 pub const BOOL_SYM: Symbol = base_symbol("Bool");
+pub const REAL_SYM: Symbol = base_symbol("Real");
 pub const TRUE_SYM: Symbol = base_symbol("true");
 pub const FALSE_SYM: Symbol = base_symbol("false");
 pub const AND_SYM: Symbol = base_symbol("and");
@@ -89,7 +99,22 @@ pub const LET_STAR_SYM: Symbol = base_symbol("let*");
 
 pub const ANNOT_SYM: Symbol = base_symbol("!");
 
-const BASE_SORTS: &[(Symbol, &[Sort])] = &[(BOOL_SYM, &[])];
+pub const ADD_SYM: Symbol = base_symbol("+");
+
+pub const SUB_SYM: Symbol = base_symbol("-");
+
+pub const MUL_SYM: Symbol = base_symbol("*");
+
+pub const DIV_SYM: Symbol = base_symbol("/");
+
+pub const LT_SYM: Symbol = base_symbol("<");
+pub const LE_SYM: Symbol = base_symbol("<=");
+
+pub const GT_SYM: Symbol = base_symbol(">");
+
+pub const GE_SYM: Symbol = base_symbol(">=");
+
+const BASE_SORTS: &[(Symbol, &[Sort])] = &[(BOOL_SYM, &[]), (REAL_SYM, &[])];
 
 pub fn resolve_sort_or_fail(s: Sort) -> impl Display {
     resolve_or_fail(BASE_SORTS[s.0.get() as usize - 1].0)
@@ -120,6 +145,7 @@ const fn base_sort(name: Symbol, children: &[Sort]) -> Sort {
 }
 
 pub const BOOL_SORT: Sort = base_sort(BOOL_SYM, &[]);
+pub const REAL_SORT: Sort = base_sort(REAL_SYM, &[]);
 
 #[derive(Clone)]
 pub struct SymbolInfo {
