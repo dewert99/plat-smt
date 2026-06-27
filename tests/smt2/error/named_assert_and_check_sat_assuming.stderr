@@ -1,0 +1,8 @@
+the function `check-sat-assuming` expects at most 1 arguments at 6:50
+(check-sat-assuming ((xor a_bool b_bool c_bool)) c_bool)
+                                                 ^
+
+The last command was not `check-sat-assuming` that returned `sat` at 7:2
+(get-model)
+ ^
+

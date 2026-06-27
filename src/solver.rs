@@ -20,6 +20,7 @@ use perfect_derive::perfect_derive;
 use platsat::theory::ClauseRef;
 use platsat::{lbool, Callbacks, Lit, SolverInterface, SolverOpts};
 use std::fmt::Debug;
+use std::iter;
 
 /// [`Solver`] methods that return [`BoolExp`]s often have an `approx` variant that take an
 /// [`Approx`] when allows for optimizations when the result doesn't have to match exactly
@@ -47,7 +48,6 @@ type BatSolver = platsat::Solver<NoCb>;
 pub struct Solver<Euf: FullTheory<R>, R> {
     pub(crate) th: TheoryWrapper<Euf, R>,
     pub(crate) sat: BatSolver,
-    in_model: bool,
 }
 
 impl<Th: FullTheory<R> + Default, R: Recorder> Default for Solver<Th, R> {
@@ -55,7 +55,6 @@ impl<Th: FullTheory<R> + Default, R: Recorder> Default for Solver<Th, R> {
         let mut res = Solver {
             th: Default::default(),
             sat: Default::default(),
-            in_model: false,
         };
         res.open(
             |th: &mut Th, acts| {
@@ -192,7 +191,7 @@ impl<Th: FullTheory<R>, R: Recorder> Solver<Th, R> {
     ) -> U {
         let mut ret = default;
         self.sat.with_theory_arg(|acts| {
-            let (euf, mut acts) = self.th.open(acts, self.in_model);
+            let (euf, mut acts) = self.th.open(acts);
             ret = f(euf, &mut acts)
         });
         ret
@@ -261,7 +260,7 @@ impl<Th: FullTheory<R>, R: Recorder> Solver<Th, R> {
             None => lbool::FALSE,
             Some(lits) => Th::solve_limited_preserving_trail(self, lits),
         };
-        self.in_model = true;
+        self.th.set_in_model(true);
         if res == lbool::FALSE {
             debug!("check-sat {c:?} returned unsat",);
             SolveResult::Unsat
@@ -295,7 +294,7 @@ impl<Th: FullTheory<R>, R: Recorder> Solver<Th, R> {
     pub fn pop_model(&mut self) {
         self.sat.pop_model(&mut self.th);
         self.th.arg.recorder.exit_solved_state();
-        self.in_model = false;
+        self.th.set_in_model(false);
     }
 
     pub fn clear(&mut self) {
@@ -502,6 +501,41 @@ impl<T> UnsatCoreConjunction<T> {
             for l in self.conj.lits.drain(push_info as usize..) {
                 self.info.data.remove(&!l);
             }
+        }
+    }
+
+    /// Returns elements of unsat core from between `start` and `end`.
+    /// `start` and `end` should have been created by `self.push()`
+    /// Modifies `self` use `let x = self.push(); self.partial_core(...); self.pop_to(x)`
+    pub(crate) fn partial_core(
+        &mut self,
+        start: u32,
+        end: u32,
+        core: impl InternalIterator<Item = Lit>,
+    ) -> impl InternalIterator<Item = &T> {
+        if start == end {
+            Either::Left(Either::Left(iter::empty().into_internal()))
+        } else if self.conj.absorbing {
+            if end == u32::MAX {
+                Either::Left(Either::Right(
+                    iter::once(self.info.false_by.as_ref().unwrap()).into_internal(),
+                ))
+            } else {
+                Either::Left(Either::Left(iter::empty().into_internal()))
+            }
+        } else if start == 0 && end as usize == self.conj.lits.len() {
+            Either::Right(Either::Left(core.filter_map(|x| self.info.data.get(&x))))
+        } else {
+            let start_buf = self.conj.lits.len();
+            self.conj
+                .lits
+                .extend_from_within(start as usize..end as usize);
+            let allowed = &mut self.conj.lits[start_buf..];
+            allowed.sort_unstable();
+            Either::Right(Either::Right(core.filter_map(|x| {
+                allowed.binary_search(&!x).ok()?;
+                self.info.data.get(&x)
+            })))
         }
     }
 }

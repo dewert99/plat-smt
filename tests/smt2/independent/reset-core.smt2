@@ -5,4 +5,4 @@
 (declare-const b Bool)
 (assert b)
 (check-sat-assuming ((not b)))
-(get-unsat-core)
+(get-unsat-assumptions)

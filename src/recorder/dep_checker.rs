@@ -155,7 +155,10 @@ impl Incremental for DepChecker {
         Marker {
             dep_list: self.dep_list.len() as u32,
             instructions: self.instructions.len() as u32,
-            assumptions: self.assumptions.len() as u32,
+            // We may not have called ClearAssumptionsAfterMarker before a push
+            // but assumptions from the marker should never be included
+            // this is handled the same way as in parser
+            assumptions: self.assumptions_marker,
         }
     }
 

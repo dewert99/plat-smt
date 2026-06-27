@@ -9,4 +9,4 @@
 (define-const cr ET (f br br))
 (define-const dr ET (f cr cr))
 (check-sat-assuming ((= al ar) (not (= dl dr))))
-(get-unsat-core)
+(get-unsat-assumptions)

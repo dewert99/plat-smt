@@ -8,4 +8,4 @@
 (get-value (a b x))
 (get-model)
 (check-sat-assuming (((as not Bool) (and x (= ((as a S1)) (b))))))
-(get-unsat-core)
+(get-unsat-assumptions)

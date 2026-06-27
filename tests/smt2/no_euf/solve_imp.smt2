@@ -4,4 +4,4 @@
 (declare-const a Bool)
 (assert (=> x y z))
 (check-sat-assuming (x a y (not z)))
-(get-unsat-core)
+(get-unsat-assumptions)

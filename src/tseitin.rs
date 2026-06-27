@@ -389,14 +389,13 @@ impl<'a, M, R: Recorder> SatTheoryArgT<'a> for TheoryArgRaw<'a, SatTheoryArg<'a>
     }
 
     fn in_model(&self) -> bool {
-        self.in_model
+        self.incr.in_model
     }
 
     fn for_explain(&mut self) -> Self::Explain<'_> {
         ExplainTheoryArg {
             sat: self.sat.explain_arg(),
             incr: self.incr.reborrow(),
-            in_model: self.in_model,
         }
     }
 }

@@ -7,4 +7,4 @@
 (assert (or a c d))
 (assert (or c (not d)))
 (check-sat-assuming ((not a)))
-(get-unsat-core)
+(get-unsat-assumptions)

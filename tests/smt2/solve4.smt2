@@ -5,6 +5,6 @@
 (declare-fun f (S1 S1) (S2 S1))
 (assert (not (= (f a a) (f a b))))
 (check-sat-assuming ((= a b)))
-(get-unsat-core)
+(get-unsat-assumptions)
 (check-sat)
 (get-value (a b (f a a) (f a b)))
