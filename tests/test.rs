@@ -95,6 +95,50 @@ fn test_no_euf(#[files("tests/smt2/no_euf/**/*.smt2")] file: PathBuf) {
     test_file::<(EmptyTheory, EmptyTheoryPf, InterpolantRecorder, _)>(file)
 }
 
+mod error_lines {
+    use super::*;
+    use log::warn;
+
+    #[rstest]
+    fn test_file_with_error_lines(#[files("tests/smt2/**/*.smt2")] mut file: PathBuf) {
+        init_logger();
+        info!(
+            "Starting error line test {:?} using {}",
+            file,
+            type_name::<Euf>()
+        );
+        let smt2_data = read_path(&mut file, "smt2");
+        let mut error_smt2_data = Vec::new();
+        let mut paren_count = 0;
+        let mut comment = false;
+        for chunk in smt2_data.chunk_by(|a, _| {
+            match *a {
+                b';' => comment = true,
+                b'\n' => comment = false,
+                b'(' if !comment => paren_count += 1,
+                b')' if !comment => paren_count -= 1,
+                _ => {}
+            }
+            paren_count > 0 || comment
+        }) {
+            error_smt2_data.extend_from_slice(&chunk[..chunk.len() / 2]);
+            error_smt2_data.extend_from_slice(b" \"oops\" ");
+            error_smt2_data.extend_from_slice(&chunk[chunk.len() / 2..]);
+            error_smt2_data.extend_from_slice(chunk);
+        }
+        warn!("Using:\n{}", str::from_utf8(&error_smt2_data).unwrap());
+        let stdout_expected = String::from_utf8(read_path(&mut file, "stdout")).unwrap();
+        let mut stdout_actual = String::new();
+        let mut stderr_actual = String::new();
+        interp_smt2::<(Euf, EufPf, InterpolantRecorder, _)>(
+            &*error_smt2_data,
+            &mut stdout_actual,
+            &mut stderr_actual,
+        );
+        assert_eq!(stdout_actual, stdout_expected);
+    }
+}
+
 fn iter_direct(path: &str) -> ReadDir {
     Path::new(path).read_dir().unwrap()
 }

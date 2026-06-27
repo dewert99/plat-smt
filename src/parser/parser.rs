@@ -830,6 +830,7 @@ impl<W: Write, L: Logic> Parser<W, L> {
         rest: SexpParser<R>,
     ) -> Result<()> {
         let old_len = self.global_stack.len();
+        let old_state = self.state;
         self.writer.print_success = self.options.print_success;
         match self.parse_command_h(name, rest) {
             Ok(()) => {
@@ -850,6 +851,18 @@ impl<W: Write, L: Logic> Parser<W, L> {
                         self.core.solver_mut().clear();
                     }
                 }
+                if matches!(
+                    (old_state, self.state),
+                    (
+                        State::UnsatInterpolant | State::Unsat | State::Model,
+                        State::Base
+                    )
+                ) {
+                    self.core
+                        .solver_mut()
+                        .check_sat_assuming_preserving_trail(self.named_assertions.parts().0);
+                }
+                self.state = old_state;
 
                 Err(err)
             }
@@ -902,9 +915,9 @@ impl<W: Write, L: Logic> Parser<W, L> {
     fn parse_command_h<R: FullBufRead>(
         &mut self,
         name: Smt2Command,
-        mut rest: SexpParser<R>,
+        mut rest_orig: SexpParser<R>,
     ) -> Result<()> {
-        let mut rest = name.bind(&mut rest);
+        let mut rest = name.bind(&mut rest_orig);
         match name {
             Smt2Command::DeclareSort => {
                 let SexpToken::Terminal(SexpTerminal::Symbol(name)) = rest.next()? else {
@@ -1157,9 +1170,9 @@ impl<W: Write, L: Logic> Parser<W, L> {
                     return Err(InvalidCommand);
                 };
                 let range = rest.p.end_idx(start);
-                let s = rest.p.lookup_range(range);
-                writeln!(self.writer, "{s}");
                 rest.finish()?;
+                let s = rest_orig.lookup_range(range);
+                writeln!(self.writer, "{s}");
             }
             Smt2Command::GetInterpolants => {
                 let (State::Unsat | State::UnsatInterpolant, Some(pre_solve_level)) =
