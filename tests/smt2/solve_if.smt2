@@ -12,4 +12,4 @@
 (declare-const b U)
 (assert (= (ite i a b) b))
 (check-sat-assuming ((not (= a b))))
-(get-unsat-core)
+(get-unsat-assumptions)

@@ -1,6 +1,6 @@
 (declare-const x Bool)
 (assert x)
 (check-sat-assuming ((let ((x false)) x) x))
-(get-unsat-core)
+(get-unsat-assumptions)
 (check-sat-assuming (x))
 (check-sat-assuming ((let ((x false) (x x)) x)))

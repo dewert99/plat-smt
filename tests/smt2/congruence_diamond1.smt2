@@ -23,6 +23,6 @@
   (or (and (= x1 y1) (= (f y1) (f z1)) (= z1 x2))
       (and (= x1 a1) (= (f a1) (f b1)) (= b1 x2))))
 (check-sat-assuming (diamond0 diamond1 (not final_equality)))
-(get-unsat-core)
+(get-unsat-assumptions)
 (check-sat-assuming ((= x0 x1) diamond1 (not final_equality)))
-(get-unsat-core)
+(get-unsat-assumptions)

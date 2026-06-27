@@ -8,4 +8,5 @@ sat
  (define-fun cn () Bool true)
 )
 unsat
+()
 ((not (and an bn)))

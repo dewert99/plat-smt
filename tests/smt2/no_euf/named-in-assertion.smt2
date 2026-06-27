@@ -8,3 +8,4 @@
 (get-model)
 (check-sat-assuming ((not (and an bn))))
 (get-unsat-core)
+(get-unsat-assumptions)

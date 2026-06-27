@@ -269,6 +269,7 @@ enum_str! {Smt2Command{
     "declare-const" => DeclareConst(2),
     "define-const" => DefineConst(3),
     "define-fun" => DefineFn(4),
+    "get-unsat-assumptions" => GetUnsatAssumptions(0),
     "get-unsat-core" => GetUnsatCore(0),
     "get-value" => GetValue(1),
     "get-model" => GetModel(0),
@@ -337,6 +338,7 @@ enum_option! {SetOption{
     "sat.learntsize_inc" => LearntsizeInc(f64),
     "random-seed" => BaseRandomSeed(f64),
     "produce-models" => ProduceModels(bool),
+    "produce-unsat-assumptions" => ProduceUnsatAssumptions(bool),
     "produce-unsat-cores" => ProduceUnsatCores(bool),
     "produce-interpolants" => ProduceInterpolants(bool),
     "print-success" => PrintSuccess(bool),
@@ -378,6 +380,7 @@ pub(super) struct Parser<W: Write, L: Logic> {
     named_assertions: UnsatCoreConjunction<SpanRange>,
     // see above
     old_named_assertions: u32,
+    this_named_assert: Vec<(BoolExp, SpanRange)>,
     push_info: Vec<LevelMarker<L>>,
     core: OuterSolver<L>,
     pub(super) writer: PrintSuccessWriter<W>,
@@ -390,6 +393,7 @@ pub(super) struct Parser<W: Write, L: Logic> {
 struct Options {
     produce_models: bool,
     produces_unsat_cores: bool,
+    produce_unsat_assumptions: bool,
     print_success: bool,
 }
 
@@ -398,6 +402,7 @@ impl Default for Options {
         Options {
             produce_models: true,
             produces_unsat_cores: true,
+            produce_unsat_assumptions: true,
             print_success: false,
         }
     }
@@ -596,8 +601,7 @@ impl<'a, W: Write, L: Logic> ExpVisitor<'a, W, L> {
                     match exp.downcast() {
                         None => return Err(AssertBool(exp.sort())),
                         Some(b) => {
-                            self.0.extend_named_assertions([(b, span)]);
-                            self.0.set_old_named_assertions();
+                            self.0.this_named_assert.push((b, span));
                             // don't return exp since we don't want it to be asserted
                             exp = BoolExp::TRUE.upcast()
                         }
@@ -673,6 +677,7 @@ impl<W: Write, L: Logic> Parser<W, L> {
             currently_defining: None,
             named_assertions: UnsatCoreConjunction::default(),
             old_named_assertions: 0,
+            this_named_assert: Vec::new(),
             options: Default::default(),
         };
         res.declared_sorts.insert(BOOL_SYM, 0);
@@ -804,7 +809,6 @@ impl<W: Write, L: Logic> Parser<W, L> {
     fn reset_state(&mut self) {
         if !matches!(self.state, State::Base) {
             self.core.solver_mut().pop_model();
-            self.truncate_named_assertions();
             let interpolant_enabled = self
                 .core
                 .recorder_mut()
@@ -826,7 +830,6 @@ impl<W: Write, L: Logic> Parser<W, L> {
         rest: SexpParser<R>,
     ) -> Result<()> {
         let old_len = self.global_stack.len();
-        let old_named_assertions = self.named_assertions.push();
         self.writer.print_success = self.options.print_success;
         match self.parse_command_h(name, rest) {
             Ok(()) => {
@@ -839,8 +842,8 @@ impl<W: Write, L: Logic> Parser<W, L> {
                 self.undo_base_bindings(old_len);
                 self.undo_let_bindings(0);
                 self.core.reset_working_exp();
+                self.this_named_assert.clear();
                 if matches!(self.state, State::Base) {
-                    self.named_assertions.pop_to(old_named_assertions);
                     if let Some(c) = self.command_level_marker.clone() {
                         self.core.solver_mut().pop_to_level(c);
                     } else {
@@ -916,22 +919,30 @@ impl<W: Write, L: Logic> Parser<W, L> {
                 self.sort_stack.push(name);
                 self.declared_sorts.insert(name, args);
             }
-            Smt2Command::GetUnsatCore => {
+            Smt2Command::GetUnsatAssumptions | Smt2Command::GetUnsatCore => {
+                let assumptions = matches!(name, Smt2Command::GetUnsatAssumptions);
                 let State::Unsat = &self.state else {
                     if let State::UnsatInterpolant = &self.state {
                         return Err(InterpolantCore);
                     }
                     return Err(NoUnsat);
                 };
-                if !self.options.produces_unsat_cores {
+                if !self.options.produces_unsat_cores && !assumptions {
                     return Err(not_enabled!("produce-unsat-cores"));
                 }
+                if !self.options.produce_unsat_assumptions && assumptions {
+                    return Err(not_enabled!("produce-assumptions"));
+                }
                 write!(self.writer, "(");
+                let named_assertions_end = self.named_assertions.push();
+                let (start, end) = if assumptions {
+                    (self.old_named_assertions, named_assertions_end)
+                } else {
+                    (0, self.old_named_assertions)
+                };
                 let mut need_space = false;
                 self.named_assertions
-                    .parts()
-                    .1
-                    .core(self.core.solver_mut().last_unsat_core())
+                    .partial_core(start, end, self.core.solver_mut().last_unsat_core())
                     .map(|x| match *x {
                         s => rest.p.lookup_range(s),
                     })
@@ -943,6 +954,8 @@ impl<W: Write, L: Logic> Parser<W, L> {
                             need_space = true;
                         }
                     });
+                // partial core invalidates name_assertions so we need to correct it
+                self.named_assertions.pop_to(named_assertions_end);
                 writeln!(self.writer, ")");
                 rest.finish()?;
             }
@@ -1104,6 +1117,13 @@ impl<W: Write, L: Logic> Parser<W, L> {
                         self.options.produces_unsat_cores = x;
                         return Ok(());
                     }
+                    SetOption::ProduceUnsatAssumptions(x) => {
+                        if !matches!(self.state, State::Init) {
+                            return Err(NonInit);
+                        }
+                        self.options.produce_unsat_assumptions = x;
+                        return Ok(());
+                    }
                     SetOption::ProduceModels(x) => {
                         self.options.produce_models = x;
                         return Ok(());
@@ -1217,6 +1237,7 @@ impl<W: Write, L: Logic> Parser<W, L> {
         mut rest: CountingParser<R>,
     ) -> Result<()> {
         self.reset_state();
+        debug_assert!(self.this_named_assert.is_empty());
         match name {
             Smt2Command::DeclareFn => {
                 let name = self.parse_fresh_binder(rest.next()?)?;
@@ -1259,9 +1280,13 @@ impl<W: Write, L: Logic> Parser<W, L> {
                     .solver_mut()
                     .assert(exp.downcast().ok_or(AssertBool(exp.sort()))?);
                 rest.finish()?;
+                self.truncate_named_assertions();
+                self.extend_named_assertions();
+                self.set_old_named_assertions();
             }
             Smt2Command::CheckSat => {
                 rest.finish()?;
+                self.truncate_named_assertions();
                 self.check_sat()?;
             }
             Smt2Command::CheckSatAssuming => {
@@ -1274,10 +1299,12 @@ impl<W: Write, L: Logic> Parser<W, L> {
                     let exp = self.parse_exp(token, StartExpCtx::Exact)?;
                     exp.downcast().ok_or(AssertBool(exp.sort()))
                 }) {
-                    self.extend_named_assertions([x?]);
+                    self.this_named_assert.push(x?);
                 }
                 drop(l);
                 rest.finish()?;
+                self.truncate_named_assertions();
+                self.extend_named_assertions();
                 // arbitrary builtin symbol so references inside the check-sat-assuming aren't
                 // treated as in a and b
                 self.core.dep_checker_act(dep_checker::ExitScope(LET_SYM));
@@ -1291,7 +1318,7 @@ impl<W: Write, L: Logic> Parser<W, L> {
                     let info = LevelMarker {
                         bound: self.global_stack.len() as u32,
                         sort: self.sort_stack.len() as u32,
-                        named_assert: self.named_assertions.push(),
+                        named_assert: self.old_named_assertions,
                         solver: self.core.solver_mut().create_level(),
                     };
                     info!(
@@ -1354,9 +1381,10 @@ impl<W: Write, L: Logic> Parser<W, L> {
         Ok(())
     }
 
-    fn extend_named_assertions(&mut self, conj: impl IntoIterator<Item = (BoolExp, SpanRange)>) {
-        let conj = conj
-            .into_iter()
+    fn extend_named_assertions(&mut self) {
+        let conj = self
+            .this_named_assert
+            .drain(..)
             .inspect(|(_, s)| self.core.dep_checker_act(dep_checker::AddAssumption(*s)));
         self.named_assertions.extend(conj);
     }

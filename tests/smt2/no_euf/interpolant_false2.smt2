@@ -7,6 +7,6 @@
 (get-interpolants (and) (and p np))
 (assert np)
 (check-sat-assuming (p))
-(get-unsat-core)
+(get-unsat-assumptions)
 (get-interpolants (and p) (and))
 (get-interpolants (and) (and p))

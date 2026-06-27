@@ -5,7 +5,7 @@
 (assert (or (= a b) (= x (not x))))
 (declare-fun f (S1) Bool)
 (check-sat-assuming ( (and (f a) (not (f b)))))
-(get-unsat-core)
+(get-unsat-assumptions)
 (check-sat-assuming ((f a)))
 (get-value (a b x (f a) (f b)))
 (get-model)
