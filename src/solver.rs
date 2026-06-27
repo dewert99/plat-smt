@@ -416,7 +416,7 @@ pub(crate) struct UnsatCoreInfo<T> {
 }
 
 impl<T> UnsatCoreInfo<T> {
-    fn add(&mut self, bool_exp: BoolExp, t: T) {
+    fn add(&mut self, bool_exp: BoolExp, t: T) -> BoolExp {
         match bool_exp.to_lit() {
             Err(false) => {
                 if self.false_by.is_none() {
@@ -426,10 +426,14 @@ impl<T> UnsatCoreInfo<T> {
             Err(true) => {}
             Ok(l) => {
                 if self.false_by.is_none() {
-                    self.data.insert(!l, t);
+                    let old = self.data.try_insert(!l, t);
+                    if old.is_err() {
+                        return BoolExp::TRUE;
+                    }
                 }
             }
         }
+        bool_exp
     }
 
     pub(crate) fn get(&self, x: Lit) -> Option<&T> {
@@ -473,10 +477,7 @@ impl<T> FromIterator<(BoolExp, T)> for UnsatCoreConjunction<T> {
 
 impl<T> Extend<(BoolExp, T)> for UnsatCoreConjunction<T> {
     fn extend<I: IntoIterator<Item = (BoolExp, T)>>(&mut self, iter: I) {
-        let conj = iter.into_iter().map(|(b, t)| {
-            self.info.add(b, t);
-            b
-        });
+        let conj = iter.into_iter().map(|(b, t)| self.info.add(b, t));
         self.conj.extend(conj);
     }
 }

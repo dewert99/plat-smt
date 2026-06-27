@@ -1,0 +1,8 @@
+(declare-const x Bool)
+(assert x)
+(assert (! (not x) :named nx))
+(push)
+(assert (! (not x) :named nx2))
+(pop)
+(check-sat)
+(get-unsat-core)
