@@ -1,0 +1,4 @@
+unknown identifier `f3` at 6:25
+(check-sat-assuming (t1 f3))
+                        ^
+
