@@ -235,9 +235,13 @@ impl DefinitionRecorder {
         )
     }
 
-    fn define_nv(&mut self, nv: NamespaceVar, def_exp: DefExp) {
+    fn define_nv(&mut self, nv: NamespaceVar, def_exp: DefExp, i: &InternInfo) {
         let old = self.var_defs.insert(nv, def_exp);
-        debug!("{nv} = {def_exp:?}");
+        debug!(
+            "{nv} = @d{} = {}",
+            def_exp.0,
+            self.display_stand_alone_def(def_exp, i)
+        );
         if let Some(old) = old {
             if old != def_exp {
                 panic!("Trying to reassign {nv} from {old:?} to {def_exp:?}")
@@ -297,7 +301,7 @@ impl Recorder for DefinitionRecorder {
         let res = self.defs.intern(f, &self.buf);
         self.buf.clear();
         let nv = val.as_rexp(|rexp| rexp.unwrap_nv());
-        self.define_nv(nv, res);
+        self.define_nv(nv, res, intern);
     }
 
     fn log_def_exp<Exp: ExpLike, Exp2: AsRexp>(
@@ -308,7 +312,7 @@ impl Recorder for DefinitionRecorder {
     ) {
         let res = self.intern_exp(def, intern);
         let nv = val.as_rexp(|rexp| rexp.unwrap_nv());
-        self.define_nv(nv, res);
+        self.define_nv(nv, res, intern);
     }
 
     fn log_alias<Exp: ExpLike>(&mut self, alias: Symbol, exp: Exp, intern: &mut InternInfo) {

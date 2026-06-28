@@ -2,6 +2,7 @@ use crate::full_buf_read::FullBufRead;
 use core::fmt::{Debug, Display, Formatter};
 use core::mem::ManuallyDrop;
 use core::str::Utf8Error;
+use log::debug;
 use no_std_compat::prelude::v1::*;
 use std::string::FromUtf8Error;
 fn is_white_space_byte(c: u8) -> bool {
@@ -421,6 +422,7 @@ impl<R: FullBufRead> SexpLexer<R> {
     ) {
         let mut p = SexpParser(self);
         loop {
+            let start = p.0.idx;
             let next = p.next();
             if next.is_some() {
                 let next = next.unwrap();
@@ -437,6 +439,11 @@ impl<R: FullBufRead> SexpLexer<R> {
                         },
                     );
                 }
+
+                debug!(
+                    "Parsed {:?}",
+                    str::from_utf8(&p.0.reader.data()[start..p.0.idx])
+                );
             } else {
                 return;
             }

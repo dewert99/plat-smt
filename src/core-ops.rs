@@ -6,10 +6,7 @@ use crate::solver::{ReuseMem, SolverCollapse};
 use crate::tseitin::{andor_sub_ctx, BoolOpPf, SatTheoryArgT, TseitenMarker};
 use crate::util::{extend_result, pairwise_sym};
 use crate::{AddSexpError, BoolExp, Conjunction, ExpLike, SubExp, SuperExp};
-use core::iter::Copied;
 use core::marker::PhantomData;
-use core::ops::RangeBounds;
-use core::slice::Iter;
 use perfect_derive::perfect_derive;
 
 pub struct Eq<Exp>(pub(crate) Exp, pub(crate) Exp);
@@ -152,7 +149,7 @@ impl<
         }
     }
 
-    fn placeholder(&self, t: &RawDistinct<I>) -> BoolExp {
+    fn placeholder(&self, _: &RawDistinct<I>) -> BoolExp {
         BoolExp::FALSE
     }
 }
@@ -181,7 +178,7 @@ impl<
         acts.collapse_bool(conj, ctx)
     }
 
-    fn placeholder(&self, t: &RawDistinct<I>) -> BoolExp {
+    fn placeholder(&self, _: &RawDistinct<I>) -> BoolExp {
         BoolExp::FALSE
     }
 }

@@ -1,0 +1,22 @@
+sat
+(
+ (define-fun a () R (as @v4 R))
+ (define-fun a_def () Bool true)
+ (define-fun b () R (as @v4 R))
+ (define-fun b_def () Bool true)
+ (define-fun f ((x!0 Bool)) R
+  (ite (= x!0 false) (as @v4 R)
+  (ite (= x!0 true) (as @v4 R)
+   (as @d3 R))))
+ (define-fun p ((x!0 R)) Bool
+  (ite (= x!0 (as @v4 R)) true
+   false))
+ (define-fun pa () Bool true)
+ (define-fun pb () Bool true)
+ (define-fun sum4 () Bool true)
+ (define-fun x () Real 0)
+ (define-fun y () Real 4)
+ (define-fun y_imp () Bool true)
+)
+unsat
+(y3 sum4 y_imp pb pa b_def a_def)

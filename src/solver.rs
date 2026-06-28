@@ -252,6 +252,7 @@ impl<Th: FullTheory<R>, R: Recorder> Solver<Th, R> {
     /// Check if the current assertions combined with the assertions in `c` are satisfiable
     /// Leave the solver in a state representing the model
     pub fn check_sat_assuming_preserving_trail(&mut self, c: &Conjunction) -> SolveResult {
+        debug!("Staring checksat with assumptions {:?}", c);
         let res = match c.lits() {
             None => lbool::FALSE,
             Some(lits) => Th::solve_limited_preserving_trail(self, lits),

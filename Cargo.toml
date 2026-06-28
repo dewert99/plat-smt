@@ -8,6 +8,7 @@ edition = "2021"
 [dependencies]
 platsat = { git = "https://github.com/dewert99/platsat", branch = "main", default-features = false, features = ["logging"]}
 plat-egg = { git = "https://github.com/dewert99/plat-egg", branch = "main", default-features = false, optional = true}
+lazy-rational = { git = "https://github.com/dewert99/lazy-rational", optional = true}
 default-vec2 = "0.1.6"
 rustc-hash = { version = "1.1.0", default-features = false}
 hashbrown = { version = "0.14.3" , default-features = false}
@@ -19,10 +20,12 @@ smallvec = { version = "1.13.1", features = ["union"], default-features = false 
 no-std-compat = { version = "0.4.1" , features = ["alloc"]}
 internal-iterator = "0.2.3"
 bytemuck = { version = "1.14.0", default-features = false, features = ["must_cast", "extern_crate_alloc"] }
+dary_heap = { version = "0.3.9", optional = true }
 
 [features]
-default = ["log/release_max_level_warn", "euf"]
+default = ["log/release_max_level_warn", "euf", "lra"]
 euf = ["plat-egg"]
+lra= ["dary_heap", "lazy-rational"]
 interpolant = []
 # Add more equalities mid-search, used for testing
 test_add_more_mid_search_equalities = []
