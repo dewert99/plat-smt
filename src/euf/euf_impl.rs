@@ -22,7 +22,7 @@ use crate::util::{pairwise_sym, HashMap};
 use crate::{AddSexpError, BoolExp, Conjunction, ExpLike, HasSort, Solver, Sort, SubExp, SuperExp};
 use core::fmt::Formatter;
 use core::marker::PhantomData;
-use core::ops::{Deref, DerefMut};
+use core::ops::Deref;
 use core::slice::Iter;
 use plat_egg::raw::Language;
 use plat_egg::Id;

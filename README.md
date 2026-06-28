@@ -1,5 +1,5 @@
 This is a toy Rust SMT solver build using [platsat](https://github.com/dewert99/platsat) and [plat-egg](https://github.com/dewert99/plat-egg)
-that accepts a subset of SMT2LIB syntax for the logic `QF_UF`
+that accepts a subset of SMT2LIB syntax for the logics `QF_UF` and `QF_LRA`
 
 ## WASM
 
@@ -10,6 +10,11 @@ Explore the [Live demo](https://dewert99.github.io/plat-smt/) via a browser.
 - [x] `=>`, `xor`
 - [x] `=`
 - [x] `distinct`
+- [x] `<`, `<=`, `>`, `>=`
+- [x] `+`, `-`
+- [ ] `*`, `/` (with constant factors)
+- [ ] `*`, `/` (general)
+- [ ] Passing numbers into functions
 - [x] `as`
 - [x] `declare-sort`
 - [x] `declare-function`

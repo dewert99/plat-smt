@@ -8,6 +8,10 @@ mod collapse;
 
 #[cfg(feature = "euf")]
 pub mod euf;
+
+#[cfg(feature = "lra")]
+pub mod lra;
+
 mod exp;
 mod full_buf_read;
 pub mod intern;

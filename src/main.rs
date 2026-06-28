@@ -15,6 +15,16 @@ use plat_smt::recorder::InterpolantRecorder as Recorder;
 #[cfg(not(feature = "interpolant"))]
 use plat_smt::recorder::LoggingRecorder as Recorder;
 
+#[cfg(not(feature = "lra"))]
+type Pf2 = Pf;
+#[cfg(feature = "lra")]
+type Pf2 = (plat_smt::lra::LinearArithPf, Pf);
+
+#[cfg(not(feature = "lra"))]
+type Th2 = Th;
+#[cfg(feature = "lra")]
+type Th2 = (Th, plat_smt::lra::Lra);
+
 enum Either<L, R> {
     Left(L),
     Right(R),
@@ -111,7 +121,7 @@ fn main() {
     } else {
         Either::Right(empty())
     };
-    plat_smt::interp_smt2::<(Th, Pf, Recorder, _)>(
+    plat_smt::interp_smt2::<(Th2, Pf2, Recorder, _)>(
         FullBufReader::new(reader, buf),
         WrapWrite(stdout()),
         WrapWrite(stderr()),

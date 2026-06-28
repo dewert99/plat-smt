@@ -1,5 +1,5 @@
 use crate::collapse::{BaseMarker, Collapse, ExprContext};
-use crate::core_ops::{CoreOpsPf, DefaultIte, Distinct, DistinctElts, Eq, RawDistinct};
+use crate::core_ops::{CoreOpsPf, DefaultIte, DistinctElts, Eq, RawDistinct};
 use crate::full_theory::{empty_fn_info, FullTheory, FunctionAssignmentT, PrepareModelKind};
 use crate::intern::Symbol;
 use crate::outer_solver::Bound;

@@ -1,0 +1,8 @@
+sat
+(
+ (define-fun a () Real (/ 1 512))
+ (define-fun b () Real (/ 1 256))
+ (define-fun c () Real (/ 3 512))
+ (define-fun c10 () Real (/ 15 256))
+ (define-fun c100 () Real (/ 75 128))
+)

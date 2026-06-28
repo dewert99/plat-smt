@@ -2,8 +2,9 @@ use log::info;
 use plat_smt::empty_theory::{EmptyTheory, EmptyTheoryPf};
 use plat_smt::euf::{Euf, EufPf};
 use plat_smt::interp_smt2;
+use plat_smt::lra::{LinearArithPf, Lra};
 use plat_smt::outer_solver::Logic;
-use plat_smt::recorder::InterpolantRecorder;
+use plat_smt::recorder::{InterpolantRecorder, LoggingRecorder};
 use rstest::rstest;
 use std::any::type_name;
 use std::fs::{remove_file, File, ReadDir};
@@ -86,18 +87,34 @@ fn test_file<L: Logic>(mut file: PathBuf) {
 }
 
 #[rstest]
-fn test_euf(#[files("tests/smt2/**/*.smt2")] file: PathBuf) {
+fn test_all(#[files("tests/smt2/**/*.smt2")] file: PathBuf) {
+    test_file::<((Euf, Lra), (LinearArithPf, EufPf), InterpolantRecorder, _)>(file)
+}
+
+#[rstest]
+fn test_euf(#[files("tests/smt2/euf/**/*.smt2")] file: PathBuf) {
     test_file::<(Euf, EufPf, InterpolantRecorder, _)>(file)
 }
 
 #[rstest]
-fn test_no_euf(#[files("tests/smt2/no_euf/**/*.smt2")] file: PathBuf) {
+fn test_lra(#[files("tests/smt2/lra/**/*.smt2")] file: PathBuf) {
+    test_file::<(
+        (EmptyTheory, Lra),
+        (LinearArithPf, EmptyTheoryPf),
+        LoggingRecorder,
+        _,
+    )>(file)
+}
+
+#[rstest]
+fn test_empty_theory(#[files("tests/smt2/empty_theory/**/*.smt2")] file: PathBuf) {
     test_file::<(EmptyTheory, EmptyTheoryPf, InterpolantRecorder, _)>(file)
 }
 
 mod error_lines {
     use super::*;
     use log::warn;
+    use plat_smt::lra::LinearArithPf;
 
     #[rstest]
     fn test_file_with_error_lines(#[files("tests/smt2/**/*.smt2")] mut file: PathBuf) {
@@ -105,7 +122,7 @@ mod error_lines {
         info!(
             "Starting error line test {:?} using {}",
             file,
-            type_name::<Euf>()
+            type_name::<(Euf, Lra)>()
         );
         let smt2_data = read_path(&mut file, "smt2");
         let mut error_smt2_data = Vec::new();
@@ -130,7 +147,7 @@ mod error_lines {
         let stdout_expected = String::from_utf8(read_path(&mut file, "stdout")).unwrap();
         let mut stdout_actual = String::new();
         let mut stderr_actual = String::new();
-        interp_smt2::<(Euf, EufPf, InterpolantRecorder, _)>(
+        interp_smt2::<((Euf, Lra), (LinearArithPf, EufPf), InterpolantRecorder, _)>(
             &*error_smt2_data,
             &mut stdout_actual,
             &mut stderr_actual,
@@ -150,8 +167,8 @@ fn test_sequential(init_command: &str, split_command: &str, exact: bool) {
     let mut expect_out = Vec::new();
     let mut file_buf = Vec::new();
     file_buf.extend_from_slice(init_command.as_bytes());
-    let mut paths: Vec<_> = iter_direct("tests/smt2")
-        .chain(iter_direct("tests/smt2/no_euf"))
+    let mut paths: Vec<_> = iter_direct("tests/smt2/euf")
+        .chain(iter_direct("tests/smt2/empty_theory"))
         .filter_map(|x| {
             let path = x.ok()?.path();
             if path.extension() == Some("smt2".as_ref()) {
@@ -194,13 +211,14 @@ fn test_sequential_push_pop() {
 #[cfg(not(debug_assertions))]
 mod test_smtlib_benchmarks {
     use super::*;
+    use plat_smt::euf::{Euf, EufPf};
     use plat_smt::recorder::LoggingRecorder;
     use plat_smt::IncrementalParser;
     use std::env;
     use std::fmt::Display;
     use std::io::{stderr, Seek, Write};
     use std::process::{Command, Stdio};
-    use walkdir::WalkDir;
+    use walkdir::{DirEntry, Error, WalkDir};
 
     fn take_suffix(s: &mut String, suffix: &str) {
         let new_len = s.len() - suffix.len();
@@ -213,7 +231,12 @@ mod test_smtlib_benchmarks {
     }
 
     #[test]
-    fn test_incremental() {
+    fn test_euf_incremental() {
+        let path = Path::new("benches/starexec/incremental/QF_UF");
+        test_incremental::<(Euf, EufPf, LoggingRecorder, _)>(WalkDir::new(path))
+    }
+
+    fn test_incremental<L: Logic>(paths: impl IntoIterator<Item = Result<DirEntry, Error>>) {
         let mut out = String::new();
         let mut err = String::new();
         let mut file_buf = Vec::new();
@@ -222,8 +245,7 @@ mod test_smtlib_benchmarks {
             writeln!(file_buf, "(set-option :sat.rnd_init_act true)").unwrap();
         }
         let base_len = file_buf.len();
-        let path = Path::new("benches/starexec/incremental");
-        for x in WalkDir::new(path).into_iter().filter_map(Result::ok) {
+        for x in paths.into_iter().filter_map(Result::ok) {
             let path = x.path();
             if path.extension() == Some("smt2".as_ref()) {
                 use std::io::Write;
@@ -238,7 +260,7 @@ mod test_smtlib_benchmarks {
                     .unwrap()
                     .read_to_end(&mut file_buf)
                     .unwrap();
-                interp_smt2::<(Euf, EufPf, LoggingRecorder, _)>(&*file_buf, &mut out, &mut err);
+                interp_smt2::<L>(&*file_buf, &mut out, &mut err);
                 let yices_out = yices_child.wait_with_output().unwrap();
                 assert_eq!(&err, "");
                 assert_eq!(&out, from_utf8(&yices_out.stdout).unwrap());
@@ -251,8 +273,12 @@ mod test_smtlib_benchmarks {
     const ASSUMP_NAME: &str = "smtcomp";
 
     #[test]
-    fn test_model_unsat_core() {
-        let mut incr = IncrementalParser::<(Euf, EufPf, InterpolantRecorder, _)>::default();
+    fn test_model_unsat_core_euf() {
+        let path = Path::new("benches/starexec/non-incremental/QF_UF/2018-Goel-hwbench");
+        test_model_unsat_core::<(Euf, EufPf, InterpolantRecorder, _)>(WalkDir::new(path))
+    }
+    fn test_model_unsat_core<L: Logic>(paths: impl IntoIterator<Item = Result<DirEntry, Error>>) {
+        let mut incr = IncrementalParser::<L>::default();
         let mut interp_a = String::new();
         let mut interp_b = String::new();
         let mut yices_in = String::new();
@@ -263,8 +289,7 @@ mod test_smtlib_benchmarks {
             writeln!(file_buf, "(set-option :sat.rnd_init_act true)").unwrap();
         }
         let base_len = file_buf.len();
-        let path = Path::new("benches/starexec/non-incremental/QF_UF/2018-Goel-hwbench");
-        for x in WalkDir::new(path).into_iter().filter_map(Result::ok) {
+        for x in paths.into_iter().filter_map(Result::ok) {
             let path = x.path();
             if path.extension() == Some("smt2".as_ref()) {
                 use std::io::Write;

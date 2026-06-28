@@ -1,0 +1,38 @@
+sat
+(
+ (define-fun a () Real 1)
+ (define-fun a_bool () Bool true)
+ (define-fun al () Bool true)
+ (define-fun au () Bool true)
+ (define-fun b () Real 1)
+ (define-fun b_bool () Bool true)
+ (define-fun bl () Bool true)
+ (define-fun bu () Bool true)
+ (define-fun c () Real 1)
+ (define-fun c_bool () Bool true)
+ (define-fun cl () Bool true)
+ (define-fun cu () Bool true)
+ (define-fun d () Real 3)
+)
+sat
+(
+ (define-fun a () Real 1)
+ (define-fun a_bool () Bool true)
+ (define-fun al () Bool true)
+ (define-fun au () Bool true)
+ (define-fun b () Real 0)
+ (define-fun b_bool () Bool false)
+ (define-fun bl () Bool true)
+ (define-fun bu () Bool true)
+ (define-fun c () Real 0)
+ (define-fun c_bool () Bool false)
+ (define-fun cl () Bool true)
+ (define-fun cu () Bool true)
+ (define-fun d () Real 1)
+)
+unsat
+((<= d 0) (or a_bool b_bool c_bool))
+(cl bl al)
+unsat
+((or (= d 2) (= d 0)) (xor a_bool b_bool c_bool))
+(cu cl bu bl au al)
