@@ -1,13 +1,12 @@
-use crate::collapse::{Collapse, CollapseOut, ExprContext};
+use crate::collapse::{BaseMarker, Collapse, CollapseOut, ExprContext};
+use crate::empty_theory::EmptyTheory;
 use crate::exp::Fresh;
 use crate::intern::{Symbol, AND_SYM, BOOL_SORT, IMP_SYM, NOT_SYM, OR_SYM, XOR_SYM};
 use crate::junction::Junction;
 use crate::parser_fragment::{exact_args, index_iter, mandatory_args, ParserFragment};
 use crate::recorder::{ClauseKind, Recorder};
 use crate::solver::{ReuseMem, SolverCollapse};
-use crate::theory::{
-    ExplainTheoryArg, Incremental, Reborrow, TheoryArgRaw, TheoryArgT, TheoryWrapper,
-};
+use crate::theory::{Incremental, TheoryArgRaw, TheoryArgT, TheoryWrapper};
 use crate::util::extend_result;
 use crate::{AddSexpError, BLit, BoolExp, Disjunction, ExpLike, SubExp, SuperExp};
 use alloc::vec::Vec;
@@ -85,8 +84,9 @@ pub trait SatTheoryArgT<'a>: TheoryArgT {
     }
 
     fn raise_conflict_using_builder(&mut self, costly: bool) {
+        let marker = self.prop_marker();
         let (sat, recorder) = self.sat_mut();
-        sat.raise_conflict_using_builder(costly);
+        sat.raise_conflict_using_builder_with_marker(costly, marker);
         recorder.log_clause(
             sat.explain_arg().clause_builder(),
             ClauseKind::TheoryConflict(costly),
@@ -94,7 +94,8 @@ pub trait SatTheoryArgT<'a>: TheoryArgT {
     }
 
     fn propagate(&mut self, l: Lit) -> bool {
-        self.sat_mut().0.propagate(l)
+        let marker = self.prop_marker();
+        self.sat_mut().0.propagate_with_marker(l, marker)
     }
 
     fn for_explain(&mut self) -> Self::Explain<'_>;
@@ -393,10 +394,7 @@ impl<'a, M, R: Recorder> SatTheoryArgT<'a> for TheoryArgRaw<'a, SatTheoryArg<'a>
     }
 
     fn for_explain(&mut self) -> Self::Explain<'_> {
-        ExplainTheoryArg {
-            sat: self.sat.explain_arg(),
-            incr: self.incr.reborrow(),
-        }
+        self.map(|sat| sat.explain_arg())
     }
 }
 pub struct TseitenMarker;
@@ -442,7 +440,7 @@ impl CollapseOut for BoolExp {
     type Out = BoolExp;
 }
 
-impl<'a, T, A: SatTheoryArgT<'a>> Collapse<BoolExp, A, TseitenMarker> for T {
+impl<'a, T, A: SatTheoryArgT<'a>> Collapse<BoolExp, A, BaseMarker> for T {
     fn collapse(&mut self, b: BoolExp, acts: &mut A, _: ExprContext<BoolExp>) -> BoolExp {
         acts.canonize(b)
     }
@@ -452,7 +450,20 @@ impl<'a, T, A: SatTheoryArgT<'a>> Collapse<BoolExp, A, TseitenMarker> for T {
     }
 }
 
-impl<'a, T, A: SatTheoryArgT<'a>> Collapse<Fresh<BoolExp>, A, TseitenMarker> for T {
+impl<'a, A: SatTheoryArgT<'a>> Collapse<Fresh<BoolExp>, A, BaseMarker> for EmptyTheory {
+    fn collapse(&mut self, f: Fresh<BoolExp>, acts: &mut A, _: ExprContext<BoolExp>) -> BoolExp {
+        assert_eq!(f.sort, BOOL_SORT);
+        BoolExp::unknown(Lit::new(acts.new_var_default(), true))
+    }
+
+    fn placeholder(&self, f: &Fresh<BoolExp>) -> BoolExp {
+        assert_eq!(f.sort, BOOL_SORT);
+        BoolExp::TRUE
+    }
+}
+
+#[cfg(feature = "euf")]
+impl<'a, A: SatTheoryArgT<'a>> Collapse<Fresh<BoolExp>, A, BaseMarker> for crate::euf::Euf {
     fn collapse(&mut self, f: Fresh<BoolExp>, acts: &mut A, _: ExprContext<BoolExp>) -> BoolExp {
         assert_eq!(f.sort, BOOL_SORT);
         BoolExp::unknown(Lit::new(acts.new_var_default(), true))

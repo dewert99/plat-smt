@@ -1,6 +1,7 @@
 use crate::full_buf_read::FullBufRead;
 use crate::full_theory::FunctionAssignmentT;
 use crate::intern::*;
+use crate::outer_solver::BoundDefinitions;
 use crate::outer_solver::{
     Bound, BoundDefinition, BoundL, DefineError, FnSort, Logic, MaybeFnSort, OuterSolver,
     StartExpCtx,
@@ -981,10 +982,14 @@ impl<W: Write, L: Logic> Parser<W, L> {
                 let SexpToken::List(mut l) = rest.next()? else {
                     return Err(InvalidCommand);
                 };
+                self.core.prepare_get_values();
                 let values = l
                     .zip_map_full(iter::repeat(()), |x, ()| {
                         let exp = self.parse_exp(x?, StartExpCtx::Exact)?;
-                        Ok(self.core.solver_mut().collapse(exp))
+                        Ok(SolverCollapse::<L::Exp, _>::collapse(
+                            self.core.solver_mut(),
+                            exp,
+                        ))
                     })
                     .collect::<Result<Vec<_>>>()?;
                 drop(l);
@@ -1013,7 +1018,7 @@ impl<W: Write, L: Logic> Parser<W, L> {
                 }
                 rest.finish()?;
                 writeln!(self.writer, "(");
-                self.core.get_definition_values(|k, v, intern| {
+                self.core.get_definition_values().for_each(|k, v, intern| {
                     let k_i = k.with_intern(intern);
                     match v {
                         BoundDefinition::Const(x) => {
@@ -1494,7 +1499,7 @@ impl<W: Write, L: Logic> Parser<W, L> {
 
 fn write_body<'a, W: Write, L: Logic>(
     writer: &mut PrintSuccessWriter<W>,
-    assignment: impl FunctionAssignmentT<L::Exp>,
+    assignment: impl FunctionAssignmentT<Exp = L::Exp>,
     ret: WithIntern<Sort>,
     intern: &InternInfo,
 ) {

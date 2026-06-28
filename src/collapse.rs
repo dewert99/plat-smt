@@ -83,4 +83,43 @@ pub trait Collapse<T: CollapseOut, Arg, Marker> {
     fn placeholder(&self, t: &T) -> T::Out;
 }
 
+impl<T: CollapseOut, Arg, Marker, L: Collapse<T, Arg, Marker>, R>
+    Collapse<T, Arg, LeftMarker<Marker>> for (L, R)
+{
+    fn collapse(&mut self, t: T, acts: &mut Arg, ctx: ExprContext<T::Out>) -> T::Out {
+        self.0.collapse(t, acts, ctx)
+    }
+
+    fn placeholder(&self, t: &T) -> T::Out {
+        self.0.placeholder(t)
+    }
+}
+
+impl<T: CollapseOut, Arg, Marker, L, R: Collapse<T, Arg, Marker>>
+    Collapse<T, Arg, RightMarker<Marker>> for (L, R)
+{
+    fn collapse(&mut self, t: T, acts: &mut Arg, ctx: ExprContext<T::Out>) -> T::Out {
+        self.1.collapse(t, acts, ctx)
+    }
+
+    fn placeholder(&self, t: &T) -> T::Out {
+        self.1.placeholder(t)
+    }
+}
+
 pub struct BaseMarker<T = ()>(T);
+
+pub struct LeftMarker<T>(T);
+pub struct RightMarker<T>(T);
+
+pub trait SpecExp<T, M> {
+    type SpecExp;
+}
+
+impl<T, M, L: SpecExp<T, M>, R> SpecExp<T, LeftMarker<M>> for (L, R) {
+    type SpecExp = L::SpecExp;
+}
+
+impl<T, M, L, R: SpecExp<T, M>> SpecExp<T, RightMarker<M>> for (L, R) {
+    type SpecExp = R::SpecExp;
+}

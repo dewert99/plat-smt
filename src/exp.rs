@@ -1,4 +1,4 @@
-use crate::collapse::{Collapse, CollapseOut, ExprContext};
+use crate::collapse::{BaseMarker, Collapse, CollapseOut, ExprContext, LeftMarker, RightMarker};
 use crate::intern::{
     DisplayInterned, InternInfo, Sort, Symbol, BOOL_SORT, FALSE_SYM, NOT_SYM, TRUE_SYM,
 };
@@ -37,12 +37,6 @@ impl<X: StaticSort> HasSort for X {
     }
 }
 
-pub struct IdM;
-
-pub struct Lm<M>(M);
-
-pub struct Rm<M>(M);
-
 pub trait SuperExp<Sub, M> {
     fn downcast(self) -> Option<Sub>;
 
@@ -65,7 +59,7 @@ impl<M, Sub, Super: SuperExp<Sub, M>> SubExp<Super, M> for Sub {
     }
 }
 
-impl<T: ExpLike> SuperExp<T, IdM> for T {
+impl<T: ExpLike> SuperExp<T, BaseMarker> for T {
     fn downcast(self) -> Option<T> {
         Some(self)
     }
@@ -82,7 +76,7 @@ pub enum EitherExp<E1, E2> {
     Right(E2),
 }
 
-impl<E1: SuperExp<Sub, M>, E2, Sub, M> SuperExp<Sub, Lm<M>> for EitherExp<E1, E2> {
+impl<E1: SuperExp<Sub, M>, E2, Sub, M> SuperExp<Sub, LeftMarker<M>> for EitherExp<E1, E2> {
     fn downcast(self) -> Option<Sub> {
         match self {
             EitherExp::Left(l) => l.downcast(),
@@ -95,7 +89,7 @@ impl<E1: SuperExp<Sub, M>, E2, Sub, M> SuperExp<Sub, Lm<M>> for EitherExp<E1, E2
     }
 }
 
-impl<E2: SuperExp<Sub, M>, E1, Sub, M> SuperExp<Sub, Rm<M>> for EitherExp<E1, E2> {
+impl<E2: SuperExp<Sub, M>, E1, Sub, M> SuperExp<Sub, RightMarker<M>> for EitherExp<E1, E2> {
     fn downcast(self) -> Option<Sub> {
         match self {
             EitherExp::Right(r) => r.downcast(),
@@ -274,8 +268,38 @@ impl<E1: ExpLike, E2: ExpLike> CollapseOut for EitherExp<E1, E2> {
     type Out = EitherExp<E1, E2>;
 }
 
-impl<E1: ExpLike, E2: ExpLike, Arg, M1, M2, Th: Collapse<E1, Arg, M1> + Collapse<E2, Arg, M2>>
-    Collapse<EitherExp<E1, E2>, Arg, (M1, M2)> for Th
+impl<
+        E1: ExpLike,
+        E2: ExpLike,
+        Arg,
+        Th: Collapse<E1, Arg, BaseMarker> + Collapse<E2, Arg, BaseMarker>,
+    > Collapse<EitherExp<E1, E2>, Arg, BaseMarker> for Th
+{
+    fn collapse(
+        &mut self,
+        t: EitherExp<E1, E2>,
+        acts: &mut Arg,
+        ctx: ExprContext<EitherExp<E1, E2>>,
+    ) -> EitherExp<E1, E2> {
+        match t {
+            EitherExp::Left(l) => EitherExp::Left(self.collapse(l, acts, ctx.downcast())),
+            EitherExp::Right(r) => EitherExp::Right(self.collapse(r, acts, ctx.downcast())),
+        }
+    }
+
+    fn placeholder(&self, t: &EitherExp<E1, E2>) -> EitherExp<E1, E2> {
+        *t
+    }
+}
+
+impl<
+        E1: ExpLike,
+        E2: ExpLike,
+        Arg,
+        M1,
+        M2,
+        Th: Collapse<E1, Arg, LeftMarker<M1>> + Collapse<E2, Arg, RightMarker<M2>>,
+    > Collapse<EitherExp<E1, E2>, Arg, (M1, M2)> for Th
 {
     fn collapse(
         &mut self,
@@ -304,7 +328,7 @@ pub struct Fresh<E> {
 }
 
 impl<E: HasSort> Fresh<E> {
-    pub fn new(name: Symbol, sort: Sort) -> Result<Self, ()> {
+    pub fn new_with_sort(name: Symbol, sort: Sort) -> Result<Self, ()> {
         if E::can_have_sort(sort) {
             Ok(Fresh {
                 name,
@@ -317,6 +341,16 @@ impl<E: HasSort> Fresh<E> {
     }
 }
 
+impl<E: StaticSort> Fresh<E> {
+    pub fn new(name: Symbol) -> Self {
+        Fresh {
+            name,
+            sort: E::SORT,
+            phantom: PhantomData,
+        }
+    }
+}
+
 impl<E: ExpLike> CollapseOut for Fresh<E> {
     type Out = E;
 }
@@ -325,10 +359,8 @@ impl<
         E1: ExpLike,
         E2: ExpLike,
         Arg,
-        M1,
-        M2,
-        Th: Collapse<Fresh<E1>, Arg, M1> + Collapse<Fresh<E2>, Arg, M2>,
-    > Collapse<Fresh<EitherExp<E1, E2>>, Arg, (M1, M2)> for Th
+        Th: Collapse<Fresh<E1>, Arg, BaseMarker> + Collapse<Fresh<E2>, Arg, BaseMarker>,
+    > Collapse<Fresh<EitherExp<E1, E2>>, Arg, BaseMarker> for Th
 {
     fn collapse(
         &mut self,
@@ -336,7 +368,7 @@ impl<
         acts: &mut Arg,
         ctx: ExprContext<EitherExp<E1, E2>>,
     ) -> EitherExp<E1, E2> {
-        match Fresh::<E1>::new(t.name, t.sort) {
+        match Fresh::<E1>::new_with_sort(t.name, t.sort) {
             Ok(fresh) => EitherExp::Left(self.collapse(fresh, acts, ctx.downcast())),
             _ => EitherExp::Right(self.collapse(
                 Fresh::<E2> {
@@ -351,7 +383,48 @@ impl<
     }
 
     fn placeholder(&self, t: &Fresh<EitherExp<E1, E2>>) -> EitherExp<E1, E2> {
-        match Fresh::<E1>::new(t.name, t.sort) {
+        match Fresh::<E1>::new_with_sort(t.name, t.sort) {
+            Ok(fresh) => EitherExp::Left(self.placeholder(&fresh)),
+            _ => EitherExp::Right(self.placeholder(&Fresh::<E2> {
+                name: t.name,
+                sort: t.sort,
+                phantom: PhantomData,
+            })),
+        }
+    }
+}
+
+impl<
+        E1: ExpLike,
+        E2: ExpLike,
+        Arg,
+        M1,
+        M2,
+        Th: Collapse<Fresh<E1>, Arg, LeftMarker<M1>> + Collapse<Fresh<E2>, Arg, RightMarker<M2>>,
+    > Collapse<Fresh<EitherExp<E1, E2>>, Arg, (M1, M2)> for Th
+{
+    fn collapse(
+        &mut self,
+        t: Fresh<EitherExp<E1, E2>>,
+        acts: &mut Arg,
+        ctx: ExprContext<EitherExp<E1, E2>>,
+    ) -> EitherExp<E1, E2> {
+        match Fresh::<E1>::new_with_sort(t.name, t.sort) {
+            Ok(fresh) => EitherExp::Left(self.collapse(fresh, acts, ctx.downcast())),
+            _ => EitherExp::Right(self.collapse(
+                Fresh::<E2> {
+                    name: t.name,
+                    sort: t.sort,
+                    phantom: PhantomData,
+                },
+                acts,
+                ctx.downcast(),
+            )),
+        }
+    }
+
+    fn placeholder(&self, t: &Fresh<EitherExp<E1, E2>>) -> EitherExp<E1, E2> {
+        match Fresh::<E1>::new_with_sort(t.name, t.sort) {
             Ok(fresh) => EitherExp::Left(self.placeholder(&fresh)),
             _ => EitherExp::Right(self.placeholder(&Fresh::<E2> {
                 name: t.name,

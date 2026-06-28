@@ -27,6 +27,12 @@ pub enum AddSexpError {
     CustomSexpErr(Cow<'static, str>),
 }
 
+impl AddSexpError {
+    pub fn custom(x: &'static str) -> AddSexpError {
+        CustomSexpErr(Cow::Borrowed(x))
+    }
+}
+
 #[derive(Copy, Clone)]
 pub(crate) struct IndexExp<Exp>(pub(crate) (usize, Exp));
 

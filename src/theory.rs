@@ -1,3 +1,4 @@
+use crate::collapse::{BaseMarker, LeftMarker, RightMarker};
 use crate::intern::{InternInfo, Symbol};
 use crate::recorder::{ClauseKind, DefExp, InterpolateArg, Recorder};
 use crate::rexp::AsRexp;
@@ -11,18 +12,6 @@ use platsat::core::ExplainTheoryArg as SatExplainTheoryArg;
 use platsat::theory::{ClauseRef, Theory as SatTheory};
 use platsat::{Lit, TheoryArg as SatTheoryArg};
 use std::ops::{Deref, DerefMut};
-// The implementation of push/pop is somewhat unexpected
-//
-// Since `platsat` uses non-chronological backtracking in can try to get EUF to pop to earlier
-// assertion levels during a check-sat. To work around this EUF keeps track of the
-// assertion level, and suppresses calls from `platsat` that would have it pop too far.
-// Instead, it enters a state where it doesn't make any propagations or raise any conflicts,
-// since it has access to information `platsat` assumes it shouldn't have access to yet.
-// Since `platsat` requires proportions to be made as soon as possible
-// (https://github.com/c-cube/platsat/issues/16), EUF always includes a literal representing
-// the current assertion level to its explanations, which makes them appear as though the
-// proportions couldn't have happened any sooner.
-
 pub trait Incremental: Default {
     type LevelMarker: Clone;
 
@@ -36,6 +25,24 @@ pub trait Incremental: Default {
     fn pop_to_level(&mut self, marker: Self::LevelMarker, clear_lits: bool);
 
     fn clear(&mut self);
+}
+
+impl<I1: Incremental, I2: Incremental> Incremental for (I1, I2) {
+    type LevelMarker = (I1::LevelMarker, I2::LevelMarker);
+
+    fn create_level(&self) -> Self::LevelMarker {
+        (self.0.create_level(), self.1.create_level())
+    }
+
+    fn pop_to_level(&mut self, marker: Self::LevelMarker, clear_lits: bool) {
+        self.0.pop_to_level(marker.0, clear_lits);
+        self.1.pop_to_level(marker.1, clear_lits);
+    }
+
+    fn clear(&mut self) {
+        self.0.clear();
+        self.1.clear();
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -106,6 +113,20 @@ impl<'a, T> Reborrow for &'a mut T {
 pub struct TheoryArgRaw<'a, S, M, R> {
     pub(crate) sat: S,
     pub(crate) incr: &'a mut IncrementalArgData<M, R>,
+    prop_marker: u8,
+}
+
+impl<'a, S, M, R> TheoryArgRaw<'a, S, M, R> {
+    pub(crate) fn map<'b, S2>(
+        &'b mut self,
+        f: impl FnOnce(&'b mut S) -> S2,
+    ) -> TheoryArgRaw<'b, S2, M, R> {
+        TheoryArgRaw {
+            sat: f(&mut self.sat),
+            incr: &mut *self.incr,
+            prop_marker: self.prop_marker,
+        }
+    }
 }
 
 pub type TheoryArg<'a, M, R> = TheoryArgRaw<'a, SatTheoryArg<'a>, M, R>;
@@ -157,6 +178,55 @@ pub trait TheoryArgT {
         let (intern, recorder) = self.recorder_mut();
         recorder.allows_mid_search_add(children, intern)
     }
+
+    #[doc(hidden)]
+    fn prop_marker(&self) -> u8;
+}
+
+pub trait TupleExtract<P, M> {
+    fn tuple_extract(&self) -> &M;
+
+    fn tuple_extract_mut(&mut self) -> &mut M;
+}
+
+impl<X> TupleExtract<BaseMarker, X> for X {
+    fn tuple_extract(&self) -> &X {
+        self
+    }
+
+    fn tuple_extract_mut(&mut self) -> &mut X {
+        self
+    }
+}
+impl<P, M, T: TupleExtract<P, M>, O> TupleExtract<LeftMarker<P>, M> for (T, O) {
+    fn tuple_extract(&self) -> &M {
+        self.0.tuple_extract()
+    }
+
+    fn tuple_extract_mut(&mut self) -> &mut M {
+        self.0.tuple_extract_mut()
+    }
+}
+
+impl<P, M, T: TupleExtract<P, M>, O> TupleExtract<RightMarker<P>, M> for (O, T) {
+    fn tuple_extract(&self) -> &M {
+        self.1.tuple_extract()
+    }
+
+    fn tuple_extract_mut(&mut self) -> &mut M {
+        self.1.tuple_extract_mut()
+    }
+}
+
+trait TheoryArgMarker {
+    fn marker(&mut self) -> &mut u8;
+}
+
+impl<'a, S, M, R: Recorder> TheoryArgMarker for TheoryArgRaw<'a, S, M, R> {
+    #[inline]
+    fn marker(&mut self) -> &mut u8 {
+        &mut self.prop_marker
+    }
 }
 
 impl<'a, S, M, R: Recorder> TheoryArgT for TheoryArgRaw<'a, S, M, R> {
@@ -185,6 +255,10 @@ impl<'a, S, M, R: Recorder> TheoryArgT for TheoryArgRaw<'a, S, M, R> {
     fn recorder_mut(&mut self) -> (&mut InternInfo, &mut Self::R) {
         (&mut self.incr.intern, &mut self.incr.recorder)
     }
+
+    fn prop_marker(&self) -> u8 {
+        self.prop_marker
+    }
 }
 
 impl<'a, S: Reborrow, M, R> Reborrow for TheoryArgRaw<'a, S, M, R> {
@@ -194,15 +268,12 @@ impl<'a, S: Reborrow, M, R> Reborrow for TheoryArgRaw<'a, S, M, R> {
         Self: 'b;
 
     fn reborrow(&mut self) -> Self::Target<'_> {
-        TheoryArgRaw {
-            sat: self.sat.reborrow(),
-            incr: self.incr.reborrow(),
-        }
+        self.map(|x| x.reborrow())
     }
 }
 
 /// Theory that parametrizes the solver and can react on events.
-pub trait Theory<Arg, ExplainArg> {
+pub trait Theory<Arg, ExplainArg, P = BaseMarker> {
     /// Extra initialization step called with theory arg in [`Default`] implementation and after
     /// clear
     fn init(&mut self, _acts: &mut Arg) {}
@@ -227,9 +298,11 @@ pub trait Theory<Arg, ExplainArg> {
     /// Final check ran before returning sat
     ///
     /// If it doesn't make any propagations or raise a conflict the solver will return sat
-    fn final_check(&mut self, _acts: &mut Arg) {}
+    fn final_check(&mut self, _acts: &mut Arg) -> Result<(), ()> {
+        Ok(())
+    }
 
-    /// If the theory uses `TheoryArgument::propagate`, it must implement
+    /// If the theory uses [`SatTheoryArgT::propagate`], it must implement
     /// this function to explain the propagations.
     ///
     /// It should add the negation of all literals that were used to imply `p` to
@@ -238,18 +311,102 @@ pub trait Theory<Arg, ExplainArg> {
     ///
     /// `acts.clause_builder()` comes pre-initialized with `p` as its first element to satisfy
     /// [`BatTheory::explain_propagation_clause`]'s requirements
-    fn explain_propagation(&mut self, p: Lit, acts: &mut ExplainArg, is_final: bool);
+    ///
+    ///
+    fn explain_propagation(&mut self, p: Lit, acts: &mut ExplainArg, is_final: bool, marker: u8);
 
     fn interpolate_clause(
         &mut self,
         _acts: &mut Arg,
         _clause: impl Fn(&Arg) -> &[Lit],
         _interpolate_arg: impl Fn(&mut Arg) -> InterpolateArg,
+        _marker: u8,
     ) -> DefExp {
         todo!()
     }
 
-    fn set_in_model(&mut self, _in_model: bool) {}
+    #[inline]
+    fn prop_types() -> u8 {
+        1
+    }
+
+    #[doc(hidden)]
+    fn adjusted_prop_types() -> u8 {
+        Self::prop_types()
+    }
+}
+
+impl<
+        Arg: TheoryArgMarker,
+        ExplainArg: TheoryArgMarker,
+        P,
+        T1: Theory<Arg, ExplainArg, LeftMarker<P>>,
+        T2: Theory<Arg, ExplainArg, RightMarker<P>>,
+    > Theory<Arg, ExplainArg, P> for (T1, T2)
+{
+    fn init(&mut self, acts: &mut Arg) {
+        self.0.init(acts);
+        *acts.marker() += T1::prop_types();
+        self.1.init(acts);
+        assert!(T1::prop_types().checked_add(T2::prop_types()).is_some());
+    }
+
+    fn initial_check(&mut self, acts: &mut Arg) -> Result<(), ()> {
+        self.0.initial_check(acts)?;
+        *acts.marker() += T1::adjusted_prop_types();
+        self.1.initial_check(acts)
+    }
+
+    fn learn(&mut self, lit: Lit, acts: &mut Arg) -> Result<(), ()> {
+        self.0.learn(lit, acts)?;
+        *acts.marker() += T1::adjusted_prop_types();
+        self.1.learn(lit, acts)
+    }
+
+    fn pre_decision_check(&mut self, acts: &mut Arg) -> Result<(), ()> {
+        self.0.pre_decision_check(acts)?;
+        *acts.marker() += T1::adjusted_prop_types();
+        self.1.pre_decision_check(acts)
+    }
+
+    fn final_check(&mut self, acts: &mut Arg) -> Result<(), ()> {
+        self.0.final_check(acts)?;
+        *acts.marker() += T1::adjusted_prop_types();
+        self.1.final_check(acts)
+    }
+
+    fn explain_propagation(&mut self, p: Lit, acts: &mut ExplainArg, is_final: bool, marker: u8) {
+        if marker < T1::prop_types() {
+            self.0.explain_propagation(p, acts, is_final, marker)
+        } else {
+            self.1
+                .explain_propagation(p, acts, is_final, marker - T1::prop_types())
+        }
+    }
+
+    fn interpolate_clause(
+        &mut self,
+        acts: &mut Arg,
+        clause: impl Fn(&Arg) -> &[Lit],
+        interpolate_arg: impl Fn(&mut Arg) -> InterpolateArg,
+        marker: u8,
+    ) -> DefExp {
+        if marker < T1::prop_types() {
+            self.0
+                .interpolate_clause(acts, clause, interpolate_arg, marker)
+        } else {
+            self.1
+                .interpolate_clause(acts, clause, interpolate_arg, marker - T1::prop_types())
+        }
+    }
+
+    fn prop_types() -> u8 {
+        T1::prop_types() + T2::prop_types()
+    }
+
+    fn adjusted_prop_types() -> u8 {
+        T1::adjusted_prop_types()
+    }
 }
 
 impl<
@@ -285,6 +442,7 @@ impl<
             TheoryArgRaw {
                 sat: sat.reborrow(),
                 incr: &mut self.arg,
+                prop_marker: 0,
             },
         )
     }
@@ -294,11 +452,12 @@ impl<
         p: Lit,
         mut acts: &'a mut SatExplainTheoryArg,
         is_final: bool,
+        marker: u8,
     ) -> &'a [Lit] {
         acts.clause_builder().clear();
         acts.clause_builder().push(p);
         let (th, mut arg) = self.open(&mut acts);
-        th.explain_propagation(p, &mut arg, is_final);
+        th.explain_propagation(p, &mut arg, is_final, marker);
         self.arg
             .recorder
             .log_clause(acts.clause_builder(), ClauseKind::TheoryExplain);
@@ -314,7 +473,6 @@ impl<
 
     pub(crate) fn set_in_model(&mut self, in_model: bool) {
         self.arg.in_model = in_model;
-        self.th.set_in_model(in_model);
     }
 }
 
@@ -331,8 +489,9 @@ impl<
         let mut acts = TheoryArg {
             sat: acts.reborrow(),
             incr: &mut self.arg,
+            prop_marker: 0,
         };
-        self.th.final_check(&mut acts)
+        let _ = self.th.final_check(&mut acts);
     }
 
     fn create_level(&mut self) {
@@ -381,15 +540,18 @@ impl<
         let mut acts = TheoryArg {
             sat: acts.reborrow(),
             incr: &mut self.arg,
+            prop_marker: 0,
         };
         let _: Result<(), ()> = (|| {
             self.th.initial_check(&mut acts)?;
             while (self.prev_model_len as usize) < acts.model().len() {
+                acts.prop_marker = 0;
                 self.th
                     .learn(acts.model()[self.prev_model_len as usize], &mut acts)?;
                 self.prev_model_len += 1;
             }
             if acts.model().len() == init_len {
+                acts.prop_marker = 0;
                 self.th.pre_decision_check(&mut acts)
             } else {
                 debug!("Skipping extra checks since we already made propagations");
@@ -403,8 +565,9 @@ impl<
         &mut self,
         p: Lit,
         acts: &'a mut SatExplainTheoryArg,
+        marker: u8,
     ) -> &'a [Lit] {
-        self.explain_propagation_clause_either(p, acts, false)
+        self.explain_propagation_clause_either(p, acts, false, marker)
     }
 
     #[inline]
@@ -412,8 +575,9 @@ impl<
         &mut self,
         p: Lit,
         acts: &'a mut SatExplainTheoryArg,
+        marker: u8,
     ) -> &'a [Lit] {
-        self.explain_propagation_clause_either(p, acts, true)
+        self.explain_propagation_clause_either(p, acts, true, marker)
     }
 
     #[inline]

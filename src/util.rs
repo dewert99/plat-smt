@@ -160,10 +160,12 @@ pub(crate) fn extend_result<T, E>(
     res
 }
 
-pub(crate) fn pairwise_sym<T>(slice: &[T]) -> impl Iterator<Item = (&T, &T)> {
+pub(crate) fn pairwise_sym<'a, I: DistinctElts>(
+    slice: I,
+) -> impl Iterator<Item = (I::Exp, I::Exp)> + use<I> {
     (0..slice.len())
         .flat_map(move |i| (i + 1..slice.len()).map(move |j| (i, j)))
-        .map(|(i, j)| (&slice[i], &slice[j]))
+        .map(move |(i, j)| (slice.index(i), slice.index(j)))
 }
 
 pub struct ArrayWrite<'a>(&'a mut [u8], usize);
@@ -197,5 +199,6 @@ macro_rules! dbg {
     }};
 }
 
+use crate::core_ops::DistinctElts;
 #[allow(unused)]
 pub(crate) use dbg;
