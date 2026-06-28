@@ -1,6 +1,6 @@
 use crate::collapse::{BaseMarker, Collapse, ExprContext};
-use crate::core_ops::{CoreOpsPf, Distinct, Eq};
-use crate::full_theory::FullTheory;
+use crate::core_ops::{CoreOpsPf, DefaultIte, Distinct, DistinctElts, Eq, RawDistinct};
+use crate::full_theory::{empty_fn_info, FullTheory, FunctionAssignmentT, PrepareModelKind};
 use crate::intern::Symbol;
 use crate::outer_solver::Bound;
 use crate::parser_fragment::ParserFragment;
@@ -12,7 +12,6 @@ use crate::util::HashMap;
 use crate::{AddSexpError, BoolExp, Solver};
 use core::convert::Infallible;
 use platsat::Lit;
-use std::iter;
 
 #[derive(Copy, Clone, Debug, Default)]
 pub struct EmptyTheory;
@@ -20,7 +19,7 @@ pub struct EmptyTheory;
 #[derive(Copy, Clone, Debug)]
 pub struct PushInfo;
 
-impl<'a, A: SatTheoryArgT<'a>> Theory<A, A::Explain<'a>> for EmptyTheory {
+impl<'a, A: SatTheoryArgT<'a>, P> Theory<A, A::Explain<'a>, P> for EmptyTheory {
     fn learn(&mut self, _: Lit, _: &mut A) -> Result<(), ()> {
         Ok(())
     }
@@ -29,7 +28,7 @@ impl<'a, A: SatTheoryArgT<'a>> Theory<A, A::Explain<'a>> for EmptyTheory {
         Ok(())
     }
 
-    fn explain_propagation(&mut self, _: Lit, _: &mut A::Explain<'a>, _: bool) {
+    fn explain_propagation(&mut self, _: Lit, _: &mut A::Explain<'a>, _: bool, _: u8) {
         unreachable!()
     }
 }
@@ -51,16 +50,14 @@ impl<R: Recorder> FullTheory<R> for EmptyTheory {
 
     type FnSort = Infallible;
 
-    fn init_function_info(&mut self) {}
+    fn prepare_model(&mut self, _: PrepareModelKind) {}
 
-    type FunctionInfo<'a> = iter::Empty<(iter::Empty<BoolExp>, BoolExp)>;
-
-    fn get_function_info(&self, _: Symbol) -> Self::FunctionInfo<'_> {
-        iter::empty()
+    fn get_function_info(&self, _: Symbol) -> impl FunctionAssignmentT<Exp = BoolExp> {
+        empty_fn_info()
     }
 }
 
-impl<'a, A: SatTheoryArgT<'a>, Th> Collapse<Eq<BoolExp>, A, BaseMarker> for Th {
+impl<'a, A: SatTheoryArgT<'a>> Collapse<Eq<BoolExp>, A, BaseMarker> for EmptyTheory {
     fn collapse(&mut self, t: Eq<BoolExp>, acts: &mut A, ctx: ExprContext<BoolExp>) -> BoolExp {
         !acts.xor(t.0, t.1, ctx.negate())
     }
@@ -70,27 +67,27 @@ impl<'a, A: SatTheoryArgT<'a>, Th> Collapse<Eq<BoolExp>, A, BaseMarker> for Th {
     }
 }
 
-impl<'a, 'b, Th, A: SatTheoryArgT<'a>> Collapse<Distinct<'b, BoolExp>, A, BaseMarker> for Th {
-    fn collapse(
-        &mut self,
-        t: Distinct<'b, BoolExp>,
-        acts: &mut A,
-        ctx: ExprContext<BoolExp>,
-    ) -> BoolExp {
-        match t.0 {
-            &[] | &[_] => acts.collapse_const(true, ctx),
-            &[b0, b1] => acts.xor(b0, b1, ctx),
+impl<'a, 'b, I: DistinctElts<Exp = BoolExp>, A: SatTheoryArgT<'a>>
+    Collapse<RawDistinct<I>, A, BaseMarker> for EmptyTheory
+{
+    fn collapse(&mut self, t: RawDistinct<I>, acts: &mut A, ctx: ExprContext<BoolExp>) -> BoolExp {
+        let mut iter = t.0.iter();
+        match (iter.next(), iter.next(), iter.next()) {
+            (None, _, _) | (_, None, _) => acts.collapse_const(true, ctx),
+            (Some(b0), Some(b1), None) => acts.xor(b0, b1, ctx),
             _ => acts.collapse_const(false, ctx),
         }
     }
 
-    fn placeholder(&self, _: &Distinct<'b, BoolExp>) -> BoolExp {
+    fn placeholder(&self, _: &RawDistinct<I>) -> BoolExp {
         BoolExp::FALSE
     }
 }
 
 type ConstOnlySolver<Th, R> =
     SolverWithBound<Solver<Th, R>, HashMap<Symbol, Bound<<Th as FullTheory<R>>::Exp, Infallible>>>;
+
+impl DefaultIte for EmptyTheory {}
 
 #[derive(Default)]
 pub struct ConstantPf;

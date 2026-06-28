@@ -1,6 +1,6 @@
 use crate::collapse::ExprContext;
 use crate::exp::Fresh;
-use crate::full_theory::FullTheory;
+use crate::full_theory::{FullTheory, FunctionAssignmentT, PrepareModelKind};
 use crate::intern::*;
 use crate::parser_fragment::{ParserFragment, PfResult};
 use crate::recorder::Recorder;
@@ -239,9 +239,12 @@ impl<L: Logic> OuterSolver<L> {
         match b {
             Bound::Fn(f) => {
                 if f.args().is_empty() {
-                    match Fresh::<L::Exp>::new(name, f.as_fn_sort().ret()) {
+                    match Fresh::<L::Exp>::new_with_sort(name, f.as_fn_sort().ret()) {
                         Ok(fresh) => {
-                            let exp = self.inner.collapse(fresh);
+                            let exp = SolverCollapse::<Fresh<L::Exp>, _>::collapse(
+                                &mut self.inner,
+                                fresh,
+                            );
                             self.solver_mut().open(
                                 |_, acts| acts.log_def(exp, name, iter::empty::<L::Exp>()),
                                 (),
@@ -435,34 +438,12 @@ impl<L: Logic> OuterSolver<L> {
     /// Returns an iterator over the values associated with each definition along with the interner
     ///
     /// The definitions are sorted alphabetically by name
-    pub fn get_definition_values(
-        &mut self,
-        mut f: impl FnMut(
-            Symbol,
-            BoundDefinition<<<L as Logic>::Theory as FullTheory<L::R>>::FunctionInfo<'_>, L::Exp>,
-            &InternInfo,
-        ),
-    ) {
-        let mut syms: Vec<_> = self.defined_symbols().collect();
-        syms.sort_unstable_by_key(|sym| self.intern().symbols.resolve(*sym));
-        let solver = &mut self.inner.solver;
-        solver.th.init_function_info();
-        let bound = &self.inner.bound;
-        syms.into_iter().for_each(|sym| {
-            let val = bound.get(&sym).unwrap();
-            match val {
-                Bound::Const(exp) => f(
-                    sym,
-                    BoundDefinition::Const(solver.collapse(*exp)),
-                    solver.intern(),
-                ),
-                Bound::Fn(s) => f(
-                    sym,
-                    BoundDefinition::Fn(s.as_fn_sort(), solver.th.get_function_info(sym)),
-                    solver.intern(),
-                ),
-            }
-        })
+    pub fn get_definition_values<'a>(&'a mut self) -> impl BoundDefinitions<Exp = L::Exp> + 'a
+    where
+        L::Theory: 'static,
+        L::R: 'static,
+    {
+        BoundDefinitionsImpl(self, L::Theory::get_function_info)
     }
 
     /// Like [`clear`](Solver::clear) but also clears defintions
@@ -476,6 +457,13 @@ impl<L: Logic> OuterSolver<L> {
         self.inner
             .bound
             .insert(FALSE_SYM, Bound::Const(BoolExp::FALSE.upcast()));
+    }
+
+    pub fn prepare_get_values(&mut self) {
+        self.inner
+            .solver
+            .th
+            .prepare_model(PrepareModelKind::GetValues)
     }
 
     pub fn solver(&self) -> &Solver<L::Theory, L::R> {
@@ -512,4 +500,68 @@ impl<L: Logic> OuterSolver<L> {
 pub enum BoundDefinition<'a, F, UExp> {
     Const(UExp),
     Fn(&'a FnSort, F),
+}
+
+pub trait BoundDefinitions {
+    type Exp;
+    type FunctionInfo<'a>: FunctionAssignmentT<Exp = Self::Exp>;
+
+    fn for_each(
+        &mut self,
+        f: impl FnMut(Symbol, BoundDefinition<Self::FunctionInfo<'_>, Self::Exp>, &InternInfo),
+    );
+}
+
+struct BoundDefinitionsImpl<'a, L: Logic, Id>(&'a mut OuterSolver<L>, Id);
+
+trait FnAssoc<In> {
+    type Out;
+
+    fn apply(&self, x: In, s: Symbol) -> Self::Out;
+}
+
+impl<I, O, F: Fn(I, Symbol) -> O> FnAssoc<I> for F {
+    type Out = O;
+
+    fn apply(&self, x: I, s: Symbol) -> Self::Out {
+        self(x, s)
+    }
+}
+
+impl<'b, L: Logic, F: for<'a> FnAssoc<&'a L::Theory, Out: FunctionAssignmentT<Exp = L::Exp>>>
+    BoundDefinitions for BoundDefinitionsImpl<'b, L, F>
+where
+    L::Theory: 'static,
+{
+    type Exp = L::Exp;
+    type FunctionInfo<'a> = <F as FnAssoc<&'a L::Theory>>::Out;
+
+    fn for_each(
+        &mut self,
+        mut f: impl FnMut(Symbol, BoundDefinition<Self::FunctionInfo<'_>, Self::Exp>, &InternInfo),
+    ) {
+        let mut syms: Vec<_> = self.0.defined_symbols().collect();
+        syms.sort_unstable_by_key(|sym| self.0.intern().symbols.resolve(*sym));
+        let solver = &mut self.0.inner.solver;
+        solver.th.prepare_model(PrepareModelKind::GetModel);
+        let bound = &self.0.inner.bound;
+        syms.into_iter().for_each(|sym| {
+            let val = bound.get(&sym).unwrap();
+            match val {
+                Bound::Const(exp) => f(
+                    sym,
+                    BoundDefinition::Const(SolverCollapse::<L::Exp, _>::collapse(
+                        &mut *solver,
+                        *exp,
+                    )),
+                    solver.intern(),
+                ),
+                Bound::Fn(s) => f(
+                    sym,
+                    BoundDefinition::Fn(s.as_fn_sort(), self.1.apply(&solver.th, sym)),
+                    solver.intern(),
+                ),
+            }
+        })
+    }
 }

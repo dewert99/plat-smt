@@ -1,7 +1,7 @@
-use crate::collapse::{Collapse, CollapseOut, ExprContext};
+use crate::collapse::{Collapse, CollapseOut, ExprContext, SpecExp};
 use crate::core_ops::Eq;
 use crate::exp::*;
-use crate::full_theory::{FullTheory, TopLevelCollapse};
+use crate::full_theory::{FullTheory, FunctionAssignmentT, PrepareModelKind, TopLevelCollapse};
 use crate::intern::*;
 use crate::junction::*;
 use crate::parser::SpanRange;
@@ -162,10 +162,6 @@ impl<T, S: ReuseMem<T>, B> ReuseMem<T> for SolverWithBound<S, B> {
     }
 }
 
-pub trait SpecExp<T, M> {
-    type SpecExp;
-}
-
 impl<M, T, Th: SpecExp<T, M> + FullTheory<R>, R> SpecExp<T, M> for Solver<Th, R> {
     type SpecExp = Th::SpecExp;
 }
@@ -237,7 +233,7 @@ impl<Th: FullTheory<R>, R: Recorder> Solver<Th, R> {
             return;
         }
         debug!("assert {b}");
-        match SolverCollapse::collapse(self, b).to_lit() {
+        match SolverCollapse::<BoolExp, _>::collapse(self, b).to_lit() {
             Err(true) => {}
             Ok(l) => {
                 self.sat.add_clause_unchecked([l]);
@@ -295,6 +291,7 @@ impl<Th: FullTheory<R>, R: Recorder> Solver<Th, R> {
         self.sat.pop_model(&mut self.th);
         self.th.arg.recorder.exit_solved_state();
         self.th.set_in_model(false);
+        self.th.prepare_model(PrepareModelKind::Clear);
     }
 
     pub fn clear(&mut self) {
@@ -331,8 +328,8 @@ impl<Th: FullTheory<R>, R: Recorder> Solver<Th, R> {
         self.sat.unsat_core(&mut self.th)
     }
 
-    pub fn function_info<'a>(&'a mut self) -> (impl Fn(Symbol) -> Th::FunctionInfo<'a>, &'a Self) {
-        self.th.init_function_info();
+    pub fn function_info(&mut self) -> (impl FunctionAssignmentFn<Exp = Th::Exp> + '_, &Self) {
+        self.th.prepare_model(PrepareModelKind::GetModel);
         (|f| self.th.get_function_info(f), self)
     }
 
@@ -357,6 +354,19 @@ impl<Th: FullTheory<R>, R: Recorder> Solver<Th, R> {
     ) -> Result<(), Cow<'static, str>> {
         R::write_interpolant(self, pre_solve_level, assumptions, map_assumptions, writer)
     }
+}
+
+///
+/// Alias for `Fn(Symbol) -> impl FunctionAssignmentT<Exp=Self::Exp>`
+///
+pub trait FunctionAssignmentFn: Fn(Symbol) -> Self::F {
+    type Exp;
+    type F: FunctionAssignmentT<Exp = Self::Exp>;
+}
+
+impl<FA: FunctionAssignmentT, F: Fn(Symbol) -> FA> FunctionAssignmentFn for F {
+    type Exp = FA::Exp;
+    type F = FA;
 }
 
 /// Marker of the state of a [`Solver`] which can be created by [`Solver::create_level`] and later

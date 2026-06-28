@@ -21,7 +21,7 @@ mod tseitin;
 mod util;
 
 #[path = "core-ops.rs"]
-mod core_ops;
+pub mod core_ops;
 pub mod empty_theory;
 mod full_theory;
 mod parser_fragment;
@@ -30,7 +30,7 @@ pub mod rexp;
 
 use intern::Symbol;
 
-pub use exp::{BoolExp, ExpLike, HasSort, StaticSort, SubExp, SuperExp};
+pub use exp::{BoolExp, EitherExp, ExpLike, Fresh, HasSort, StaticSort, SubExp, SuperExp};
 pub use full_buf_read::FullBufRead;
 pub use intern::Sort;
 #[doc(inline)]
@@ -38,4 +38,4 @@ pub use junction::{Conjunction, Disjunction};
 pub use outer_solver::OuterSolver;
 pub use parser::{incremental_parser::IncrementalParser, parser::interp_smt2};
 pub use parser_fragment::AddSexpError;
-pub use solver::{Approx, BLit, SolveResult, Solver};
+pub use solver::{Approx, BLit, SolveResult, Solver, SolverCollapse};

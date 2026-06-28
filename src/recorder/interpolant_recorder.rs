@@ -20,6 +20,7 @@ use core::fmt::Write;
 use core::num::NonZeroU32;
 use default_vec2::StaticFlagVec;
 use log::{debug, info, trace, warn};
+use platsat::alloc::ExpandedRef;
 use platsat::theory::ClauseRef;
 use platsat::{lbool, Lit, SolverInterface, TheoryArg};
 use std::mem;
@@ -85,6 +86,8 @@ pub struct InterpolantRecorder {
     clauses: SliceVec<Lit>,
     defs: DefinitionRecorder,
     disabled: bool,
+    dep_checker: DepChecker,
+    theory_clause_markers: Vec<u8>,
 
     // Cleared in `exit_solved_state`
     state: State,
@@ -104,8 +107,6 @@ pub struct InterpolantRecorder {
     ab_syms_back: StaticFlagVec<2, Symbol>,
 
     defs_marker_after_solve: u32,
-
-    dep_checker: DepChecker,
 }
 
 impl InterpolantRecorder {
@@ -166,11 +167,12 @@ impl InterpolantRecorder {
             .map(|x| DefExp::new(NonZeroU32::new(x).unwrap()))
         {
             let (sym, children) = self.defs.resolve(def);
-            let mut in_ab = if sym.is_builtin() {
-                BOTH
-            } else {
-                self.ab_syms.get(sym)
-            };
+            let mut in_ab =
+                if sym.is_builtin() || intern.symbols.resolve(sym).parse::<u128>().is_ok() {
+                    BOTH
+                } else {
+                    self.ab_syms.get(sym)
+                };
             for &child in children {
                 let child_in_ab = self.ab_defs.get(child);
                 in_ab &= child_in_ab;
@@ -321,7 +323,7 @@ impl InterpolantRecorder {
 
     fn initialize_tseiten_clauses(&mut self, sat: &TheoryArg, intern: &InternInfo, i: &mut u32) {
         for (k, v) in &mut self.clause_refs {
-            if *v == u32::MAX && *k != ClauseRef::SPECIAL {
+            if *v == u32::MAX && !matches!(k.expand(), ExpandedRef::Special(_)) {
                 *v = *i;
                 *i += 1;
                 self.tseiten_clauses.push(*k);
@@ -338,7 +340,9 @@ impl InterpolantRecorder {
         let mut clause_idx = self.clause_boundary;
         for proof_elt in self.clause_proofs.iter_mut().flatten() {
             let cr = proof_elt.clause_ref();
-            proof_elt.clause = if cr == ClauseRef::SPECIAL {
+
+            proof_elt.clause = if let ExpandedRef::Special(marker) = cr.expand() {
+                self.theory_clause_markers.push(marker);
                 info!(
                     "{cr:?}: {} by theory",
                     self.defs
@@ -542,6 +546,7 @@ impl Recorder for InterpolantRecorder {
         self.clause_refs.clear();
         self.def_stack.clear();
         self.ab_syms.clear();
+        self.theory_clause_markers.clear();
         self.clause_boundary = 0;
     }
 
@@ -721,16 +726,25 @@ fn theory_partial_interpolate<Th: FullTheory<InterpolantRecorder>>(
     solver: &mut Solver<Th, InterpolantRecorder>,
 ) {
     let marker = solver.create_level();
-    for i in (solver.th.arg.recorder.clause_boundary..solver.th.arg.recorder.clauses.len())
+    let boundary = solver.th.arg.recorder.clause_boundary;
+    for i in (boundary..solver.th.arg.recorder.clauses.len())
         .into_iter()
         .rev()
     {
         let interpolant = solver.open(
             |th, arg| {
+                let marker = arg.incr.recorder.theory_clause_markers[i - boundary];
+                let rec = &arg.incr.recorder;
+                info!(
+                    "Interpolating {} by theory {marker}",
+                    rec.defs
+                        .display_clause(rec.clauses[i].iter().copied(), &arg.incr.intern)
+                );
                 th.interpolate_clause(
                     arg,
                     |arg| &arg.incr.recorder.clauses[i],
                     |arg| arg.incr.recorder.arg(&mut arg.incr.intern),
+                    marker,
                 )
             },
             FALSE_DEF_EXP,

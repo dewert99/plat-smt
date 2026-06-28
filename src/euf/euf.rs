@@ -4,7 +4,7 @@ use crate::exp::{BoolExp, EitherExp};
 use crate::intern::{
     DisplayInterned, InternInfo, Sort, BOOL_SORT, EQ_SYM, FALSE_SYM, LET_SYM, TRUE_SYM,
 };
-use crate::theory::{Incremental, Theory};
+use crate::theory::{Incremental, Theory, TupleExtract};
 use crate::util::{minmax, Bind, DebugIter, DisplayFn, HashMap};
 use crate::{SubExp, Symbol};
 use core::fmt::Display;
@@ -23,6 +23,7 @@ pub type Exp = EitherExp<BoolExp, UExp>;
 
 pub(super) type LitVec = smallvec::SmallVec<[Lit; 4]>;
 use crate::collapse::ExprContext;
+use crate::full_theory::FunctionAssignmentT;
 use crate::recorder::{DefExp, InterpolateArg};
 use crate::tseitin::{SatExplainTheoryArgT, SatTheoryArgT};
 pub(super) use smallvec::smallvec as litvec;
@@ -281,7 +282,9 @@ impl Incremental for Euf {
     }
 }
 
-impl<'a, A: SatTheoryArgT<'a, M = PushInfo>> Theory<A, A::Explain<'a>> for Euf {
+impl<'a, A: SatTheoryArgT<'a, M: TupleExtract<P, PushInfo>>, P> Theory<A, A::Explain<'a>, P>
+    for Euf
+{
     fn init(&mut self, acts: &mut A) {
         // Dummy id 0 is used to represent UExps produced by evaluating function expression in
         // the model that didn't exist until now
@@ -356,7 +359,7 @@ impl<'a, A: SatTheoryArgT<'a, M = PushInfo>> Theory<A, A::Explain<'a>> for Euf {
     }
 
     #[cold]
-    fn final_check(&mut self, acts: &mut A) {
+    fn final_check(&mut self, acts: &mut A) -> Result {
         for i in 0..acts.model().len() {
             let l = acts.model()[i];
             for (lp, b) in [(l, true), (!l, false)] {
@@ -367,9 +370,10 @@ impl<'a, A: SatTheoryArgT<'a, M = PushInfo>> Theory<A, A::Explain<'a>> for Euf {
                 }
             }
         }
+        Ok(())
     }
 
-    fn explain_propagation(&mut self, p: Lit, acts: &mut A::Explain<'a>, is_final: bool) {
+    fn explain_propagation(&mut self, p: Lit, acts: &mut A::Explain<'a>, is_final: bool, _: u8) {
         let base_len = acts.clause_builder().len();
         if let Some(id) = self.lit.ids[p].expand() {
             let const_bool = self.id_for_bool(true);
@@ -415,6 +419,7 @@ impl<'a, A: SatTheoryArgT<'a, M = PushInfo>> Theory<A, A::Explain<'a>> for Euf {
         acts: &mut A,
         clause: impl Fn(&A) -> &[Lit],
         interpolate_arg: impl Fn(&mut A) -> InterpolateArg<'_>,
+        _: u8,
     ) -> DefExp {
         let Err(Some((id1, id2))) = self.generate_conflict_ids_for_interpolant(acts, &clause)
         else {
@@ -596,11 +601,11 @@ impl Euf {
         }
     }
 
-    pub(super) fn union_exp<'a>(
+    pub(super) fn union_exp<'a, P>(
         &mut self,
         exp: Exp,
         id: Id,
-        acts: &mut impl SatTheoryArgT<'a, M = PushInfo>,
+        acts: &mut impl SatTheoryArgT<'a, M: TupleExtract<P, PushInfo>>,
     ) {
         debug!("Union exp {exp:?}, @v{id:?}");
         let exp_id = match exp {
@@ -706,12 +711,16 @@ impl Euf {
         }
     }
 
-    pub(super) fn get_function_info(&self, s: Symbol) -> FunctionInfoIter<'_> {
-        let iter = self.function_info.get(s).iter();
-        FunctionInfoIter {
-            pairs: iter,
-            euf: &self,
-        }
+    pub(super) fn get_function_info(
+        &self,
+        s: Symbol,
+    ) -> impl FunctionAssignmentT<Exp = Exp> + use<'_> {
+        self.function_info.get(s).iter().map(move |(node, cid)| {
+            (
+                node.children().iter().map(|&id| self.id_to_exp(id)),
+                self.id_to_exp(*cid),
+            )
+        })
     }
 
     pub(super) fn id_to_exp(&self, id: Id) -> Exp {
@@ -726,7 +735,7 @@ impl Euf {
         self.egraph[id].to_display_exp(id, acts.intern())
     }
 
-    pub(super) fn add_uncanonical<'a, A: SatTheoryArgT<'a, M = PushInfo>>(
+    pub(super) fn add_uncanonical<'a, P, A: SatTheoryArgT<'a, M: TupleExtract<P, PushInfo>>>(
         &mut self,
         op: Op,
         children: Children,
@@ -761,18 +770,20 @@ impl Euf {
 
     /// writes an explanation clause of `id1 == id2` to `explanation`
     /// returns whether the explanation would be a useful clause
-    fn explain<'a>(
+    fn explain<'a, P>(
         &mut self,
         id1: Id,
         id2: Id,
         is_final: bool,
-        arg: &mut impl SatExplainTheoryArgT<'a, M = PushInfo>,
+        arg: &mut impl SatExplainTheoryArgT<'a, M: TupleExtract<P, PushInfo>>,
     ) -> bool {
         let [base_unions, last_unions] = if is_final {
             [0, 0] // don't use shortcut explanations for `explain_propagation_final`
         } else {
-            [arg.base_marker(), arg.last_marker()]
-                .map(|x| x.map(|x| x.egraph.number_of_unions()).unwrap_or(usize::MAX))
+            [arg.base_marker(), arg.last_marker()].map(|x| {
+                x.map(|x| x.tuple_extract().egraph.number_of_unions())
+                    .unwrap_or(usize::MAX)
+            })
         };
         self.egraph.explain_equivalence(
             id1,
@@ -784,7 +795,12 @@ impl Euf {
         )
     }
 
-    fn conflict<'a>(&mut self, acts: &mut impl SatTheoryArgT<'a, M = PushInfo>, id1: Id, id2: Id) {
+    fn conflict<'a, P>(
+        &mut self,
+        acts: &mut impl SatTheoryArgT<'a, M: TupleExtract<P, PushInfo>>,
+        id1: Id,
+        id2: Id,
+    ) {
         acts.for_explain().clause_builder().clear();
         let add_clause = self.explain(
             id1,
@@ -795,9 +811,9 @@ impl Euf {
         acts.raise_conflict_using_builder(add_clause)
     }
 
-    pub(super) fn rebuild<'a>(
+    pub(super) fn rebuild<'a, P>(
         &mut self,
-        acts: &mut impl SatTheoryArgT<'a, M = PushInfo>,
+        acts: &mut impl SatTheoryArgT<'a, M: TupleExtract<P, PushInfo>>,
     ) -> CResult {
         debug!("Rebuilding EGraph");
         EGraph::try_rebuild(
@@ -809,7 +825,7 @@ impl Euf {
 
     pub(super) fn union_inner<'a>(
         &mut self,
-        acts: &mut impl SatTheoryArgT<'a, M = PushInfo>,
+        acts: &mut impl SatTheoryArgT<'a>,
         id1: Id,
         id2: Id,
         just: Justification,
@@ -839,9 +855,9 @@ impl Euf {
         Ok(())
     }
 
-    pub(super) fn union<'a>(
+    pub(super) fn union<'a, P>(
         &mut self,
-        acts: &mut impl SatTheoryArgT<'a, M = PushInfo>,
+        acts: &mut impl SatTheoryArgT<'a, M: TupleExtract<P, PushInfo>>,
         id1: Id,
         id2: Id,
         just: Justification,
@@ -851,11 +867,7 @@ impl Euf {
         }
     }
 
-    fn learn_inner<'a>(
-        &mut self,
-        lit: Lit,
-        acts: &mut impl SatTheoryArgT<'a, M = PushInfo>,
-    ) -> CResult {
+    fn learn_inner<'a>(&mut self, lit: Lit, acts: &mut impl SatTheoryArgT<'a>) -> CResult {
         debug_assert!(acts.is_ok());
         debug!("EUF learns {lit:?}");
         let just = Justification::from_lit(lit);
@@ -881,7 +893,11 @@ impl Euf {
         Ok(())
     }
 
-    fn generate_conflict_ids_for_interpolant<'a, A: SatTheoryArgT<'a, M = PushInfo>>(
+    fn generate_conflict_ids_for_interpolant<
+        'a,
+        P,
+        A: SatTheoryArgT<'a, M: TupleExtract<P, PushInfo>>,
+    >(
         &mut self,
         acts: &mut A,
         clause: impl Fn(&A) -> &[Lit],
@@ -908,65 +924,6 @@ impl FunctionInfo {
 
     fn get(&self, s: Symbol) -> &[(SymbolLang, Id)] {
         self.indices.get(&s).map_or(&[], |r| &self.data[r.clone()])
-    }
-}
-
-pub struct ExpIter<'a> {
-    ids: core::slice::Iter<'a, Id>,
-    euf: &'a Euf,
-}
-
-impl<'a> Iterator for ExpIter<'a> {
-    type Item = Exp;
-
-    fn next(&mut self) -> Option<Self::Item> {
-        Some(self.euf.id_to_exp(*self.ids.next()?))
-    }
-
-    fn fold<B, F>(self, init: B, f: F) -> B
-    where
-        Self: Sized,
-        F: FnMut(B, Self::Item) -> B,
-    {
-        self.ids.map(|&id| self.euf.id_to_exp(id)).fold(init, f)
-    }
-}
-
-pub struct FunctionInfoIter<'a> {
-    pairs: core::slice::Iter<'a, (SymbolLang, Id)>,
-    euf: &'a Euf,
-}
-
-impl<'a> Iterator for FunctionInfoIter<'a> {
-    type Item = (ExpIter<'a>, Exp);
-
-    fn next(&mut self) -> Option<Self::Item> {
-        let (node, cid) = self.pairs.next()?;
-        Some((
-            ExpIter {
-                ids: node.children().iter(),
-                euf: &self.euf,
-            },
-            self.euf.id_to_exp(*cid),
-        ))
-    }
-
-    fn fold<B, F>(self, init: B, f: F) -> B
-    where
-        Self: Sized,
-        F: FnMut(B, Self::Item) -> B,
-    {
-        self.pairs
-            .map(|(node, cid)| {
-                (
-                    ExpIter {
-                        ids: node.children().iter(),
-                        euf: &self.euf,
-                    },
-                    self.euf.id_to_exp(*cid),
-                )
-            })
-            .fold(init, f)
     }
 }
 
