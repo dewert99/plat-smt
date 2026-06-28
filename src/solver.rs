@@ -507,7 +507,6 @@ impl<T> UnsatCoreConjunction<T> {
 
     /// Returns elements of unsat core from between `start` and `end`.
     /// `start` and `end` should have been created by `self.push()`
-    /// Modifies `self` use `let x = self.push(); self.partial_core(...); self.pop_to(x)`
     pub(crate) fn partial_core(
         &mut self,
         start: u32,
@@ -533,10 +532,20 @@ impl<T> UnsatCoreConjunction<T> {
                 .extend_from_within(start as usize..end as usize);
             let allowed = &mut self.conj.lits[start_buf..];
             allowed.sort_unstable();
-            Either::Right(Either::Right(core.filter_map(|x| {
-                allowed.binary_search(&!x).ok()?;
-                self.info.data.get(&x)
+            let tv = TrunkVec(start_buf, &mut self.conj.lits);
+            let info = &self.info;
+            Either::Right(Either::Right(core.filter_map(move |x| {
+                tv.1[tv.0..].binary_search(&!x).ok()?;
+                info.data.get(&x)
             })))
         }
+    }
+}
+
+struct TrunkVec<'a, T>(usize, &'a mut Vec<T>);
+
+impl<'a, T> Drop for TrunkVec<'a, T> {
+    fn drop(&mut self) {
+        self.1.truncate(self.0);
     }
 }

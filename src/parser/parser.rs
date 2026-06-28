@@ -967,8 +967,7 @@ impl<W: Write, L: Logic> Parser<W, L> {
                             need_space = true;
                         }
                     });
-                // partial core invalidates name_assertions so we need to correct it
-                self.named_assertions.pop_to(named_assertions_end);
+                debug_assert_eq!(self.named_assertions.push(), named_assertions_end);
                 writeln!(self.writer, ")");
                 rest.finish()?;
             }
