@@ -2,7 +2,8 @@ use crate::collapse::{BaseMarker, Collapse, CollapseOut, ExprContext, LeftMarker
 use crate::exp::{EitherExp, Fresh};
 use crate::intern::{Symbol, DISTINCT_SYM, EQ_SYM, IF_SYM, ITE_SYM};
 use crate::parser_fragment::{exact_args, index_iter, mandatory_args, ParserFragment};
-use crate::solver::{ReuseMem, SolverCollapse};
+use crate::reuse_mem::ReuseMem;
+use crate::solver::SolverCollapse;
 use crate::tseitin::{andor_sub_ctx, BoolOpPf, SatTheoryArgT, TseitenMarker};
 use crate::util::{extend_result, pairwise_sym};
 use crate::{AddSexpError, BoolExp, Conjunction, ExpLike, SubExp, SuperExp};

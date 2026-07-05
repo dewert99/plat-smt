@@ -30,6 +30,7 @@ pub mod empty_theory;
 mod full_theory;
 mod parser_fragment;
 pub mod recorder;
+pub mod reuse_mem;
 pub mod rexp;
 
 use intern::Symbol;

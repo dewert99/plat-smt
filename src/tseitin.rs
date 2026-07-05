@@ -5,7 +5,8 @@ use crate::intern::{Symbol, AND_SYM, BOOL_SORT, IMP_SYM, NOT_SYM, OR_SYM, XOR_SY
 use crate::junction::Junction;
 use crate::parser_fragment::{exact_args, index_iter, mandatory_args, ParserFragment};
 use crate::recorder::{ClauseKind, Recorder};
-use crate::solver::{ReuseMem, SolverCollapse};
+use crate::reuse_mem::ReuseMem;
+use crate::solver::SolverCollapse;
 use crate::theory::{Incremental, TheoryArgRaw, TheoryArgT, TheoryWrapper};
 use crate::util::extend_result;
 use crate::{AddSexpError, BLit, BoolExp, Disjunction, ExpLike, SubExp, SuperExp};

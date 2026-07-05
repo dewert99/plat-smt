@@ -146,22 +146,6 @@ impl<T: CollapseOut, M, S: SolverCollapse<T, M>, B> SolverCollapse<T, M> for Sol
     }
 }
 
-pub trait ReuseMem<T> {
-    fn reuse_mem(&mut self) -> T;
-}
-
-impl<Th: FullTheory<R>, R, const B: bool> ReuseMem<Junction<B>> for Solver<Th, R> {
-    fn reuse_mem(&mut self) -> Junction<B> {
-        self.th.new_junction()
-    }
-}
-
-impl<T, S: ReuseMem<T>, B> ReuseMem<T> for SolverWithBound<S, B> {
-    fn reuse_mem(&mut self) -> T {
-        self.solver.reuse_mem()
-    }
-}
-
 impl<M, T, Th: SpecExp<T, M> + FullTheory<R>, R> SpecExp<T, M> for Solver<Th, R> {
     type SpecExp = Th::SpecExp;
 }
