@@ -1,20 +1,19 @@
 use crate::collapse::{BaseMarker, Collapse, CollapseOut, ExprContext, SpecExp};
 use crate::core_ops::{DefaultDistinct, DefaultEq, DefaultIte, Eq};
 use crate::exp::Fresh;
-use crate::full_theory::FullTheory;
 use crate::intern::{Symbol, ADD_SYM, GE_SYM, GT_SYM, LE_SYM, LT_SYM, SUB_SYM};
 use crate::lra::bound::EpsilonRational;
 use crate::lra::lra::Lra;
 use crate::lra::tableau::{NumExp, Sum};
 use crate::parser::SexpTerminal;
 use crate::parser_fragment::{index_iter, mandatory_args, ParserFragment, PfResult};
-use crate::recorder::Recorder;
-use crate::solver::{ReuseMem, SolverCollapse};
+use crate::reuse_mem::{Lift, ReuseMem};
+use crate::solver::SolverCollapse;
 use crate::theory::TheoryArgT;
 use crate::tseitin::{andor_sub_ctx, SatTheoryArgT, TseitenMarker};
 use crate::util::extend_result;
 use crate::AddSexpError::CustomSexpErr;
-use crate::{AddSexpError, BoolExp, Conjunction, ExpLike, Solver, SubExp, SuperExp};
+use crate::{AddSexpError, BoolExp, Conjunction, ExpLike, SubExp, SuperExp};
 use alloc::borrow::Cow;
 use core::num::TryFromIntError;
 use lazy_rational::Rational32;
@@ -191,12 +190,9 @@ impl<'a, A: SatTheoryArgT<'a>> Collapse<Eq<NumExp>, A, BaseMarker> for Lra {
 
 impl DefaultEq for Lra {}
 
-impl<T, R: Recorder> ReuseMem<Sum> for Solver<(T, Lra), R>
-where
-    (T, Lra): FullTheory<R>,
-{
+impl ReuseMem<Sum, BaseMarker> for Lra {
     fn reuse_mem(&mut self) -> Sum {
-        self.open(|th, _| th.1.reuse_sum(), Sum::default())
+        self.reuse_sum()
     }
 }
 
@@ -216,8 +212,11 @@ impl<'a, A: TheoryArgT> Collapse<Sum, A, BaseMarker> for Lra {
 #[derive(Default)]
 pub struct AddPf;
 
-impl<M1, M2, Exp: ExpLike + SuperExp<NumExp, M1>, Slv: SolverCollapse<Sum, M2> + ReuseMem<Sum>>
-    ParserFragment<Exp, Slv, (M1, M2)> for AddPf
+impl<
+        M,
+        Exp: ExpLike + SuperExp<NumExp, M>,
+        Slv: SolverCollapse<Sum, M> + ReuseMem<Sum, Lift<M>>,
+    > ParserFragment<Exp, Slv, M> for AddPf
 {
     fn supports(&self, s: Symbol) -> bool {
         s == ADD_SYM
@@ -241,8 +240,11 @@ impl<M1, M2, Exp: ExpLike + SuperExp<NumExp, M1>, Slv: SolverCollapse<Sum, M2> +
 #[derive(Default)]
 pub struct SubPf;
 
-impl<M1, M2, Exp: ExpLike + SuperExp<NumExp, M1>, Slv: SolverCollapse<Sum, M2> + ReuseMem<Sum>>
-    ParserFragment<Exp, Slv, (M1, M2)> for SubPf
+impl<
+        M,
+        Exp: ExpLike + SuperExp<NumExp, M>,
+        Slv: SolverCollapse<Sum, M> + ReuseMem<Sum, Lift<M>>,
+    > ParserFragment<Exp, Slv, M> for SubPf
 {
     fn supports(&self, s: Symbol) -> bool {
         s == SUB_SYM
