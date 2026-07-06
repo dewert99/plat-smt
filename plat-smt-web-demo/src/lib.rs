@@ -1,8 +1,7 @@
 #![forbid(unsafe_code)]
 
-use plat_smt::euf::{Euf, EufPf};
+use plat_smt::default::DefaultLogic;
 use plat_smt::outer_solver::Logic;
-use plat_smt::recorder::InterpolantRecorder;
 use plat_smt::IncrementalParser;
 use wasm_bindgen::prelude::*;
 
@@ -73,7 +72,7 @@ pub struct Repl(Box<dyn ReplInnerT>);
 impl Repl {
     pub fn new() -> Self {
         Repl(Box::new(ReplInner {
-            parser: IncrementalParser::<(Euf, EufPf, InterpolantRecorder, _)>::default(),
+            parser: IncrementalParser::<DefaultLogic<_>>::default(),
         }))
     }
 
