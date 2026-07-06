@@ -149,19 +149,20 @@ impl Lra {
         mut strict: bool,
         acts: &mut impl SatTheoryArgT<'a>,
     ) -> BoolExp {
-        let bound = (bound - num.add) / num.mul;
-        if let Some(x) = num.var {
+        let bound = bound - num.add;
+        if num.mul.is_zero() {
+            let res = bound < Rational32::ZERO || (!strict && bound.is_zero());
+            BoolExp::from_bool(res)
+        } else {
+            let x = num.var.unwrap();
+            let bound = bound / num.mul;
             let mut pol = true;
-            debug_assert_ne!(num.mul, Rational32::ZERO);
             if num.mul < Rational32::ZERO {
                 strict = !strict;
                 pol = !pol;
             }
             let v = self.bind_lower_bound_h(x, bound, strict, acts);
             BoolExp::unknown(Lit::new(v, pol))
-        } else {
-            let res = bound > Rational32::ZERO || (!strict && bound.is_zero());
-            BoolExp::from_bool(res)
         }
     }
 
