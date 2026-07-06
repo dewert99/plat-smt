@@ -44,3 +44,32 @@ pub use outer_solver::OuterSolver;
 pub use parser::{incremental_parser::IncrementalParser, parser::interp_smt2};
 pub use parser_fragment::AddSexpError;
 pub use solver::{Approx, BLit, SolveResult, Solver, SolverCollapse};
+
+pub mod default {
+    #[cfg(feature = "euf")]
+    use crate::euf::{Euf as Th0, EufPf as Pf0};
+
+    #[cfg(not(feature = "euf"))]
+    use crate::empty_theory::{EmptyTheory as Th0, EmptyTheoryPf as Pf0};
+
+    #[cfg(feature = "interpolant")]
+    pub use crate::recorder::InterpolantRecorder as DefaultRecorder;
+
+    #[cfg(not(feature = "interpolant"))]
+    pub use crate::recorder::LoggingRecorder as DefaultRecorder;
+
+    #[cfg(not(feature = "lra"))]
+    type Pf1 = Pf0;
+    #[cfg(feature = "lra")]
+    type Pf1 = (crate::lra::LinearArithPf, Pf0);
+
+    #[cfg(not(feature = "lra"))]
+    type Th1 = Th0;
+    #[cfg(feature = "lra")]
+    type Th1 = (Th0, crate::lra::Lra);
+
+    pub type DefaultTh = Th1;
+    pub type DefaultPf = Pf1;
+
+    pub type DefaultLogic<M> = (DefaultTh, DefaultPf, DefaultRecorder, M);
+}
