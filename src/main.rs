@@ -1,29 +1,8 @@
 #![forbid(unsafe_code)]
+use plat_smt::default::DefaultLogic;
 use plat_smt::FullBufRead;
 use std::fs::File;
 use std::io::{empty, stderr, stdin, stdout, Read};
-
-#[cfg(feature = "euf")]
-use plat_smt::euf::{Euf as Th, EufPf as Pf};
-
-#[cfg(not(feature = "euf"))]
-use plat_smt::empty_theory::{EmptyTheory as Th, EmptyTheoryPf as Pf};
-
-#[cfg(feature = "interpolant")]
-use plat_smt::recorder::InterpolantRecorder as Recorder;
-
-#[cfg(not(feature = "interpolant"))]
-use plat_smt::recorder::LoggingRecorder as Recorder;
-
-#[cfg(not(feature = "lra"))]
-type Pf2 = Pf;
-#[cfg(feature = "lra")]
-type Pf2 = (plat_smt::lra::LinearArithPf, Pf);
-
-#[cfg(not(feature = "lra"))]
-type Th2 = Th;
-#[cfg(feature = "lra")]
-type Th2 = (Th, plat_smt::lra::Lra);
 
 enum Either<L, R> {
     Left(L),
@@ -121,7 +100,7 @@ fn main() {
     } else {
         Either::Right(empty())
     };
-    plat_smt::interp_smt2::<(Th2, Pf2, Recorder, _)>(
+    plat_smt::interp_smt2::<DefaultLogic<_>>(
         FullBufReader::new(reader, buf),
         WrapWrite(stdout()),
         WrapWrite(stderr()),
