@@ -1,6 +1,7 @@
 use crate::collapse::{Collapse, CollapseOut};
 use crate::exp::{EitherExp, ExpLike};
 use crate::intern::Symbol;
+use crate::parser::SmtlibLogic;
 use crate::recorder::Recorder;
 use crate::theory::{ExplainTheoryArg, Incremental, Theory, TheoryArg};
 use crate::util::Either;
@@ -37,6 +38,10 @@ pub trait FullTheory<R>: Incremental
     /// [`init_function_info`](Self::prepare_model)
     fn get_function_info<'a>(&'a self, f: Symbol)
         -> impl FunctionAssignmentT<Exp = Self::Exp> + 'a;
+
+    fn supported_logic(&self) -> SmtlibLogic {
+        SmtlibLogic::CORE
+    }
 
     fn solve_limited_preserving_trail(solver: &mut Solver<Self, R>, assumptions: &[Lit]) -> lbool
     where
@@ -87,6 +92,10 @@ where
                     .get_function_info(f)
                     .map(|(h, e)| (Either::Right(h.map(EitherExp::Right)), EitherExp::Right(e))),
             )
+    }
+
+    fn supported_logic(&self) -> SmtlibLogic {
+        self.0.supported_logic() | self.1.supported_logic()
     }
 }
 

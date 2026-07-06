@@ -11,7 +11,7 @@ use crate::intern::{
     DisplayInterned, InternInfo, Symbol, BOOL_SORT, DISTINCT_SYM, DISTINGUISHER_SYM, REAL_SORT,
 };
 use crate::outer_solver::Bound;
-use crate::parser::SexpTerminal;
+use crate::parser::{SexpTerminal, SmtlibLogic};
 use crate::parser_fragment::{index_iter, ParserFragment, PfResult};
 use crate::recorder::{dep_checker, Recorder};
 use crate::rexp::{rexp_debug, AsRexp, Namespace, NamespaceVar, Rexp};
@@ -112,6 +112,10 @@ impl<R: Recorder> FullTheory<R> for Euf {
 
     fn get_function_info(&self, f: Symbol) -> impl FunctionAssignmentT<Exp = Self::Exp> {
         self.get_function_info(f)
+    }
+
+    fn supported_logic(&self) -> SmtlibLogic {
+        SmtlibLogic::QF_UF
     }
 }
 

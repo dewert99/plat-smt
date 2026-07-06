@@ -1,4 +1,4 @@
-(set-logic QF_UF)
+(set-logic Core)
 (declare-const a Bool)
 (declare-const b Bool)
 (declare-const c Bool)
