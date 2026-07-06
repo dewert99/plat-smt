@@ -1,5 +1,5 @@
 use crate::full_buf_read::FullBufRead;
-use crate::full_theory::FunctionAssignmentT;
+use crate::full_theory::{FullTheory, FunctionAssignmentT};
 use crate::intern::*;
 use crate::outer_solver::BoundDefinitions;
 use crate::outer_solver::{
@@ -10,6 +10,7 @@ use crate::parser::parser::Error::*;
 use crate::parser::parser_core::{
     ParseError, SexpLexer, SexpParser, SexpTerminal, SexpToken, SexpVisitor, SpanRange,
 };
+use crate::parser::SmtlibLogic;
 use crate::recorder::recorder::{Feature, InterpolantGroup};
 use crate::recorder::{dep_checker, Recorder};
 use crate::solver::{SolveResult, SolverCollapse, UnsatCoreConjunction};
@@ -18,6 +19,7 @@ use crate::AddSexpError::*;
 use crate::{solver, AddSexpError, BoolExp, ExpLike, HasSort, SubExp, SuperExp};
 use alloc::borrow::Cow;
 use core::fmt::Arguments;
+use core::str::FromStr;
 use hashbrown::HashMap;
 use internal_iterator::InternalIterator;
 use log::info;
@@ -1075,9 +1077,15 @@ impl<W: Write, L: Logic> Parser<W, L> {
             }
             Smt2Command::SetLogic => {
                 match rest.next()? {
-                    SexpToken::Terminal(SexpTerminal::Symbol("QF_UF")) => {}
-                    SexpToken::Terminal(SexpTerminal::Symbol(_)) => {
-                        return Err(custom_err("unsupported logic"))
+                    SexpToken::Terminal(SexpTerminal::Symbol(s)) => {
+                        if s != "ALL" {
+                            let Ok(l) = SmtlibLogic::from_str(s) else {
+                                return Err(custom_err("unsupported logic"));
+                            };
+                            if !self.core.solver().th.supported_logic().supports(l) {
+                                return Err(custom_err("unsupported logic"));
+                            }
+                        }
                     }
                     _ => return Err(InvalidCommand),
                 }

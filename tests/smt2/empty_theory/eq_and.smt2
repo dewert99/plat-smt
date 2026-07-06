@@ -1,5 +1,5 @@
 ; Minimized from incremental/QF_UF/2018-Goel-hwbench/QF_UF_brp2.2.prop2_ab_min_max.smt2
-(set-logic QF_UF)
+(set-logic Core)
 (declare-fun a () Bool)
 (declare-fun b () Bool)
 (declare-fun c () Bool)

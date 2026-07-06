@@ -3,6 +3,7 @@ use crate::full_theory::{empty_fn_info, FullTheory, FunctionAssignmentT, Prepare
 use crate::intern::{Symbol, ADD_SYM, DIV_SYM, GE_SYM, GT_SYM, MUL_SYM, REAL_SORT, SUB_SYM};
 use crate::lra::bound::EpsilonRational;
 use crate::lra::tableau::{ineq, BoundDir, ModeledTableau, NumExp, NumVar, Sum};
+use crate::parser::SmtlibLogic;
 use crate::recorder::Recorder;
 use crate::rexp::{rexp_debug, AsRexp, Rexp};
 use crate::theory::{Incremental, Theory, TheoryArgT};
@@ -387,5 +388,9 @@ impl<R: Recorder> FullTheory<R> for Lra {
 
     fn get_function_info(&self, _: Symbol) -> impl FunctionAssignmentT<Exp = NumExp> {
         empty_fn_info()
+    }
+
+    fn supported_logic(&self) -> SmtlibLogic {
+        SmtlibLogic::QF_LRA
     }
 }
