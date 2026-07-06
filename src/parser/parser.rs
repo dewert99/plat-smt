@@ -1250,6 +1250,7 @@ impl<W: Write, L: Logic> Parser<W, L> {
         self.declared_sorts.clear();
         self.sort_stack.clear();
         self.declared_sorts.insert(BOOL_SYM, 0);
+        self.declared_sorts.insert(REAL_SYM, 0);
         self.named_assertions.pop_to(0);
         self.command_level_marker = None;
         self.set_old_named_assertions();
