@@ -311,15 +311,15 @@ impl<R: FullBufRead> SexpLexer<R> {
                     Some(b'b') => {
                         self.consume_byte();
                         let (value, bits) = self.read_number(Radix::Binary)?;
-                        Ok(Terminal(BitVec { value, bits }))
+                        Ok(Terminal(BitVecV(BitVec { value, bits })))
                     }
                     Some(b'x') => {
                         self.consume_byte();
                         let (value, hexits) = self.read_number(Radix::Hexidecimal)?;
-                        Ok(Terminal(BitVec {
+                        Ok(Terminal(BitVecV(BitVec {
                             value,
                             bits: hexits * 4,
-                        }))
+                        })))
                     }
                     Some(_) => Err(LiteralError {
                         prefix: self.read_char(),
@@ -334,7 +334,10 @@ impl<R: FullBufRead> SexpLexer<R> {
                     self.consume_byte();
 
                     let (after, exp) = self.read_number(Radix::Decimal)?;
-                    Ok(Terminal(Decimal(n * 10u128.pow(exp.into()) + after, exp)))
+                    Ok(Terminal(DecimalV(Decimal {
+                        base: n * 10u128.pow(exp.into()) + after,
+                        shift: exp,
+                    })))
                 } else {
                     Ok(Terminal(Number(n)))
                 }
@@ -602,6 +605,19 @@ impl<'a, R: FullBufRead> Drop for SexpParser<'a, R> {
     }
 }
 
+/// Represents base / 10^shift
+#[derive(Debug, Copy, Clone)]
+pub struct Decimal {
+    pub base: u128,
+    pub shift: u8,
+}
+
+#[derive(Debug, Copy, Clone)]
+pub struct BitVec {
+    pub value: u128,
+    pub bits: u8,
+}
+
 #[derive(Debug, Copy, Clone)]
 pub enum SexpTerminal<'a> {
     Keyword(&'a str),
@@ -609,8 +625,8 @@ pub enum SexpTerminal<'a> {
     String(&'a str),
     Number(u128),
     // x*10^-y
-    Decimal(u128, u8),
-    BitVec { value: u128, bits: u8 },
+    DecimalV(Decimal),
+    BitVecV(BitVec),
 }
 
 /// Trait for recursively visiting s-expressions without using the stack

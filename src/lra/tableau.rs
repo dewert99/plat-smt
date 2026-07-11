@@ -51,7 +51,7 @@ impl Mul<Rational32> for NumExp {
 
     fn mul(self, rhs: Rational32) -> Self::Output {
         if rhs.is_zero() {
-            NumExp::ZERO
+            NumExp::ZERO.weaken()
         } else {
             NumExp {
                 var: self.var,
@@ -76,10 +76,11 @@ impl Neg for NumExp {
 
 impl NumExp {
     pub const ZERO: NumExp = NumExp::from_rational(Rational32::ZERO);
+    pub const ONE: NumExp = NumExp::from_rational(Rational32::ONE);
     pub const fn from_rational(rational: Rational32) -> Self {
         NumExp {
             var: None,
-            mul: Rational32::ONE,
+            mul: Rational32::ZERO,
             add: rational,
         }
     }
@@ -96,8 +97,23 @@ impl NumExp {
         }
     }
 
+    /// Extracts the value of `self` if `self` is a constant
     pub fn try_into_rational(self) -> Option<Rational32> {
         self.var.is_none().then_some(self.add)
+    }
+
+    /// Like [`try_into_rational`] but dependent on implementation detail optimizations
+    pub fn try_into_rational_for_opt(self) -> Option<Rational32> {
+        self.mul.is_zero().then_some(self.add)
+    }
+
+    /// Degrades self so that it is not considered a constant by the type checker
+    pub(super) fn weaken(mut self) -> Self {
+        if self.var.is_none() {
+            self.var = Some(NumVar::ONE);
+            debug_assert_eq!(self.mul, Rational32::ZERO);
+        }
+        self
     }
 }
 impl Into<usize> for NumVar {
@@ -418,6 +434,9 @@ impl ModeledTableau {
     }
 
     pub fn sum(&mut self, elts: Sum, acts: &mut impl TheoryArgT) -> NumExp {
+        if elts.elts.is_empty() {
+            return NumExp::from_rational(elts.offset).weaken();
+        }
         let (offset, mut defs) = self.defs.resolve(elts, |x| {
             if let Bounds {
                 upper: Some(upper),
@@ -436,11 +455,8 @@ impl ModeledTableau {
         match &*defs {
             &[] => {
                 self.defs.reuse_buf(defs);
-                NumExp {
-                    var: None,
-                    mul: Rational32::ONE,
-                    add: offset,
-                }
+                // this should not be considered a constant for type checking (see weaken)
+                NumExp::from_rational(offset).weaken()
             }
             &[(var, mul)] => {
                 self.defs.reuse_buf(defs);

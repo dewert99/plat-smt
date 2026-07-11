@@ -14,7 +14,7 @@ unsupported bitvec at 4:9
 (assert #xA1eBadF00D)
         ^
 
-unsupported decimal at 5:9
+assertions expect `Bool` got `Real` at 5:9
 (assert 0.3)
         ^
 

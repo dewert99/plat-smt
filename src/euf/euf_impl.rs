@@ -270,7 +270,7 @@ impl<'a, Arg> Collapse<UExp, Arg, BaseMarker> for Euf {
     }
 }
 
-impl DefaultIte for Euf {}
+impl<T> DefaultIte<T> for Euf {}
 
 impl<'a, Arg> Collapse<Fresh<UExp>, Arg, BaseMarker> for Euf {
     fn collapse(&mut self, fresh: Fresh<UExp>, _: &mut Arg, _: ExprContext<UExp>) -> UExp {

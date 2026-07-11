@@ -10,7 +10,7 @@ use crate::parser::parser::Error::*;
 use crate::parser::parser_core::{
     ParseError, SexpLexer, SexpParser, SexpTerminal, SexpToken, SexpVisitor, SpanRange,
 };
-use crate::parser::SmtlibLogic;
+use crate::parser::{Decimal, SmtlibLogic};
 use crate::recorder::recorder::{Feature, InterpolantGroup};
 use crate::recorder::{dep_checker, Recorder};
 use crate::solver::{SolveResult, SolverCollapse, UnsatCoreConjunction};
@@ -199,8 +199,8 @@ impl FromSexp for f64 {
     fn from_sexp<R: FullBufRead>(sexp_token: SexpToken<R>) -> Result<Self> {
         match sexp_token {
             SexpToken::Terminal(SexpTerminal::Number(n)) => Ok(n as f64),
-            SexpToken::Terminal(SexpTerminal::Decimal(n, shift)) => {
-                Ok(n as f64 * powi(0.1, shift as u32))
+            SexpToken::Terminal(SexpTerminal::DecimalV(Decimal { base, shift })) => {
+                Ok(base as f64 * powi(0.1, shift as u32))
             }
             _ => Err(InvalidFloat),
         }
@@ -499,8 +499,8 @@ impl<'a, W: Write, L: Logic> ExpVisitor<'a, W, L> {
                 None => match terminal {
                     SexpTerminal::String(_) => Err(custom_err("unsupported strings")),
                     SexpTerminal::Number(_) => Err(custom_err("unsupported arithmetic")),
-                    SexpTerminal::Decimal(_, _) => Err(custom_err("unsupported decimal")),
-                    SexpTerminal::BitVec { .. } => Err(custom_err("unsupported bitvec")),
+                    SexpTerminal::DecimalV(_) => Err(custom_err("unsupported decimal")),
+                    SexpTerminal::BitVecV(_) => Err(custom_err("unsupported bitvec")),
                     _ => unreachable!(),
                 },
                 Some(Ok(res)) => Ok(res),

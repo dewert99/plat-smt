@@ -87,7 +87,7 @@ impl<'a, 'b, I: DistinctElts<Exp = BoolExp>, A: SatTheoryArgT<'a>>
 type ConstOnlySolver<Th, R> =
     SolverWithBound<Solver<Th, R>, HashMap<Symbol, Bound<<Th as FullTheory<R>>::Exp, Infallible>>>;
 
-impl DefaultIte for EmptyTheory {}
+impl<T> DefaultIte<T> for EmptyTheory {}
 
 #[derive(Default)]
 pub struct ConstantPf;

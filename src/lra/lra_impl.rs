@@ -1,11 +1,11 @@
 use crate::collapse::{BaseMarker, Collapse, CollapseOut, ExprContext, SpecExp};
-use crate::core_ops::{DefaultDistinct, DefaultEq, DefaultIte, Eq};
+use crate::core_ops::{DefaultDistinct, DefaultEq, DefaultIte, Eq, Ite};
 use crate::exp::Fresh;
-use crate::intern::{Symbol, ADD_SYM, GE_SYM, GT_SYM, LE_SYM, LT_SYM, SUB_SYM};
+use crate::intern::{Symbol, ADD_SYM, DIV_SYM, GE_SYM, GT_SYM, LE_SYM, LT_SYM, MUL_SYM, SUB_SYM};
 use crate::lra::bound::EpsilonRational;
 use crate::lra::lra::Lra;
 use crate::lra::tableau::{NumExp, Sum};
-use crate::parser::SexpTerminal;
+use crate::parser::{Decimal, SexpTerminal};
 use crate::parser_fragment::{index_iter, mandatory_args, ParserFragment, PfResult};
 use crate::reuse_mem::{Lift, ReuseMem};
 use crate::solver::SolverCollapse;
@@ -95,9 +95,9 @@ impl CollapseOut for Inequality {
 
 impl<'a, A: SatTheoryArgT<'a>> Collapse<Inequality, A, BaseMarker> for Lra {
     fn collapse(&mut self, ineq: Inequality, acts: &mut A, _ctx: ExprContext<BoolExp>) -> BoolExp {
-        if let Some(x) = ineq.lower.try_into_rational() {
+        if let Some(x) = ineq.lower.try_into_rational_for_opt() {
             self.bind_lower_bound(ineq.upper, x, ineq.strict, acts)
-        } else if let Some(x) = ineq.upper.try_into_rational() {
+        } else if let Some(x) = ineq.upper.try_into_rational_for_opt() {
             !self.bind_lower_bound(ineq.lower, x, !ineq.strict, acts)
         } else {
             let diff = self.reuse_sum() + ineq.upper - ineq.lower;
@@ -280,6 +280,16 @@ impl TryFrom<u128> for NumExp {
     }
 }
 
+impl TryFrom<Decimal> for NumExp {
+    type Error = ();
+
+    fn try_from(d: Decimal) -> Result<NumExp, ()> {
+        let num = Rational32::new(d.base.try_into().ok().ok_or(())?);
+        let den = Rational32::new(10_i32.checked_pow(d.shift as u32).ok_or(())?);
+        Ok(NumExp::from_rational(num / den))
+    }
+}
+
 #[derive(Default)]
 pub struct NumPf;
 
@@ -315,10 +325,109 @@ where
     }
 }
 
-impl DefaultIte for Lra {}
+#[derive(Default)]
+pub struct DecPf;
+
+impl<M1, M2, Exp: ExpLike + SuperExp<Slv::SpecExp, M1>, Slv: SpecExp<NumSpec, M2>>
+    ParserFragment<Exp, Slv, (M1, M2)> for DecPf
+where
+    Slv::SpecExp: TryFrom<Decimal>,
+{
+    fn supports(&self, _: Symbol) -> bool {
+        false
+    }
+    fn handle_terminal(&self, x: SexpTerminal, _: &mut Slv, _: ExprContext<Exp>) -> PfResult<Exp> {
+        match x {
+            SexpTerminal::DecimalV(d) => {
+                if let Ok(n) = Slv::SpecExp::try_from(d) {
+                    Some(Ok(n.upcast()))
+                } else {
+                    Some(Err(CustomSexpErr(Cow::Borrowed("too long decimal"))))
+                }
+            }
+            _ => None,
+        }
+    }
+
+    fn handle_non_terminal(
+        &self,
+        _: Symbol,
+        _: &mut [Exp],
+        _: &mut Slv,
+        _: ExprContext<Exp>,
+    ) -> Result<Exp, AddSexpError> {
+        unreachable!()
+    }
+}
+
+impl DefaultIte<NumExp> for Lra {
+    fn post_ite(&mut self, _: Ite<NumExp>, res: &mut NumExp) {
+        *res = res.weaken()
+    }
+}
 
 impl DefaultDistinct for Lra {}
 
+#[derive(Default)]
+pub struct WeakProdPf;
+
+impl<M, Exp: ExpLike + SuperExp<NumExp, M>, Slv> ParserFragment<Exp, Slv, M> for WeakProdPf {
+    fn supports(&self, s: Symbol) -> bool {
+        s == MUL_SYM
+    }
+    fn handle_non_terminal(
+        &self,
+        _: Symbol,
+        children: &mut [Exp],
+        _: &mut Slv,
+        _: ExprContext<Exp>,
+    ) -> Result<Exp, AddSexpError> {
+        let mut children = index_iter(children);
+        let Some(base) = children.next() else {
+            return Ok(NumExp::ONE.upcast());
+        };
+        let mut base: NumExp = base.downcast()?;
+        for child in children {
+            let mul: NumExp = child.downcast()?;
+            let mul = mul
+                .try_into_rational()
+                .ok_or(AddSexpError::custom("Unsupport non linear arith"))?;
+            base = base * mul;
+        }
+        Ok(base.upcast())
+    }
+}
+
+#[derive(Default)]
+pub struct WeakQuotPf;
+
+impl<M, Exp: ExpLike + SuperExp<NumExp, M>, Slv> ParserFragment<Exp, Slv, M> for WeakQuotPf {
+    fn supports(&self, s: Symbol) -> bool {
+        s == DIV_SYM
+    }
+    fn handle_non_terminal(
+        &self,
+        _: Symbol,
+        children: &mut [Exp],
+        _: &mut Slv,
+        _: ExprContext<Exp>,
+    ) -> Result<Exp, AddSexpError> {
+        let mut children = index_iter(children);
+        let [base] = mandatory_args(&mut children)?;
+        let mut base: NumExp = base.downcast()?;
+        for child in children {
+            let div: NumExp = child.downcast()?;
+            let div = div
+                .try_into_rational()
+                .ok_or(AddSexpError::custom("Unsupport non linear arith"))?;
+            base = base * div.recip();
+        }
+        Ok(base.upcast())
+    }
+}
+
 pub type LinearOpsPf = (AddPf, SubPf);
 pub type IneqsPf = (LtPf, (LePf, (GtPf, GePf)));
-pub type LinearArithPf = (IneqsPf, (LinearOpsPf, NumPf));
+pub type BaseLinearArithPf = (IneqsPf, (LinearOpsPf, (NumPf, DecPf)));
+
+pub type LinearArithPf = (BaseLinearArithPf, (WeakProdPf, WeakQuotPf));
