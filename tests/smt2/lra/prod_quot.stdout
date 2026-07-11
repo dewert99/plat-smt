@@ -1,0 +1,7 @@
+sat
+(
+ (define-fun a () Real 6)
+ (define-fun b () Real 4)
+ (define-fun e1 () Bool true)
+ (define-fun e2 () Bool true)
+)

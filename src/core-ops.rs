@@ -208,7 +208,9 @@ impl<Exp: ExpLike> CollapseOut for Ite<Exp> {
     type Out = Exp;
 }
 
-pub trait DefaultIte {}
+pub trait DefaultIte<Exp> {
+    fn post_ite(&mut self, _ite: Ite<Exp>, _res: &mut Exp) {}
+}
 
 pub struct IteMarker<Eq, Fresh>(Eq, Fresh);
 impl<
@@ -216,11 +218,11 @@ impl<
         Exp: ExpLike,
         A: SatTheoryArgT<'a>,
         M,
-        Th: Collapse<Eq<Exp>, A, BaseMarker<M>> + Collapse<Fresh<Exp>, A, BaseMarker> + DefaultIte,
+        Th: Collapse<Eq<Exp>, A, BaseMarker<M>> + Collapse<Fresh<Exp>, A, BaseMarker> + DefaultIte<Exp>,
     > Collapse<Ite<Exp>, A, BaseMarker<M>> for Th
 {
     fn collapse(&mut self, t: Ite<Exp>, acts: &mut A, ctx: ExprContext<Exp>) -> Exp {
-        match t.0.to_lit() {
+        let mut res = match t.0.to_lit() {
             Ok(_) => {
                 let res = match ctx {
                     ExprContext::AssertEq(x) if x.sort() == t.1.sort() => x,
@@ -252,7 +254,9 @@ impl<
             }
             Err(true) => t.1,
             Err(false) => t.2,
-        }
+        };
+        self.post_ite(t, &mut res);
+        res
     }
 
     fn placeholder(&self, t: &Ite<Exp>) -> Exp {

@@ -1,0 +1,7 @@
+(declare-const x Real)
+(assert (= (* x x) 2))
+(assert (= (/ x x) 1))
+(assert (= (* x (ite true 0 0)) 0))
+(assert (= (* x (* x 0)) 0))
+(assert (= (* x (- x x)) 0))
+(assert (= (* x (+ 0 0)) 0))
