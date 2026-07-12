@@ -1,6 +1,6 @@
 (declare-const a Real)
 (declare-const b Real)
-(assert (! (= (+ a b) 10) :named e1))
-(assert (! (= (+ (/ a 3) (* b 1.25)) 7) :named e2))
+(assert (! (= (+ (* a (/ 2 (+ 1 1))) b) 10) :named e1))
+(assert (! (= (+ (/ a 3) (* 1.25 b)) 7) :named e2))
 (check-sat)
 (get-model)

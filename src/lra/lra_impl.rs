@@ -382,17 +382,17 @@ impl<M, Exp: ExpLike + SuperExp<NumExp, M>, Slv> ParserFragment<Exp, Slv, M> for
         _: &mut Slv,
         _: ExprContext<Exp>,
     ) -> Result<Exp, AddSexpError> {
-        let mut children = index_iter(children);
-        let Some(base) = children.next() else {
-            return Ok(NumExp::ONE.upcast());
-        };
-        let mut base: NumExp = base.downcast()?;
+        let children = index_iter(children);
+        let mut base: NumExp = NumExp::ONE;
         for child in children {
             let mul: NumExp = child.downcast()?;
-            let mul = mul
-                .try_into_rational()
-                .ok_or(AddSexpError::custom("Unsupport non linear arith"))?;
-            base = base * mul;
+            base = if let Some(mul) = mul.try_into_rational() {
+                base * mul
+            } else if let Some(base) = base.try_into_rational() {
+                mul * base
+            } else {
+                return Err(AddSexpError::custom("Unsupported non linear arith"));
+            };
         }
         Ok(base.upcast())
     }
@@ -419,7 +419,7 @@ impl<M, Exp: ExpLike + SuperExp<NumExp, M>, Slv> ParserFragment<Exp, Slv, M> for
             let div: NumExp = child.downcast()?;
             let div = div
                 .try_into_rational()
-                .ok_or(AddSexpError::custom("Unsupport non linear arith"))?;
+                .ok_or(AddSexpError::custom("Unsupported non linear arith"))?;
             base = base * div.recip();
         }
         Ok(base.upcast())

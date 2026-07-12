@@ -4,4 +4,3 @@
 (assert (= (* x (ite true 0 0)) 0))
 (assert (= (* x (* x 0)) 0))
 (assert (= (* x (- x x)) 0))
-(assert (= (* x (+ 0 0)) 0))

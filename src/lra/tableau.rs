@@ -435,7 +435,7 @@ impl ModeledTableau {
 
     pub fn sum(&mut self, elts: Sum, acts: &mut impl TheoryArgT) -> NumExp {
         if elts.elts.is_empty() {
-            return NumExp::from_rational(elts.offset).weaken();
+            return NumExp::from_rational(elts.offset);
         }
         let (offset, mut defs) = self.defs.resolve(elts, |x| {
             if let Bounds {
