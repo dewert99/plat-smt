@@ -3,8 +3,7 @@ use crate::full_theory::{FullTheory, FunctionAssignmentT};
 use crate::intern::*;
 use crate::outer_solver::BoundDefinitions;
 use crate::outer_solver::{
-    Bound, BoundDefinition, BoundL, DefineError, FnSort, Logic, MaybeFnSort, OuterSolver,
-    StartExpCtx,
+    Bound, BoundDefinition, DefineError, FnSort, Logic, MaybeFnSort, OuterSolver, StartExpCtx,
 };
 use crate::parser::parser::Error::*;
 use crate::parser::parser_core::{
@@ -368,8 +367,6 @@ pub(super) struct Parser<W: Write, L: Logic> {
     /// List of global variables in the order defined
     /// Used to remove global variable during `(pop)`
     global_stack: Vec<Symbol>,
-    /// List of let bound variable with the old value they are shadowing
-    let_bound_stack: Vec<(Symbol, Option<BoundL<L>>)>,
     /// A symbol we are currently defining (it cannot be used with :named even though it's not bound
     /// yet
     currently_defining: Option<Symbol>,
@@ -551,49 +548,38 @@ impl<'a, W: Write, L: Logic> ExpVisitor<'a, W, L> {
         match f {
             LET_SYM => {
                 let mut rest = CountingParser::new(rest, StrSym::Sym(f), 2);
-                let old_len = self.0.let_bound_stack.len();
-                match rest.next()? {
+                let old_len = self.0.core.let_bindings_len();
+                let res = match rest.next()? {
                     SexpToken::List(mut l) => l
                         .map(|token| {
                             let (name, exp) = self.0.parse_binding(token?)?;
-                            self.0.let_bound_stack.push((name, Some(Bound::Const(exp))));
+                            self.0.core.pre_add_let_binding(name, exp);
                             Ok(())
                         })
-                        .collect::<Result<()>>()?,
-                    _ => return Err(InvalidLet),
+                        .collect::<Result<()>>(),
+                    _ => Err(InvalidLet),
+                };
+                if let Err(err) = res {
+                    self.0.core.truncate_let_bindings(old_len);
+                    return Err(err);
                 }
-                let body = rest.next()?;
-                for (name, bound) in &mut self.0.let_bound_stack[old_len..] {
-                    self.0.core.dep_checker_act(dep_checker::Shadow(*name));
-                    *bound = self.0.core.raw_define(*name, bound.take())
-                }
-                let exp = self.0.parse_exp(body, ctx)?;
-                rest.finish()?;
-                self.0.undo_let_bindings(old_len);
-                self.2 = Some(exp)
+                self.0.core.finish_let_bindings_since(old_len);
+                self.0.core.start_let(old_len, ctx);
             }
             LET_STAR_SYM => {
                 let mut rest = CountingParser::new(rest, StrSym::Sym(f), 2);
-                let old_len = self.0.let_bound_stack.len();
+                let old_len = self.0.core.let_bindings_len();
                 match rest.next()? {
                     SexpToken::List(mut l) => l
                         .map(|token| {
                             let (name, exp) = self.0.parse_binding(token?)?;
-                            self.0.core.dep_checker_act(dep_checker::Shadow(name));
-                            self.0.let_bound_stack.push((
-                                name,
-                                self.0.core.raw_define(name, Some(Bound::Const(exp))),
-                            ));
+                            self.0.core.add_let_binding(name, exp);
                             Ok(())
                         })
                         .collect::<Result<()>>()?,
                     _ => return Err(InvalidLet),
                 }
-                let body = rest.next()?;
-                let exp = self.0.parse_exp(body, ctx)?;
-                rest.finish()?;
-                self.0.undo_let_bindings(old_len);
-                self.2 = Some(exp)
+                self.0.core.start_let(old_len, ctx);
             }
             ANNOT_SYM => {
                 let mut rest = CountingParser::new(rest, StrSym::Sym(f), 3);
@@ -668,7 +654,6 @@ impl<W: Write, L: Logic> Parser<W, L> {
     pub(super) fn new(writer: W) -> Self {
         let mut res = Parser {
             global_stack: Default::default(),
-            let_bound_stack: Default::default(),
             push_info: vec![],
             declared_sorts: Default::default(),
             core: Default::default(),
@@ -750,12 +735,6 @@ impl<W: Write, L: Logic> Parser<W, L> {
         Ok(span)
     }
 
-    fn undo_let_bindings(&mut self, old_len: usize) {
-        for (name, bound) in self.let_bound_stack.drain(old_len..).rev() {
-            self.core.dep_checker_act(dep_checker::Unshadow(name));
-            self.core.raw_define(name, bound);
-        }
-    }
     fn undo_base_bindings(&mut self, old_len: usize) {
         for name in self.global_stack.drain(old_len..).rev() {
             self.core.raw_define(name, None);
@@ -844,7 +823,6 @@ impl<W: Write, L: Logic> Parser<W, L> {
             }
             Err(err) => {
                 self.undo_base_bindings(old_len);
-                self.undo_let_bindings(0);
                 self.core.reset_working_exp();
                 self.this_named_assert.clear();
                 if matches!(self.state, State::Base) {

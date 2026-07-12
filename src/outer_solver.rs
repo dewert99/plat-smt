@@ -3,7 +3,7 @@ use crate::exp::Fresh;
 use crate::full_theory::{FullTheory, FunctionAssignmentT, PrepareModelKind};
 use crate::intern::*;
 use crate::parser_fragment::{ParserFragment, PfResult};
-use crate::recorder::Recorder;
+use crate::recorder::{dep_checker, Recorder};
 use crate::solver::{SolverCollapse, SolverWithBound};
 use crate::theory::{TheoryArg, TheoryArgT};
 use crate::util::HashMap;
@@ -14,7 +14,7 @@ use crate::{
 use alloc::vec::Vec;
 use hashbrown::hash_map::Entry;
 use log::info;
-use std::iter;
+use std::{iter, mem};
 
 pub use crate::full_theory::{FnSort, MaybeFnSort};
 use crate::parser::SexpTerminal;
@@ -101,6 +101,8 @@ pub enum StartExpCtx {
     /// Optimize to satisfy parent constraints (only available when continuing an existing expression)
     Opt,
 }
+
+// If `f` is `LET_SYM` then `stack_len` refers to let_bound_stack instead of exp_stack
 struct Frame<UExp> {
     ctx: ExprContext<UExp>,
     f: Symbol,
@@ -210,6 +212,8 @@ pub struct OuterSolver<L: Logic> {
     inner: WrapSolver<L>,
     parser: L::Parser,
     stack: Vec<Frame<L::Exp>>,
+    /// List of let bound variable with the old value they are shadowing
+    let_bound_stack: Vec<(Symbol, Option<BoundL<L>>)>,
     exp_stack: Vec<L::Exp>,
 }
 
@@ -220,6 +224,7 @@ impl<L: Logic> Default for OuterSolver<L> {
             parser: Default::default(),
             stack: Default::default(),
             exp_stack: Default::default(),
+            let_bound_stack: Default::default(),
         };
         res.inner
             .bound
@@ -324,15 +329,66 @@ impl<L: Logic> OuterSolver<L> {
     fn child_context(&self, frame: &Frame<L::Exp>) -> ExprContext<<L as Logic>::Exp> {
         let parent = frame.ctx;
         let f = frame.f;
+        if f == LET_SYM {
+            return frame.ctx;
+        }
         let previous_children = &self.exp_stack[frame.stack_len as usize..];
         self.parser
             .try_sub_ctx(f, previous_children, parent)
             .unwrap_or_default()
     }
 
+    pub fn let_bindings_len(&self) -> u32 {
+        self.let_bound_stack.len() as u32
+    }
+    pub fn add_let_binding(&mut self, name: Symbol, value: L::Exp) {
+        self.dep_checker_act(dep_checker::Shadow(name));
+        let old = self.raw_define(name, Some(Bound::Const(value)));
+        self.let_bound_stack.push((name, old));
+    }
+
+    pub(crate) fn pre_add_let_binding(&mut self, name: Symbol, value: L::Exp) {
+        self.let_bound_stack.push((name, Some(Bound::Const(value))))
+    }
+
+    pub(crate) fn finish_let_bindings_since(&mut self, old_len: u32) {
+        let mut let_bound_stack = mem::take(&mut self.let_bound_stack);
+        for (name, bound) in &mut let_bound_stack[old_len as usize..] {
+            self.dep_checker_act(dep_checker::Shadow(*name));
+            *bound = self.raw_define(*name, bound.take())
+        }
+        self.let_bound_stack = let_bound_stack;
+    }
+
+    pub(crate) fn truncate_let_bindings(&mut self, old_len: u32) {
+        self.let_bound_stack.truncate(old_len as usize);
+    }
+
+    /// Removes let bindings after [`let_bindings_len`] returned `old_len`
+    pub fn undo_let_bindings(&mut self, old_len: u32) {
+        let mut let_bound_stack = mem::take(&mut self.let_bound_stack);
+        for (name, bound) in let_bound_stack.drain(old_len as usize..).rev() {
+            self.dep_checker_act(dep_checker::Unshadow(name));
+            self.raw_define(name, bound);
+        }
+        self.let_bound_stack = let_bound_stack;
+    }
+
     pub fn reset_working_exp(&mut self) {
         self.exp_stack.clear();
         self.stack.clear();
+        self.undo_let_bindings(0);
+    }
+
+    /// Enter a context where the next [`end_exp_take`] will call `undo_let_bindings(old_len)`
+    pub fn start_let(&mut self, old_len: u32, ctx: StartExpCtx) {
+        let ctx = self.resolve_ctx(ctx);
+        self.stack.push(Frame {
+            ctx,
+            f: LET_SYM,
+            expected: None,
+            stack_len: old_len,
+        })
     }
 
     fn resolve_ctx(&self, ctx: StartExpCtx) -> ExprContext<L::Exp> {
@@ -402,6 +458,10 @@ impl<L: Logic> OuterSolver<L> {
             expected,
             stack_len,
         } = self.stack.pop().unwrap();
+        if f == LET_SYM {
+            self.undo_let_bindings(stack_len);
+            return Ok(self.exp_stack.pop().unwrap());
+        }
         match self.end_exp_inner(f, ctx, expected, stack_len) {
             Ok(x) => {
                 info!(
