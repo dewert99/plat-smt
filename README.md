@@ -12,7 +12,7 @@ Explore the [Live demo](https://dewert99.github.io/plat-smt/) via a browser.
 - [x] `distinct`
 - [x] `<`, `<=`, `>`, `>=`
 - [x] `+`, `-`
-- [ ] `*`, `/` (with constant factors)
+- [x] `*`, `/` (with constant factors)
 - [ ] `*`, `/` (general)
 - [ ] Passing numbers into functions
 - [x] `as`

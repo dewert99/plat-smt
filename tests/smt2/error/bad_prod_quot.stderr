@@ -1,24 +1,20 @@
-Unsupport non linear arith in the function *  at 2:18
+Unsupported non linear arith in the function *  at 2:18
 (assert (= (* x x) 2))
                  ^
 
-Unsupport non linear arith in the function /  at 3:18
+Unsupported non linear arith in the function /  at 3:18
 (assert (= (/ x x) 1))
                  ^
 
-Unsupport non linear arith in the function *  at 4:31
+Unsupported non linear arith in the function *  at 4:31
 (assert (= (* x (ite true 0 0)) 0))
                               ^
 
-Unsupport non linear arith in the function *  at 5:24
+Unsupported non linear arith in the function *  at 5:24
 (assert (= (* x (* x 0)) 0))
                        ^
 
-Unsupport non linear arith in the function *  at 6:24
+Unsupported non linear arith in the function *  at 6:24
 (assert (= (* x (- x x)) 0))
-                       ^
-
-Unsupport non linear arith in the function *  at 7:24
-(assert (= (* x (+ 0 0)) 0))
                        ^
 
