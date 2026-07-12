@@ -155,7 +155,7 @@ impl DisplayInterned for Error {
             CheckSatStatusMismatch {
                 actual,
                 expected,
-            } => write!(fmt, "(check-sat) returned {actual:?} but should have returned {expected:?} based on last (set-info :status)"),
+            } => write!(fmt, "`check-sat` returned {} but should have returned {} based on last (set-info :status)", actual.as_lower_str(), expected.as_lower_str()),
             NoUnsat => write!(fmt, "The last command was not `check-sat-assuming` that returned `unsat`"),
             InterpolantCore => write!(fmt, "`get-unsat-core` must be called before `get-interpolants`"),
             NoModel => write!(fmt, "The last command was not `check-sat-assuming` that returned `sat`"),
@@ -853,6 +853,8 @@ impl<W: Write, L: Logic> Parser<W, L> {
                     } else {
                         self.core.solver_mut().clear();
                     }
+                } else if matches!(old_state, State::Base) {
+                    self.reset_state();
                 }
                 if matches!(
                     (old_state, self.state),

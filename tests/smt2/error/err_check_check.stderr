@@ -1,0 +1,4 @@
+`check-sat` returned sat but should have returned unsat based on last (set-info :status) at 4:11
+(check-sat)
+          ^
+

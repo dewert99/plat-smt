@@ -1,0 +1,5 @@
+(declare-const a Bool)
+(declare-const b Bool)
+(set-info :status unsat)
+(check-sat)
+(check-sat)
