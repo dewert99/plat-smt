@@ -1,0 +1,5 @@
+(declare-fun t () Real)
+(declare-fun x () Bool)
+(assert (and (or x (= t 0)) (or x (= t 1))))
+(check-sat)
+(get-model)

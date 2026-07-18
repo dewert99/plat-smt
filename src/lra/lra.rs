@@ -117,6 +117,8 @@ struct LowerBound {
     strict: bool,
 }
 
+struct Bound(LowerBound, bool);
+
 impl Debug for LowerBound {
     fn fmt(&self, f: &mut Formatter<'_>) -> core::fmt::Result {
         write!(
@@ -125,6 +127,25 @@ impl Debug for LowerBound {
             self.var,
             ineq(BoundDir::Lower, self.strict),
             self.bound
+        )
+    }
+}
+
+impl Debug for Bound {
+    fn fmt(&self, f: &mut Formatter<'_>) -> core::fmt::Result {
+        write!(
+            f,
+            "{:?} {} {:?}",
+            self.0.var,
+            ineq(
+                if self.1 {
+                    BoundDir::Lower
+                } else {
+                    BoundDir::Upper
+                },
+                self.0.strict ^ !self.1
+            ),
+            self.0.bound
         )
     }
 }
@@ -351,20 +372,26 @@ impl<'a, A: SatTheoryArgT<'a>, P> Theory<A, A::Explain<'a>, P> for Lra {
 
     fn explain_propagation(&mut self, p: Lit, acts: &mut A::Explain<'a>, _: bool, _: u8) {
         let is_lower = p.sign();
-        let p = p.var();
-        let mut bound = self.var_map.get(p).unwrap();
-        bound.strict ^= !is_lower;
+        let pv = p.var();
+        let bound = self.var_map.get(pv).unwrap();
         let res = if is_lower {
+            self.bounds
+                .range((Excluded(bound), Unbounded))
+                .try_for_each(|(_, var)| Err(*var))
+        } else {
             self.bounds
                 .range((Unbounded, Excluded(bound)))
                 .rev()
                 .try_for_each(|(_, var)| Err(*var))
-        } else {
-            self.bounds
-                .range((Excluded(bound), Unbounded))
-                .try_for_each(|(_, var)| Err(*var))
         };
-        let res_lit = Lit::new(res.err().unwrap(), !is_lower);
+        let res_var = res.err().unwrap();
+        let res_lit = Lit::new(res_var, !is_lower);
+        debug!(
+            "LRA explains {p:?} ({:?}) by {:?} ({:?})",
+            Bound(bound, is_lower),
+            !res_lit,
+            Bound(self.var_map.get(res_var).unwrap(), is_lower)
+        );
         acts.clause_builder().push(res_lit);
     }
 }
