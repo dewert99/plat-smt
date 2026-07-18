@@ -446,7 +446,7 @@ dependencies = [
 [[package]]
 name = "lazy-rational"
 version = "0.1.0"
-source = "git+https://github.com/dewert99/lazy-rational#a134e35b4864caf7b6ab0579d5bc7b0c3e35df82"
+source = "git+https://github.com/dewert99/lazy-rational#800a651cd867d9a09e5e0e71abbfc8c5c2e4ed11"
 dependencies = [
  "vstd",
 ]

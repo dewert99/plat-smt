@@ -1,0 +1,5 @@
+sat
+(
+ (define-fun t () Real 0)
+ (define-fun x () Bool true)
+)

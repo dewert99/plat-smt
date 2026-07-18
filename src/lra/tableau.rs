@@ -450,7 +450,9 @@ impl ModeledTableau {
             None
         });
 
-        dedup_defs(&mut defs);
+        if !defs.is_empty() {
+            dedup_defs(&mut defs);
+        }
 
         match &*defs {
             &[] => {
