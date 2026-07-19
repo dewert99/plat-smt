@@ -1,0 +1,10 @@
+benches/starexec/non-incremental/QF_LRA/DTP-Scheduling/constraints-tempo-matrix8x8.pddl.smt2
+benches/starexec/non-incremental/QF_LRA/DTP-Scheduling/constraints-tempo-depth-10.smt2
+benches/starexec/non-incremental/QF_LRA/DTP-Scheduling/constraints-tempo-width-70.smt2
+benches/starexec/non-incremental/QF_LRA/DTP-Scheduling/constraints-cooking04.smt2
+benches/starexec/non-incremental/QF_LRA/spider_benchmarks/fs_no_op_accs.base.smt2
+benches/starexec/non-incremental/QF_LRA/spider_benchmarks/current_frame.induction.smt2
+benches/starexec/non-incremental/QF_LRA/spider_benchmarks/fs_window.induction.smt2
+benches/starexec/non-incremental/QF_LRA/TM/p5-zenonumeric_s7.smt2
+benches/starexec/non-incremental/QF_LRA/tta_startup/simple_startup_3nodes.synchro.induct.smt2
+benches/starexec/non-incremental/QF_LRA/tta_startup/simple_startup_7nodes.abstract.base.smt2

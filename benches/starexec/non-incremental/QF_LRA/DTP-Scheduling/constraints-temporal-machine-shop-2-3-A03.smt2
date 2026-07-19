@@ -1,0 +1,27 @@
+(set-info :smt-lib-version 2.6)
+(set-logic QF_LRA)
+(set-info :source |
+TLP-GP automated DTP to SMT-LIB encoding for planning
+by F.Maris and P.Regnier, IRIT - Universite Paul Sabatier, Toulouse
+
+|)
+(set-info :category "industrial")
+(set-info :status sat)
+(declare-fun St_spy_variable () Real)
+(declare-fun t_Init_0 () Real)
+(declare-fun t_Goal_6 () Real)
+(declare-fun t_BAKE_CERAMIC2_p2_k2_2 () Real)
+(declare-fun t_TREAT_CERAMIC2_p2_3 () Real)
+(declare-fun t_BAKE_CERAMIC2_p2_k2_3 () Real)
+(declare-fun t_FIRE_KILN2_k2_1 () Real)
+(declare-fun t_BAKE_CERAMIC1_p1_k2_2 () Real)
+(declare-fun t_TREAT_CERAMIC1_p1_3 () Real)
+(declare-fun t_FIRE_KILN2_k2_2 () Real)
+(declare-fun t_BAKE_CERAMIC1_p1_k2_3 () Real)
+(declare-fun t_MAKE_STRUCTURE_p1_p2_4 () Real)
+(declare-fun t_BAKE_STRUCTURE_p1_p2_k1_5 () Real)
+(declare-fun t_FIRE_KILN1_k1_1 () Real)
+(declare-fun t_BAKE_CERAMIC3_p3_k1_2 () Real)
+(assert (let ((?v_9 (- t_Goal_6 t_BAKE_STRUCTURE_p1_p2_k1_5)) (?v_12 (- t_Goal_6 t_BAKE_CERAMIC3_p3_k1_2)) (?v_5 (- t_BAKE_CERAMIC1_p1_k2_2 t_FIRE_KILN2_k2_1))) (let ((?v_2 (<= ?v_5 5)) (?v_4 (- t_BAKE_CERAMIC2_p2_k2_3 t_FIRE_KILN2_k2_1))) (let ((?v_3 (<= ?v_4 10)) (?v_0 (- t_BAKE_CERAMIC2_p2_k2_2 t_FIRE_KILN2_k2_1)) (?v_1 (- t_TREAT_CERAMIC2_p2_3 t_BAKE_CERAMIC2_p2_k2_2)) (?v_6 (- t_TREAT_CERAMIC1_p1_3 t_BAKE_CERAMIC1_p1_k2_2)) (?v_7 (- t_BAKE_CERAMIC1_p1_k2_3 t_FIRE_KILN2_k2_2)) (?v_11 (- t_BAKE_CERAMIC3_p3_k1_2 t_FIRE_KILN1_k1_1))) (let ((?v_10 (<= ?v_11 3)) (?v_8 (- t_BAKE_STRUCTURE_p1_p2_k1_5 t_FIRE_KILN1_k1_1)) (?v_15 (or (<= (- t_BAKE_CERAMIC1_p1_k2_3 t_FIRE_KILN2_k2_1) 5) (> (- t_FIRE_KILN2_k2_2 t_FIRE_KILN2_k2_1) 20))) (?v_16 (> (- t_FIRE_KILN2_k2_1 t_FIRE_KILN2_k2_2) 20)) (?v_14 (- t_BAKE_CERAMIC2_p2_k2_2 t_BAKE_CERAMIC2_p2_k2_3)) (?v_13 (- t_BAKE_CERAMIC2_p2_k2_3 t_BAKE_CERAMIC2_p2_k2_2)) (?v_18 (- t_BAKE_CERAMIC1_p1_k2_2 t_BAKE_CERAMIC1_p1_k2_3)) (?v_17 (- t_BAKE_CERAMIC1_p1_k2_3 t_BAKE_CERAMIC1_p1_k2_2))) (and (= St_spy_variable (+ 1 t_Init_0)) (>= t_Goal_6 t_Init_0) (>= (- t_BAKE_CERAMIC2_p2_k2_2 t_Init_0) 0) (>= (- t_Goal_6 t_BAKE_CERAMIC2_p2_k2_2) 10) (>= (- t_TREAT_CERAMIC2_p2_3 t_Init_0) 0) (>= (- t_Goal_6 t_TREAT_CERAMIC2_p2_3) 2) (>= (- t_BAKE_CERAMIC2_p2_k2_3 t_Init_0) 0) (>= (- t_Goal_6 t_BAKE_CERAMIC2_p2_k2_3) 10) (>= (- t_FIRE_KILN2_k2_1 t_Init_0) 0) (>= (- t_Goal_6 t_FIRE_KILN2_k2_1) 20) (>= (- t_BAKE_CERAMIC1_p1_k2_2 t_Init_0) 0) (>= (- t_Goal_6 t_BAKE_CERAMIC1_p1_k2_2) 15) (>= (- t_TREAT_CERAMIC1_p1_3 t_Init_0) 0) (>= (- t_Goal_6 t_TREAT_CERAMIC1_p1_3) 3) (>= (- t_FIRE_KILN2_k2_2 t_Init_0) 0) (>= (- t_Goal_6 t_FIRE_KILN2_k2_2) 20) (>= (- t_BAKE_CERAMIC1_p1_k2_3 t_Init_0) 0) (>= (- t_Goal_6 t_BAKE_CERAMIC1_p1_k2_3) 15) (>= (- t_MAKE_STRUCTURE_p1_p2_4 t_Init_0) 0) (>= (- t_Goal_6 t_MAKE_STRUCTURE_p1_p2_4) 1) (>= (- t_BAKE_STRUCTURE_p1_p2_k1_5 t_Init_0) 0) (>= ?v_9 3) (>= (- t_FIRE_KILN1_k1_1 t_Init_0) 0) (>= (- t_Goal_6 t_FIRE_KILN1_k1_1) 8) (>= (- t_BAKE_CERAMIC3_p3_k1_2 t_Init_0) 0) (>= ?v_12 5) ?v_2 ?v_3 (<= ?v_0 10) (< ?v_0 10) (>= ?v_0 2) (<= ?v_1 8) (>= ?v_1 0) (>= (- t_MAKE_STRUCTURE_p1_p2_4 t_TREAT_CERAMIC2_p2_3) 2) ?v_2 ?v_3 (< ?v_4 10) (>= ?v_4 2) (>= (- t_MAKE_STRUCTURE_p1_p2_4 t_BAKE_CERAMIC2_p2_k2_3) 10) ?v_2 (>= ?v_5 2) (<= ?v_6 12) (>= ?v_6 0) (>= (- t_MAKE_STRUCTURE_p1_p2_4 t_TREAT_CERAMIC1_p1_3) 3) (<= ?v_7 5) (>= ?v_7 2) (>= (- t_MAKE_STRUCTURE_p1_p2_4 t_BAKE_CERAMIC1_p1_k2_3) 15) (>= (- t_BAKE_STRUCTURE_p1_p2_k1_5 t_MAKE_STRUCTURE_p1_p2_4) 1) ?v_10 (<= ?v_8 5) (< ?v_8 5) (>= ?v_8 1) (>= ?v_9 4) ?v_10 (>= ?v_11 1) (>= ?v_12 6) ?v_15 (or ?v_16 (< (- t_BAKE_CERAMIC2_p2_k2_2 t_FIRE_KILN2_k2_2) 10)) (or (>= (- t_BAKE_CERAMIC2_p2_k2_2 t_MAKE_STRUCTURE_p1_p2_4) 1) (< ?v_14 7)) (or (<= ?v_13 0) (> ?v_13 10)) (or (>= ?v_14 3) (> ?v_13 7)) (or (> ?v_14 10) (< (- t_TREAT_CERAMIC2_p2_3 t_BAKE_CERAMIC2_p2_k2_3) 8)) ?v_15 (or ?v_16 (< (- t_BAKE_CERAMIC2_p2_k2_3 t_FIRE_KILN2_k2_2) 10)) ?v_15 (or ?v_16 (< (- t_BAKE_CERAMIC1_p1_k2_2 t_FIRE_KILN2_k2_2) 5)) (or (>= (- t_BAKE_CERAMIC1_p1_k2_2 t_MAKE_STRUCTURE_p1_p2_4) 1) (< ?v_18 10)) (or (<= ?v_17 0) (> ?v_17 15)) (or (>= ?v_18 5) (> ?v_17 10)) (or (> ?v_18 15) (< (- t_TREAT_CERAMIC1_p1_3 t_BAKE_CERAMIC1_p1_k2_3) 12))))))))
+(check-sat)
+(exit)
