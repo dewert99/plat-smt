@@ -450,9 +450,7 @@ impl ModeledTableau {
             None
         });
 
-        if !defs.is_empty() {
-            dedup_defs(&mut defs);
-        }
+        dedup_defs(&mut defs);
 
         match &*defs {
             &[] => {
@@ -728,6 +726,9 @@ impl ModeledTableau {
 }
 
 fn dedup_defs(defs: &mut Vec<BufElt>) {
+    if defs.is_empty() {
+        return;
+    }
     defs.sort_unstable_by_key(|x| x.0);
     let mut last_checked = 0;
     for i in 1..defs.len() {

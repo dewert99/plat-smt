@@ -1,0 +1,27 @@
+(set-info :smt-lib-version 2.6)
+(set-logic QF_LRA)
+(set-info :source |
+TLP-GP automated DTP to SMT-LIB encoding for planning
+by F.Maris and P.Regnier, IRIT - Universite Paul Sabatier, Toulouse
+
+|)
+(set-info :category "industrial")
+(set-info :status sat)
+(declare-fun St_spy_variable () Real)
+(declare-fun t_Init_0 () Real)
+(declare-fun t_Goal_13 () Real)
+(declare-fun t_C_N3_9 () Real)
+(declare-fun t_B_N3_8 () Real)
+(declare-fun t_C_N2_6 () Real)
+(declare-fun t_B_N2_5 () Real)
+(declare-fun t_C_N1_3 () Real)
+(declare-fun t_B_N1_2 () Real)
+(declare-fun t_A_N1_1 () Real)
+(declare-fun t_A_N2_4 () Real)
+(declare-fun t_A_N3_7 () Real)
+(declare-fun t_A_N4_10 () Real)
+(declare-fun t_B_N4_11 () Real)
+(declare-fun t_C_N4_12 () Real)
+(assert (let ((?v_8 (- t_Goal_13 t_C_N3_9)) (?v_7 (- t_Goal_13 t_B_N3_8)) (?v_5 (- t_Goal_13 t_C_N2_6)) (?v_4 (- t_Goal_13 t_B_N2_5)) (?v_2 (- t_Goal_13 t_C_N1_3)) (?v_1 (- t_Goal_13 t_B_N1_2)) (?v_0 (- t_Goal_13 t_A_N1_1)) (?v_3 (- t_Goal_13 t_A_N2_4)) (?v_6 (- t_Goal_13 t_A_N3_7)) (?v_9 (- t_Goal_13 t_A_N4_10)) (?v_10 (- t_Goal_13 t_B_N4_11)) (?v_27 (- t_Goal_13 t_C_N4_12)) (?v_22 (- t_B_N1_2 t_A_N1_1))) (let ((?v_21 (< ?v_22 5)) (?v_20 (- t_C_N1_3 t_B_N1_2))) (let ((?v_19 (< ?v_20 4)) (?v_18 (- t_B_N2_5 t_A_N2_4))) (let ((?v_17 (< ?v_18 5)) (?v_16 (- t_C_N2_6 t_B_N2_5))) (let ((?v_15 (< ?v_16 4)) (?v_14 (- t_B_N3_8 t_A_N3_7))) (let ((?v_13 (< ?v_14 5)) (?v_12 (- t_C_N3_9 t_B_N3_8))) (let ((?v_11 (< ?v_12 4)) (?v_24 (- t_B_N4_11 t_A_N4_10))) (let ((?v_23 (< ?v_24 5)) (?v_26 (- t_C_N4_12 t_B_N4_11))) (let ((?v_25 (< ?v_26 4)) (?v_41 (- t_A_N4_10 t_C_N3_9)) (?v_36 (- t_A_N3_7 t_C_N2_6)) (?v_31 (- t_A_N2_4 t_C_N1_3)) (?v_28 (- t_A_N2_4 t_A_N1_1)) (?v_33 (- t_A_N3_7 t_A_N2_4)) (?v_38 (- t_A_N4_10 t_A_N3_7))) (let ((?v_53 (< ?v_28 5)) (?v_29 (> ?v_22 1))) (let ((?v_52 (or ?v_53 ?v_29)) (?v_30 (< ?v_0 6)) (?v_32 (< (- t_C_N1_3 t_A_N1_1) 4))) (let ((?v_51 (or (< ?v_31 1) ?v_32)) (?v_50 (< ?v_33 5)) (?v_34 (> ?v_18 1))) (let ((?v_49 (or ?v_50 ?v_34)) (?v_35 (< ?v_3 6)) (?v_37 (< (- t_C_N2_6 t_A_N2_4) 4))) (let ((?v_48 (or (< ?v_36 1) ?v_37)) (?v_47 (< ?v_38 5)) (?v_39 (> ?v_14 1))) (let ((?v_46 (or ?v_47 ?v_39)) (?v_40 (< ?v_6 6)) (?v_42 (< (- t_C_N3_9 t_A_N3_7) 4))) (let ((?v_45 (or (< ?v_41 1) ?v_42)) (?v_43 (> ?v_24 1))) (let ((?v_54 (or (< ?v_24 1) ?v_43)) (?v_44 (< ?v_9 6)) (?v_56 (- t_C_N4_12 t_A_N4_10))) (let ((?v_55 (< ?v_56 4))) (and (= St_spy_variable (+ 1 t_Init_0)) (>= t_Goal_13 t_Init_0) (>= (- t_C_N3_9 t_Init_0) 0) (>= ?v_8 1) (>= (- t_B_N3_8 t_Init_0) 0) (>= ?v_7 4) (>= (- t_C_N2_6 t_Init_0) 0) (>= ?v_5 1) (>= (- t_B_N2_5 t_Init_0) 0) (>= ?v_4 4) (>= (- t_C_N1_3 t_Init_0) 0) (>= ?v_2 1) (>= (- t_B_N1_2 t_Init_0) 0) (>= ?v_1 4) (>= (- t_A_N1_1 t_Init_0) 0) (>= ?v_0 5) (>= (- t_A_N2_4 t_Init_0) 0) (>= ?v_3 5) (>= (- t_A_N3_7 t_Init_0) 0) (>= ?v_6 5) (>= (- t_A_N4_10 t_Init_0) 0) (>= ?v_9 5) (>= (- t_B_N4_11 t_Init_0) 0) (>= ?v_10 4) (>= (- t_C_N4_12 t_Init_0) 0) (>= ?v_27 1) ?v_21 (>= ?v_0 6) ?v_19 (>= ?v_1 5) (>= ?v_2 2) ?v_17 (>= ?v_3 6) ?v_15 (>= ?v_4 5) (>= ?v_5 2) ?v_13 (>= ?v_6 6) ?v_11 (>= ?v_7 5) (>= ?v_8 2) ?v_23 (>= ?v_9 6) ?v_25 (>= ?v_10 5) ?v_11 ?v_11 (>= ?v_12 0) (>= ?v_41 1) ?v_13 ?v_13 (>= ?v_14 0) (>= (- t_A_N4_10 t_B_N3_8) 4) ?v_15 ?v_15 (>= ?v_16 0) (>= ?v_36 1) ?v_17 ?v_17 (>= ?v_18 0) (>= (- t_A_N3_7 t_B_N2_5) 4) ?v_19 ?v_19 (>= ?v_20 0) (>= ?v_31 1) ?v_21 ?v_21 (>= ?v_22 0) (>= (- t_A_N2_4 t_B_N1_2) 4) (>= ?v_28 5) (>= ?v_33 5) (>= ?v_38 5) ?v_23 (>= ?v_24 0) ?v_25 (>= ?v_26 0) (>= ?v_27 2) ?v_52 (or ?v_30 ?v_29) (or ?v_32 (< ?v_2 2)) (or ?v_29 ?v_30) ?v_51 ?v_49 (or ?v_35 ?v_34) (or ?v_37 (< ?v_5 2)) (or ?v_34 ?v_35) ?v_48 ?v_46 (or ?v_40 ?v_39) (or ?v_42 (< ?v_8 2)) (or ?v_39 ?v_40) ?v_45 ?v_54 (or ?v_44 ?v_43) (or ?v_55 (< ?v_27 2)) (or ?v_43 ?v_44) (or ?v_39 (< ?v_14 1)) ?v_45 ?v_46 (or ?v_39 ?v_47) (or ?v_34 (< ?v_18 1)) ?v_48 ?v_49 (or ?v_34 ?v_50) (or ?v_29 (< ?v_22 1)) ?v_51 ?v_52 (or ?v_29 ?v_53) ?v_54 (or ?v_55 (> ?v_56 4))))))))))))))))))))))
+(check-sat)
+(exit)
