@@ -218,6 +218,7 @@ mod test_smtlib_benchmarks {
     use std::fmt::Display;
     use std::io::{stderr, Seek, Write};
     use std::process::{Command, Stdio};
+    use std::time::Instant;
     use walkdir::{DirEntry, Error, WalkDir};
 
     fn take_suffix(s: &mut String, suffix: &str) {
@@ -273,16 +274,38 @@ mod test_smtlib_benchmarks {
     const ASSUMP_NAME: &str = "smtcomp";
 
     #[test]
+    fn test_model_unsat_core_lra() {
+        let path = Path::new("benches/starexec/non-incremental/QF_LRA");
+        test_model_unsat_core::<(
+            (EmptyTheory, Lra),
+            (LinearArithPf, EmptyTheoryPf),
+            InterpolantRecorder,
+            _,
+        )>(WalkDir::new(path), false, "tmp_lra")
+    }
+
+    #[test]
     fn test_model_unsat_core_euf() {
         let path = Path::new("benches/starexec/non-incremental/QF_UF/2018-Goel-hwbench");
-        test_model_unsat_core::<(Euf, EufPf, InterpolantRecorder, _)>(WalkDir::new(path))
+        test_model_unsat_core::<(Euf, EufPf, InterpolantRecorder, _)>(
+            WalkDir::new(path),
+            true,
+            "tmp_euf",
+        )
     }
-    fn test_model_unsat_core<L: Logic>(paths: impl IntoIterator<Item = Result<DirEntry, Error>>) {
+
+    fn test_model_unsat_core<L: Logic>(
+        paths: impl IntoIterator<Item = Result<DirEntry, Error>>,
+        check_interpolant: bool,
+        tmp_name: &str,
+    ) {
         let mut incr = IncrementalParser::<L>::default();
         let mut interp_a = String::new();
         let mut interp_b = String::new();
         let mut yices_in = String::new();
         let mut file_buf = Vec::new();
+        let tmp_smt2 = format!("{tmp_name}.smt2");
+        let tmp_rsmt2 = format!("{tmp_name}.rsmt2");
         let scramble_seed = env::var("SCRAMBLE_SEED").unwrap_or("0".to_owned());
         if let Ok(x) = env::var("SEED") {
             writeln!(file_buf, "(set-option :sat.random_seed {x})").unwrap();
@@ -296,14 +319,21 @@ mod test_smtlib_benchmarks {
                 let mut base_file = File::open(&path).unwrap();
                 base_file.read_to_end(&mut file_buf).unwrap();
                 base_file.rewind().unwrap();
-                let mut scrambled_file = File::create("tmp.smt2").unwrap();
-                let mut output_file = File::create("tmp.rsmt2").unwrap();
-                write!(stderr(), "Testing file {path:?}").unwrap();
+                let mut scrambled_file = File::create(&tmp_smt2).unwrap();
+                let mut output_file = File::create(&tmp_rsmt2).unwrap();
+                writeln!(stderr(), "Testing file {path:?}").unwrap();
                 incr.clear();
+                let start = Instant::now();
                 incr.interp_smt2_commands(str::from_utf8(&*file_buf).unwrap());
                 assert_eq!(incr.err(), "");
                 file_buf.truncate(base_len);
-                write!(stderr(), ": {}", incr.out()).unwrap();
+                write!(
+                    stderr(),
+                    "Testing file {path:?} ({:?}) : {}",
+                    Instant::now().duration_since(start),
+                    incr.out()
+                )
+                .unwrap();
                 match incr.out() {
                     "sat\n" => {
                         let scrambler_out = Command::new("./scrambler")
@@ -320,7 +350,13 @@ mod test_smtlib_benchmarks {
                         drop(scrambled_file);
                         output_file.write_all(incr.out().as_bytes()).unwrap();
                         let validator_out = Command::new("./dolmen")
-                            .args(["--check-model=true", "-r", "tmp.rsmt2", "tmp.smt2"])
+                            .args([
+                                "--check-model=true",
+                                "--strict=false",
+                                "-r",
+                                &tmp_rsmt2,
+                                &tmp_smt2,
+                            ])
                             .output()
                             .unwrap();
                         if !validator_out.status.success() {
@@ -345,25 +381,33 @@ mod test_smtlib_benchmarks {
                         let unsat_core_range = 7..incr.out().len() - 2;
                         take_suffix(&mut scrambled, "(get-unsat-core)\n");
                         take_suffix(&mut scrambled, "(check-sat)\n");
-                        let start_idx = scrambled.rfind(ASSUMP_NAME).unwrap() + ASSUMP_NAME.len();
-                        let end_idx = start_idx + scrambled[start_idx..].find(")").unwrap();
+                        let interp_info = if check_interpolant {
+                            let start_idx =
+                                scrambled.rfind(ASSUMP_NAME).unwrap() + ASSUMP_NAME.len();
+                            let end_idx = start_idx + scrambled[start_idx..].find(")").unwrap();
 
-                        let last_assump_idx: u32 = scrambled[start_idx..end_idx].parse().unwrap();
-                        interp_a.clear();
-                        interp_b.clear();
-                        for i in 1..=last_assump_idx {
-                            if i & 4 > 0 {
-                                write_fmt(&mut interp_a, format_args!("{ASSUMP_NAME}{i} "));
-                            } else {
-                                write_fmt(&mut interp_b, format_args!("{ASSUMP_NAME}{i} "));
+                            let last_assump_idx: u32 =
+                                scrambled[start_idx..end_idx].parse().unwrap();
+                            interp_a.clear();
+                            interp_b.clear();
+                            for i in 1..=last_assump_idx {
+                                if i & 4 > 0 {
+                                    write_fmt(&mut interp_a, format_args!("{ASSUMP_NAME}{i} "));
+                                } else {
+                                    write_fmt(&mut interp_b, format_args!("{ASSUMP_NAME}{i} "));
+                                }
                             }
-                        }
-                        let old_len = incr.out().len();
-                        incr.interp_smt2_commands(format_args!(
-                            "(get-interpolants (and {interp_a}) (and {interp_b}))"
-                        ));
-                        assert_eq!(incr.err(), "");
-                        let interpolant = &incr.out()[old_len..];
+                            let old_len = incr.out().len();
+                            incr.interp_smt2_commands(format_args!(
+                                "(get-interpolants (and {interp_a}) (and {interp_b}))"
+                            ));
+                            assert_eq!(incr.err(), "");
+                            let interpolant = &incr.out()[old_len..];
+                            Some(interpolant)
+                        } else {
+                            None
+                        };
+
                         let unsat_core = &incr.out()[unsat_core_range];
                         yices_in.clear();
                         let mut i = 1;
@@ -381,29 +425,37 @@ mod test_smtlib_benchmarks {
                         }
                         write_fmt(
                             &mut yices_in,
-                            format_args!("(define-fun interpolant () Bool {interpolant})\n"),
-                        );
-                        write_fmt(
-                            &mut yices_in,
                             format_args!("(check-sat-assuming ({unsat_core}))\n"),
                         );
-                        write_fmt(
-                            &mut yices_in,
-                            format_args!("(check-sat-assuming ({interp_a}(not interpolant)))\n"),
-                        );
-                        write_fmt(
-                            &mut yices_in,
-                            format_args!("(check-sat-assuming ({interp_b} interpolant))\n"),
-                        );
+                        if let Some(interpolant) = interp_info {
+                            write_fmt(
+                                &mut yices_in,
+                                format_args!("(define-fun interpolant () Bool {interpolant})\n"),
+                            );
+                            write_fmt(
+                                &mut yices_in,
+                                format_args!(
+                                    "(check-sat-assuming ({interp_a}(not interpolant)))\n"
+                                ),
+                            );
+                            write_fmt(
+                                &mut yices_in,
+                                format_args!("(check-sat-assuming ({interp_b} interpolant))\n"),
+                            );
+                        }
                         scrambled_file.write_all(yices_in.as_bytes()).unwrap();
                         let yices_out = Command::new("./yices-smt2")
-                            .args(["--incremental", "tmp.smt2"])
+                            .args(["--incremental", &tmp_smt2])
                             .output()
                             .unwrap();
                         assert_eq!(String::from_utf8_lossy(&yices_out.stderr), "");
                         assert_eq!(
                             String::from_utf8_lossy(&yices_out.stdout),
-                            "unsat\nunsat\nunsat\n"
+                            if check_interpolant {
+                                "unsat\nunsat\nunsat\n"
+                            } else {
+                                "unsat\n"
+                            }
                         );
                     }
                     _ => panic!("unexpected output:\n{}", incr.out()),
