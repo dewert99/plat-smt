@@ -13,13 +13,12 @@ use crate::parser::{Decimal, SmtlibLogic};
 use crate::recorder::recorder::{Feature, InterpolantGroup};
 use crate::recorder::{dep_checker, Recorder};
 use crate::solver::{SolveResult, SolverCollapse, UnsatCoreConjunction};
-use crate::util::{format_args2, parenthesized, powi, DefaultHashBuilder};
+use crate::util::{format_args2, parenthesized, powi, HashMap, HashSet};
 use crate::AddSexpError::*;
 use crate::{solver, AddSexpError, BoolExp, ExpLike, HasSort, SubExp, SuperExp};
 use alloc::borrow::Cow;
 use core::fmt::Arguments;
 use core::str::FromStr;
-use hashbrown::HashMap;
 use internal_iterator::InternalIterator;
 use log::info;
 use no_std_compat::prelude::v1::*;
@@ -370,7 +369,7 @@ pub(super) struct Parser<W: Write, L: Logic> {
     /// A symbol we are currently defining (it cannot be used with :named even though it's not bound
     /// yet
     currently_defining: Option<Symbol>,
-    declared_sorts: HashMap<Symbol, u32, DefaultHashBuilder>,
+    declared_sorts: HashMap<Symbol, u32>,
     sort_stack: Vec<Symbol>,
     /// assertions named a top level that we always add to assumption list of `check_sat` instead
     /// of immediately asserting.
@@ -390,8 +389,14 @@ pub(super) struct Parser<W: Write, L: Logic> {
     last_status_info: Option<SolveResult>,
 }
 
+enum ProduceModelState {
+    False,
+    Default,
+    True(HashSet<Symbol>),
+}
+
 struct Options {
-    produce_models: bool,
+    produce_models: ProduceModelState,
     produces_unsat_cores: bool,
     produce_unsat_assumptions: bool,
     print_success: bool,
@@ -400,7 +405,7 @@ struct Options {
 impl Default for Options {
     fn default() -> Self {
         Options {
-            produce_models: true,
+            produce_models: ProduceModelState::Default,
             produces_unsat_cores: true,
             produce_unsat_assumptions: true,
             print_success: false,
@@ -737,6 +742,9 @@ impl<W: Write, L: Logic> Parser<W, L> {
 
     fn undo_base_bindings(&mut self, old_len: usize) {
         for name in self.global_stack.drain(old_len..).rev() {
+            if let ProduceModelState::True(s) = &mut self.options.produce_models {
+                s.remove(&name);
+            }
             self.core.raw_define(name, None);
         }
     }
@@ -958,7 +966,7 @@ impl<W: Write, L: Logic> Parser<W, L> {
                 if !matches!(self.state, State::Model) {
                     return Err(NoModel);
                 }
-                if !self.options.produce_models {
+                if matches!(self.options.produce_models, ProduceModelState::False) {
                     return Err(not_enabled!("produce-models"));
                 }
                 let SexpToken::List(mut l) = rest.next()? else {
@@ -995,12 +1003,17 @@ impl<W: Write, L: Logic> Parser<W, L> {
                 if !matches!(self.state, State::Model) {
                     return Err(NoModel);
                 }
-                if !self.options.produce_models {
+                if matches!(self.options.produce_models, ProduceModelState::False) {
                     return Err(not_enabled!("produce-models"));
                 }
                 rest.finish()?;
                 writeln!(self.writer, "(");
                 self.core.get_definition_values().for_each(|k, v, intern| {
+                    if let ProduceModelState::True(s) = &self.options.produce_models {
+                        if !s.contains(&k) {
+                            return;
+                        }
+                    }
                     let k_i = k.with_intern(intern);
                     match v {
                         BoundDefinition::Const(x) => {
@@ -1130,7 +1143,15 @@ impl<W: Write, L: Logic> Parser<W, L> {
                         return Ok(());
                     }
                     SetOption::ProduceModels(x) => {
-                        self.options.produce_models = x;
+                        if x {
+                            if !matches!(self.state, State::Init) {
+                                return Err(NonInit);
+                            }
+                            self.options.produce_models =
+                                ProduceModelState::True(HashSet::default())
+                        } else {
+                            self.options.produce_models = ProduceModelState::False
+                        }
                         return Ok(());
                     }
                     SetOption::ProduceInterpolants(x) => {
@@ -1257,13 +1278,19 @@ impl<W: Write, L: Logic> Parser<W, L> {
                 let ret = self.parse_sort(rest.next()?)?;
                 rest.finish()?;
                 let fn_sort = FnSort::new(args, ret);
+                if let ProduceModelState::True(s) = &mut self.options.produce_models {
+                    s.insert(name);
+                }
                 self.insert_bound(name, Bound::Fn(fn_sort))?;
             }
             Smt2Command::DeclareConst => {
                 let name = self.parse_fresh_binder(rest.next()?)?;
                 let ret = self.parse_sort(rest.next()?)?;
                 rest.finish()?;
-                self.declare_const(name, ret)?;
+                if let ProduceModelState::True(s) = &mut self.options.produce_models {
+                    s.insert(name);
+                }
+                self.insert_bound(name, Bound::Fn(FnSort::new([].into_iter().collect(), ret)))?;
             }
             Smt2Command::DefineConst => {
                 let name = self.parse_fresh_binder(rest.next()?)?;
@@ -1452,10 +1479,6 @@ impl<W: Write, L: Logic> Parser<W, L> {
         self.define(name, val, Shadow)?;
         self.global_stack.push(name);
         Ok(())
-    }
-
-    fn declare_const(&mut self, name: Symbol, ret: Sort) -> Result<()> {
-        self.insert_bound(name, Bound::Fn(FnSort::new([].into_iter().collect(), ret)))
     }
 
     fn parse_command_token<R: FullBufRead>(&mut self, t: SexpToken<R>) -> Result<()> {

@@ -49,7 +49,9 @@ for example random initial activations would be enabled with:
 `(set-option :sat.rnd_init_act true)`
 
 `plat-smt` also supports the SMT-LIB standard parameters:
-* `:produce-models` (default `true`) 
+* `:produce-models`
+  * Setting this option to `true` or `false` gives SMT-LIB compliant behaviour
+  * Leaving this unspecified gives causes `get-model` to print both declared and defined function symbols.
 * `:produce-unsat-cores` (default `true`)
 * `:print-success` (default `false`)
 
