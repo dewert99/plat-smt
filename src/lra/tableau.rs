@@ -1,13 +1,12 @@
 use crate::intern::ADD_SYM;
 use crate::lra::bound::{Bounds, EpsilonRational};
+use crate::lra::ordering::NumVarOrdering;
 use crate::rexp::{Namespace, NamespaceVar};
 use crate::theory::TheoryArgT;
 use crate::util::{format_args2, DebugIter};
 use alloc::vec::Vec;
-use core::cmp::Reverse;
 use core::fmt::Debug;
 use core::ops::{Add, AddAssign, Mul, Neg, Range, Sub, SubAssign};
-use dary_heap::QuaternaryHeap;
 use default_vec2::DefaultVec;
 use lazy_rational::Rational32;
 use log::{debug, trace};
@@ -391,7 +390,7 @@ pub struct ModeledTableau {
     values: DefaultVec<EpsilonRational, NumVar>,
     bounds_history: Vec<(NumVar, Bounds)>,
     /// Stores all NumVars `v` such that `self.values.get(v)` is not in `self.bounds.get(v)`
-    out_of_bounds: QuaternaryHeap<Reverse<NumVar>>,
+    out_of_bounds: NumVarOrdering,
     last_var: NumVar,
 }
 
@@ -402,7 +401,7 @@ impl Default for ModeledTableau {
             bounds: DefaultVec::default(),
             values: DefaultVec::default(),
             bounds_history: Vec::new(),
-            out_of_bounds: QuaternaryHeap::new(),
+            out_of_bounds: Default::default(),
             last_var: NumVar::ONE,
         };
         *res.bounds.get_mut(NumVar::ONE) = Bounds {
@@ -555,7 +554,7 @@ impl ModeledTableau {
         if self.defs.is_free(var) {
             self.update(var, val);
         } else {
-            self.out_of_bounds.push(Reverse(var))
+            self.out_of_bounds.heap_push(var)
         }
     }
 
@@ -574,7 +573,7 @@ impl ModeledTableau {
                 let old_value = *v_value;
                 *v_value = old_value + (offset * v_mul);
                 debug!("Updating {v:?} to {v_value:?} = {old_value:?} + ({offset:?} * {v_mul:?})");
-                self.out_of_bounds.push(Reverse(v));
+                self.out_of_bounds.heap_push(v);
                 buf.push((v, v_mul))
             }
             next = buf.pop();
@@ -642,7 +641,7 @@ impl ModeledTableau {
     }
 
     pub fn check(&mut self) -> Result<(), impl ConflictIter + use<'_>> {
-        while let Some(Reverse(var)) = self.out_of_bounds.pop() {
+        while let Some(var) = self.out_of_bounds.heap_pop() {
             debug!(
                 "Checking {:?} <= {var:?} = {:?} <= {:?}",
                 self.bounds.get(var).lower,
@@ -653,7 +652,7 @@ impl ModeledTableau {
                 debug_assert!(!self.defs.is_free(var));
                 let res = self.pivot_update(var, val);
                 if let Err(err) = res {
-                    self.out_of_bounds.push(Reverse(var));
+                    self.out_of_bounds.heap_push(var);
                     let err = self.iter_bounds(err);
                     debug!(
                         "Found conflict {:?}",
@@ -713,11 +712,17 @@ impl ModeledTableau {
         for var in self.vars() {
             let bounds = self.bounds.get(var);
             let value = self.values.get(var);
+            debug_assert!(
+                bounds.contains_with_epsilon_def(value, Rational32::ZERO),
+                "error in model  {:?} <= {var:?} = {value:?} <= {:?}",
+                bounds.lower,
+                bounds.upper
+            );
             while !bounds.contains_with_epsilon_def(value, epsilon_def) {
                 epsilon_def = epsilon_def * half;
             }
             debug!(
-                "Confirmed {:?} <= {value:?} <= {:?} with {epsilon_def:?}",
+                "Confirmed {:?} <= {var:?} = {value:?} <= {:?} with {epsilon_def:?}",
                 bounds.lower, bounds.upper
             )
         }

@@ -1,6 +1,7 @@
 mod bound;
 mod lra;
 mod lra_impl;
+mod ordering;
 mod tableau;
 
 pub use lra::Lra;
