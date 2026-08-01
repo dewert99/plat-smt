@@ -276,9 +276,16 @@ impl<R: FullBufRead> SexpLexer<R> {
             Some(b'|') => {
                 self.consume_byte();
                 let before = self.idx;
+                let mut all_symbol_bytes = true;
                 while let Some(c) = self.read_byte() {
                     if c == b'|' {
-                        return Ok(Terminal(Symbol(self.last_str(before, 1)?)));
+                        return if all_symbol_bytes {
+                            Ok(Terminal(Symbol(self.last_str(before, 1)?)))
+                        } else {
+                            Ok(Terminal(Symbol(self.last_str(before - 1, 0)?)))
+                        };
+                    } else {
+                        all_symbol_bytes = all_symbol_bytes && is_symbol_byte(c);
                     }
                 }
                 // Do not accept EOI as a terminator.
@@ -469,7 +476,7 @@ pub enum SexpToken<'a, R: FullBufRead> {
 /// SexpLexer::new(sexp.as_bytes()).parse_stream_keep_going((), |_, token| {
 ///     let Ok(SexpToken::List(mut list)) = token else {unreachable!()};
 ///     let t1 = list.next(); // *
-///     assert!(matches!(t1, Some(Ok(Terminal(Symbol("hello world"))))));
+///     assert!(matches!(t1, Some(Ok(Terminal(Symbol("|hello world|"))))));
 ///     drop(t1);
 ///     let t2 = list.next(); // (+ x 1 (+ a b) (+ c d))
 ///     let mut list2 = (|| match t2 {

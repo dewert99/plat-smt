@@ -1,0 +1,8 @@
+sat
+(
+ (define-fun x () Bool true)
+)
+sat
+(
+ (define-fun |y y| () Bool false)
+)
