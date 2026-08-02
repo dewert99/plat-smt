@@ -9,15 +9,15 @@ use crate::util::{minmax, Bind, DebugIter, DisplayFn, HashMap};
 use crate::{SubExp, Symbol};
 use core::fmt::Display;
 use default_vec2::ConstDefault;
-use log::{debug, trace};
+use log::{debug, trace, warn};
 use no_std_compat::prelude::v1::*;
 use perfect_derive::perfect_derive;
 use plat_egg::raw::Language;
 use plat_egg::Id;
 use platsat::{lbool, LMap, Lit};
 use std::fmt::{Debug, Formatter};
-use std::mem;
 use std::ops::Range;
+use std::{iter, mem};
 
 pub type Exp = EitherExp<BoolExp, UExp>;
 
@@ -282,9 +282,7 @@ impl Incremental for Euf {
     }
 }
 
-impl<'a, A: SatTheoryArgT<'a, M: TupleExtract<P, PushInfo>>, P> Theory<A, A::Explain<'a>, P>
-    for Euf
-{
+impl<'a, A: SatTheoryArgT<M: TupleExtract<P, PushInfo>>, P> Theory<A, A::Explain<'a>, P> for Euf {
     fn init(&mut self, acts: &mut A) {
         // Dummy id 0 is used to represent UExps produced by evaluating function expression in
         // the model that didn't exist until now
@@ -343,7 +341,15 @@ impl<'a, A: SatTheoryArgT<'a, M: TupleExtract<P, PushInfo>>, P> Theory<A, A::Exp
     }
 
     fn learn(&mut self, lit: Lit, acts: &mut A) -> Result {
-        self.learn_inner(lit, acts).map_err(|err| {
+        self.learn_inner(lit, acts, false).map_err(|err| {
+            if let Some((id1, id2)) = err {
+                self.conflict(acts, id1, id2)
+            }
+        })
+    }
+
+    fn learn_all(&mut self, prev_model_len: usize, acts: &mut A) -> Result {
+        self.learn_all_inner(prev_model_len, acts).map_err(|err| {
             if let Some((id1, id2)) = err {
                 self.conflict(acts, id1, id2)
             }
@@ -439,7 +445,7 @@ struct MergeContext<'a, A> {
     conflict: &'a mut Option<[Id; 2]>,
 }
 
-impl<'a, 'b, A: SatTheoryArgT<'b>> MergeContext<'a, A> {
+impl<'a, 'b, A: SatTheoryArgT> MergeContext<'a, A> {
     fn propagate(&mut self, lits: &[Lit], b: bool) {
         let lits = lits.iter().map(|l| *l ^ !b);
         debug!("EUF propagates {:?}", DebugIter(lits.clone()));
@@ -504,12 +510,12 @@ impl Euf {
     pub(super) fn find(&self, id: Id) -> Id {
         self.egraph.find(id)
     }
-    pub(super) fn finish_eq_node<'a>(
+    pub(super) fn finish_eq_node(
         &mut self,
         l: Lit,
         cid1: Id,
         cid2: Id,
-        acts: &mut impl SatTheoryArgT<'a>,
+        acts: &mut impl SatTheoryArgT,
     ) {
         debug!(
             "{} is defined as (= {} {})",
@@ -524,7 +530,7 @@ impl Euf {
     }
 
     // union one of (= alt_id alt_id) or (= id id) with true
-    fn make_equality_true<'a>(&mut self, id: Id, alt_id: Id, acts: &mut impl SatTheoryArgT<'a>) {
+    fn make_equality_true(&mut self, id: Id, alt_id: Id, acts: &mut impl SatTheoryArgT) {
         let candidate = SymbolLang::new(EQ_OP, children![alt_id, alt_id]);
         let eq_self = match self.egraph.lookup(candidate) {
             Some(eq_self) => eq_self,
@@ -551,12 +557,7 @@ impl Euf {
         self.lit.ids[lit].expand_weak()
     }
 
-    pub(super) fn id_for_lit<'a>(
-        &mut self,
-        lit: Lit,
-        acts: &mut impl SatTheoryArgT<'a>,
-        weak: bool,
-    ) -> Id {
+    pub(super) fn id_for_lit(&mut self, lit: Lit, acts: &mut impl SatTheoryArgT, weak: bool) -> Id {
         let val = acts.value_lit(lit);
         if val == lbool::TRUE {
             id_for_bool(true)
@@ -586,12 +587,7 @@ impl Euf {
         id_for_bool(b)
     }
 
-    pub(super) fn id_for_exp<'a>(
-        &mut self,
-        exp: Exp,
-        acts: &mut impl SatTheoryArgT<'a>,
-        weak: bool,
-    ) -> Id {
+    pub(super) fn id_for_exp(&mut self, exp: Exp, acts: &mut impl SatTheoryArgT, weak: bool) -> Id {
         match exp {
             Exp::Left(b) => match b.to_lit() {
                 Err(b) => id_for_bool(b),
@@ -601,11 +597,11 @@ impl Euf {
         }
     }
 
-    pub(super) fn union_exp<'a, P>(
+    pub(super) fn union_exp<P>(
         &mut self,
         exp: Exp,
         id: Id,
-        acts: &mut impl SatTheoryArgT<'a, M: TupleExtract<P, PushInfo>>,
+        acts: &mut impl SatTheoryArgT<M: TupleExtract<P, PushInfo>>,
     ) {
         debug!("Union exp {exp:?}, @v{id:?}");
         let exp_id = match exp {
@@ -678,10 +674,10 @@ impl Euf {
         let _ = self.union(acts, id, exp_id, Justification::NOOP);
     }
 
-    pub(super) fn resolve_children<'a>(
+    pub(super) fn resolve_children(
         &mut self,
         children: impl Iterator<Item = Exp>,
-        acts: &mut impl SatTheoryArgT<'a>,
+        acts: &mut impl SatTheoryArgT,
     ) -> Children {
         children.map(|x| self.id_for_exp(x, acts, false)).collect()
     }
@@ -730,12 +726,12 @@ impl Euf {
     fn id_to_display_exp<'a, 'b>(
         &'a self,
         id: Id,
-        acts: &'a impl SatTheoryArgT<'b>,
+        acts: &'a impl SatTheoryArgT,
     ) -> impl Display + 'a {
         self.egraph[id].to_display_exp(id, acts.intern())
     }
 
-    pub(super) fn add_uncanonical<'a, P, A: SatTheoryArgT<'a, M: TupleExtract<P, PushInfo>>>(
+    pub(super) fn add_uncanonical<P, A: SatTheoryArgT<M: TupleExtract<P, PushInfo>>>(
         &mut self,
         op: Op,
         children: Children,
@@ -770,12 +766,12 @@ impl Euf {
 
     /// writes an explanation clause of `id1 == id2` to `explanation`
     /// returns whether the explanation would be a useful clause
-    fn explain<'a, P>(
+    fn explain<P>(
         &mut self,
         id1: Id,
         id2: Id,
         is_final: bool,
-        arg: &mut impl SatExplainTheoryArgT<'a, M: TupleExtract<P, PushInfo>>,
+        arg: &mut impl SatExplainTheoryArgT<M: TupleExtract<P, PushInfo>>,
     ) -> bool {
         let [base_unions, last_unions] = if is_final {
             [0, 0] // don't use shortcut explanations for `explain_propagation_final`
@@ -795,9 +791,9 @@ impl Euf {
         )
     }
 
-    fn conflict<'a, P>(
+    fn conflict<P>(
         &mut self,
-        acts: &mut impl SatTheoryArgT<'a, M: TupleExtract<P, PushInfo>>,
+        acts: &mut impl SatTheoryArgT<M: TupleExtract<P, PushInfo>>,
         id1: Id,
         id2: Id,
     ) {
@@ -811,9 +807,9 @@ impl Euf {
         acts.raise_conflict_using_builder(add_clause)
     }
 
-    pub(super) fn rebuild<'a, P>(
+    pub(super) fn rebuild<P>(
         &mut self,
-        acts: &mut impl SatTheoryArgT<'a, M: TupleExtract<P, PushInfo>>,
+        acts: &mut impl SatTheoryArgT<M: TupleExtract<P, PushInfo>>,
     ) -> CResult {
         debug!("Rebuilding EGraph");
         EGraph::try_rebuild(
@@ -823,9 +819,31 @@ impl Euf {
         )
     }
 
-    pub(super) fn union_inner<'a>(
+    pub(super) fn union_inner_const(
         &mut self,
-        acts: &mut impl SatTheoryArgT<'a>,
+        acts: &mut impl SatTheoryArgT,
+        idc: bool,
+        id: Id,
+        just: Lit,
+    ) -> CResult {
+        let old_len = acts.model().len();
+        self.union_inner(acts, id_for_bool(idc), id, Justification::from_lit(just))?;
+        for l in iter::once(just).chain(acts.model()[old_len..].iter().copied()) {
+            if let Some(x) = self.lit.ids[l ^ idc].expand() {
+                return self.union_inner(
+                    acts,
+                    self.id_for_bool(!idc),
+                    x,
+                    Justification::from_lit(l),
+                );
+            }
+        }
+        Ok(())
+    }
+
+    pub(super) fn union_inner(
+        &mut self,
+        acts: &mut impl SatTheoryArgT,
         id1: Id,
         id2: Id,
         just: Justification,
@@ -857,7 +875,7 @@ impl Euf {
 
     pub(super) fn union<'a, P>(
         &mut self,
-        acts: &mut impl SatTheoryArgT<'a, M: TupleExtract<P, PushInfo>>,
+        acts: &mut impl SatTheoryArgT<M: TupleExtract<P, PushInfo>>,
         id1: Id,
         id2: Id,
         just: Justification,
@@ -867,7 +885,7 @@ impl Euf {
         }
     }
 
-    fn learn_inner<'a>(&mut self, lit: Lit, acts: &mut impl SatTheoryArgT<'a>) -> CResult {
+    fn learn_inner(&mut self, lit: Lit, acts: &mut impl SatTheoryArgT, own: bool) -> CResult {
         debug_assert!(acts.is_ok());
         debug!("EUF learns {lit:?}");
         let just = Justification::from_lit(lit);
@@ -881,14 +899,40 @@ impl Euf {
             // with true because of an optimization in the explanation.
             let node = self.egraph.id_to_node(id);
             if let Some([id0, id1]) = check_node_is_eq(node) {
+                if own && self.egraph.find(id0) != self.egraph.find(id1) {
+                    warn!("Learn own {lit:?} casued union {id0:?} {id1:?}")
+                }
                 self.union_inner(acts, id0, id1, just)?;
             }
             let cid = self.id_for_bool(true);
-            self.union_inner(acts, cid, id, just)?;
-        }
-        if let Some(id) = self.lit.ids[!tlit].expand() {
+
+            if own && self.egraph.find(cid) != self.egraph.find(id) {
+                warn!("Learn own {lit:?} casued union {cid:?} {id:?}")
+            }
+            self.union_inner_const(acts, true, id, lit)?;
+        } else if let Some(id) = self.lit.ids[!tlit].expand() {
             let cid = self.id_for_bool(false);
-            self.union_inner(acts, cid, id, just)?;
+            if own && self.egraph.find(cid) != self.egraph.find(id) {
+                warn!("Learn own {lit:?} casued union {cid:?} {id:?}")
+            }
+            self.union_inner_const(acts, false, id, lit)?;
+        }
+        Ok(())
+    }
+
+    fn learn_all_inner(
+        &mut self,
+        mut prev_model_len: usize,
+        acts: &mut impl SatTheoryArgT,
+    ) -> CResult {
+        let other_prop_len = acts.model().len();
+        while prev_model_len < other_prop_len {
+            self.learn_inner(acts.model()[prev_model_len], acts, false)?;
+            prev_model_len += 1;
+        }
+        while prev_model_len < acts.model().len() {
+            self.learn_inner(acts.model()[prev_model_len], acts, true)?;
+            prev_model_len += 1;
         }
         Ok(())
     }
@@ -896,7 +940,7 @@ impl Euf {
     fn generate_conflict_ids_for_interpolant<
         'a,
         P,
-        A: SatTheoryArgT<'a, M: TupleExtract<P, PushInfo>>,
+        A: SatTheoryArgT<M: TupleExtract<P, PushInfo>>,
     >(
         &mut self,
         acts: &mut A,
@@ -904,7 +948,7 @@ impl Euf {
     ) -> CResult {
         for i in 0..clause(acts).len() {
             let lit = clause(acts)[i];
-            self.learn_inner(!lit, acts)?;
+            self.learn_inner(!lit, acts, false)?;
         }
         self.rebuild(acts)
     }

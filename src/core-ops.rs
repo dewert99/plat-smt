@@ -158,9 +158,8 @@ impl<
 pub trait DefaultDistinct {}
 
 impl<
-        'a,
         I: DistinctElts,
-        Arg: SatTheoryArgT<'a>,
+        Arg: SatTheoryArgT,
         Th: Collapse<Eq<I::Exp>, Arg, BaseMarker> + DefaultDistinct,
     > Collapse<RawDistinct<I>, Arg, BaseMarker> for Th
 {
@@ -214,9 +213,8 @@ pub trait DefaultIte<Exp> {
 
 pub struct IteMarker<Eq, Fresh>(Eq, Fresh);
 impl<
-        'a,
         Exp: ExpLike,
-        A: SatTheoryArgT<'a>,
+        A: SatTheoryArgT,
         M,
         Th: Collapse<Eq<Exp>, A, BaseMarker<M>> + Collapse<Fresh<Exp>, A, BaseMarker> + DefaultIte<Exp>,
     > Collapse<Ite<Exp>, A, BaseMarker<M>> for Th

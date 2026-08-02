@@ -1,0 +1,7 @@
+(declare-sort EP)
+(declare-const a EP)
+(declare-const b EP)
+(declare-const p Bool)
+(assert (! (= p (= a b)) :named a0))
+(check-sat-assuming (p))
+(get-model)

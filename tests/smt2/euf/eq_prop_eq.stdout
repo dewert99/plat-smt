@@ -1,0 +1,7 @@
+sat
+(
+ (define-fun a () EP (as @v4 EP))
+ (define-fun a0 () Bool true)
+ (define-fun b () EP (as @v4 EP))
+ (define-fun p () Bool true)
+)
