@@ -819,28 +819,6 @@ impl Euf {
         )
     }
 
-    pub(super) fn union_inner_const(
-        &mut self,
-        acts: &mut impl SatTheoryArgT,
-        idc: bool,
-        id: Id,
-        just: Lit,
-    ) -> CResult {
-        let old_len = acts.model().len();
-        self.union_inner(acts, id_for_bool(idc), id, Justification::from_lit(just))?;
-        for l in iter::once(just).chain(acts.model()[old_len..].iter().copied()) {
-            if let Some(x) = self.lit.ids[l ^ idc].expand() {
-                return self.union_inner(
-                    acts,
-                    self.id_for_bool(!idc),
-                    x,
-                    Justification::from_lit(l),
-                );
-            }
-        }
-        Ok(())
-    }
-
     pub(super) fn union_inner(
         &mut self,
         acts: &mut impl SatTheoryArgT,
@@ -890,7 +868,10 @@ impl Euf {
         debug!("EUF learns {lit:?}");
         let just = Justification::from_lit(lit);
         let tlit = lit.apply_sign(true);
+        let mut prop = 0;
+        let model_len = acts.model().len();
         if let Some(id) = self.lit.ids[tlit].expand() {
+            prop += 3;
             if !matches!(&*self.egraph[id], EClass::Bool(_)) {
                 // this is just a reminder of how to explain why a distinct node is false
                 return Ok(());
@@ -909,13 +890,28 @@ impl Euf {
             if own && self.egraph.find(cid) != self.egraph.find(id) {
                 warn!("Learn own {lit:?} casued union {cid:?} {id:?}")
             }
-            self.union_inner_const(acts, true, id, lit)?;
-        } else if let Some(id) = self.lit.ids[!tlit].expand() {
+            self.union_inner(acts, id_for_bool(true), id, just)?;
+        }
+        if let Some(id) = self.lit.ids[!tlit].expand() {
+            prop += 1;
             let cid = self.id_for_bool(false);
             if own && self.egraph.find(cid) != self.egraph.find(id) {
                 warn!("Learn own {lit:?} casued union {cid:?} {id:?}")
             }
-            self.union_inner_const(acts, false, id, lit)?;
+            self.union_inner(acts, id_for_bool(false), id, just)?;
+        }
+        if prop & 1 == 1 {
+            let idc = (prop >> 1) != 0;
+            for l in acts.model()[model_len..].iter().copied() {
+                if let Some(x) = self.lit.ids[l ^ idc].expand() {
+                    return self.union_inner(
+                        acts,
+                        self.id_for_bool(!idc),
+                        x,
+                        Justification::from_lit(l),
+                    );
+                }
+            }
         }
         Ok(())
     }
