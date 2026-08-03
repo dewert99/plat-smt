@@ -348,7 +348,12 @@ impl<'a, A: SatTheoryArgT, P> Theory<A, A::Explain<'a>, P> for Lra {
         Ok(())
     }
 
-    fn learn_own_prop(&mut self, _: Lit, _: &mut A) -> Result<(), ()> {
+    fn learn_all(&mut self, mut prev_model_len: usize, acts: &mut A) -> Result<(), ()> {
+        let other_prop_len = acts.model().len();
+        while prev_model_len < other_prop_len {
+            Theory::<_, _>::learn(self, acts.model()[prev_model_len], acts)?;
+            prev_model_len += 1;
+        }
         Ok(())
     }
 

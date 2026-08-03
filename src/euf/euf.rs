@@ -9,15 +9,15 @@ use crate::util::{minmax, Bind, DebugIter, DisplayFn, HashMap};
 use crate::{SubExp, Symbol};
 use core::fmt::Display;
 use default_vec2::ConstDefault;
-use log::{debug, trace, warn};
+use log::{debug, trace};
 use no_std_compat::prelude::v1::*;
 use perfect_derive::perfect_derive;
 use plat_egg::raw::Language;
 use plat_egg::Id;
 use platsat::{lbool, LMap, Lit};
 use std::fmt::{Debug, Formatter};
+use std::mem;
 use std::ops::Range;
-use std::{iter, mem};
 
 pub type Exp = EitherExp<BoolExp, UExp>;
 
@@ -341,7 +341,7 @@ impl<'a, A: SatTheoryArgT<M: TupleExtract<P, PushInfo>>, P> Theory<A, A::Explain
     }
 
     fn learn(&mut self, lit: Lit, acts: &mut A) -> Result {
-        self.learn_inner(lit, acts, false).map_err(|err| {
+        self.learn_inner(lit, acts).map_err(|err| {
             if let Some((id1, id2)) = err {
                 self.conflict(acts, id1, id2)
             }
@@ -863,7 +863,7 @@ impl Euf {
         }
     }
 
-    fn learn_inner(&mut self, lit: Lit, acts: &mut impl SatTheoryArgT, own: bool) -> CResult {
+    fn learn_inner(&mut self, lit: Lit, acts: &mut impl SatTheoryArgT) -> CResult {
         debug_assert!(acts.is_ok());
         debug!("EUF learns {lit:?}");
         let just = Justification::from_lit(lit);
@@ -880,24 +880,12 @@ impl Euf {
             // with true because of an optimization in the explanation.
             let node = self.egraph.id_to_node(id);
             if let Some([id0, id1]) = check_node_is_eq(node) {
-                if own && self.egraph.find(id0) != self.egraph.find(id1) {
-                    warn!("Learn own {lit:?} casued union {id0:?} {id1:?}")
-                }
                 self.union_inner(acts, id0, id1, just)?;
-            }
-            let cid = self.id_for_bool(true);
-
-            if own && self.egraph.find(cid) != self.egraph.find(id) {
-                warn!("Learn own {lit:?} casued union {cid:?} {id:?}")
             }
             self.union_inner(acts, id_for_bool(true), id, just)?;
         }
         if let Some(id) = self.lit.ids[!tlit].expand() {
             prop += 1;
-            let cid = self.id_for_bool(false);
-            if own && self.egraph.find(cid) != self.egraph.find(id) {
-                warn!("Learn own {lit:?} casued union {cid:?} {id:?}")
-            }
             self.union_inner(acts, id_for_bool(false), id, just)?;
         }
         if prop & 1 == 1 {
@@ -923,11 +911,7 @@ impl Euf {
     ) -> CResult {
         let other_prop_len = acts.model().len();
         while prev_model_len < other_prop_len {
-            self.learn_inner(acts.model()[prev_model_len], acts, false)?;
-            prev_model_len += 1;
-        }
-        while prev_model_len < acts.model().len() {
-            self.learn_inner(acts.model()[prev_model_len], acts, true)?;
+            self.learn_inner(acts.model()[prev_model_len], acts)?;
             prev_model_len += 1;
         }
         Ok(())
@@ -944,7 +928,7 @@ impl Euf {
     ) -> CResult {
         for i in 0..clause(acts).len() {
             let lit = clause(acts)[i];
-            self.learn_inner(!lit, acts, false)?;
+            self.learn_inner(!lit, acts)?;
         }
         self.rebuild(acts)
     }
