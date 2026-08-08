@@ -1,27 +1,27 @@
 sat
 (
- (define-fun a () S (as @v4 S))
- (define-fun b () S (as @v4 S))
+ (define-fun a () S (as @v6 S))
+ (define-fun b () S (as @v6 S))
  (define-fun f ((x!0 S)) Bool
-  (ite (= x!0 (as @v4 S)) true
+  (ite (= x!0 (as @v6 S)) true
    false))
 )
 sat
-((a (as @v4 S))
- (b (as @v4 S))
- (c (as @v7 S2))
+((a (as @v6 S))
+ (b (as @v6 S))
+ (c (as @v9 S2))
  ((f a) true)
- ((g c) (as @v4 S)))
+ ((g c) (as @v6 S)))
 unsat
 ()
 sat
 (
- (define-fun a () S (as @v4 S))
- (define-fun b () S (as @v4 S))
- (define-fun c () S (as @v7 S))
+ (define-fun a () S (as @v6 S))
+ (define-fun b () S (as @v6 S))
+ (define-fun c () S (as @v9 S))
  (define-fun f ((x!0 S)) Bool
-  (ite (= x!0 (as @v4 S)) true
-  (ite (= x!0 (as @v7 S)) false
+  (ite (= x!0 (as @v6 S)) true
+  (ite (= x!0 (as @v9 S)) false
    false)))
 )
 unsat
