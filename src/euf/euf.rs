@@ -1,20 +1,20 @@
-use super::egraph::{children, Children, EGraph, Op, PushInfo as EGPushInfo, SymbolLang, EQ_OP};
-use super::explain::{check_node_is_eq, EqIds, Justification};
+use super::egraph::{Children, EGraph, EQ_OP, Op, PushInfo as EGPushInfo, SymbolLang, children};
+use super::explain::{EqIds, Justification, check_node_is_eq};
 use crate::exp::{BoolExp, EitherExp};
 use crate::intern::{
-    DisplayInterned, InternInfo, Sort, BOOL_SORT, EQ_SYM, FALSE_SYM, LET_SYM, TRUE_SYM,
+    BOOL_SORT, DisplayInterned, EQ_SYM, FALSE_SYM, InternInfo, LET_SYM, Sort, TRUE_SYM,
 };
 use crate::theory::{Incremental, Theory, TupleExtract};
-use crate::util::{minmax, Bind, DebugIter, DisplayFn, HashMap};
+use crate::util::{Bind, DebugIter, DisplayFn, HashMap, minmax};
 use crate::{SubExp, Symbol};
 use core::fmt::Display;
 use default_vec2::ConstDefault;
 use log::{debug, trace};
 use no_std_compat::prelude::v1::*;
 use perfect_derive::perfect_derive;
-use plat_egg::raw::Language;
 use plat_egg::Id;
-use platsat::{lbool, LMap, Lit};
+use plat_egg::raw::Language;
+use platsat::{LMap, Lit, lbool};
 use std::fmt::{Debug, Formatter};
 use std::mem;
 use std::ops::Range;
@@ -868,10 +868,7 @@ impl Euf {
         debug!("EUF learns {lit:?}");
         let just = Justification::from_lit(lit);
         let tlit = lit.apply_sign(true);
-        let mut prop = 0;
-        let model_len = acts.model().len();
         if let Some(id) = self.lit.ids[tlit].expand() {
-            prop += 3;
             if !matches!(&*self.egraph[id], EClass::Bool(_)) {
                 // this is just a reminder of how to explain why a distinct node is false
                 return Ok(());
@@ -882,24 +879,12 @@ impl Euf {
             if let Some([id0, id1]) = check_node_is_eq(node) {
                 self.union_inner(acts, id0, id1, just)?;
             }
-            self.union_inner(acts, id_for_bool(true), id, just)?;
+            let cid = self.id_for_bool(true);
+            self.union_inner(acts, cid, id, just)?;
         }
         if let Some(id) = self.lit.ids[!tlit].expand() {
-            prop += 1;
-            self.union_inner(acts, id_for_bool(false), id, just)?;
-        }
-        if prop & 1 == 1 {
-            let idc = (prop >> 1) != 0;
-            for l in acts.model()[model_len..].iter().copied() {
-                if let Some(x) = self.lit.ids[l ^ idc].expand() {
-                    return self.union_inner(
-                        acts,
-                        self.id_for_bool(!idc),
-                        x,
-                        Justification::from_lit(l),
-                    );
-                }
-            }
+            let cid = self.id_for_bool(false);
+            self.union_inner(acts, cid, id, just)?;
         }
         Ok(())
     }
