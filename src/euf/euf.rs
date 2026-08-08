@@ -1,20 +1,20 @@
-use super::egraph::{children, Children, EGraph, Op, PushInfo as EGPushInfo, SymbolLang, EQ_OP};
-use super::explain::{check_node_is_eq, EqIds, Justification};
+use super::egraph::{Children, EGraph, EQ_OP, Op, PushInfo as EGPushInfo, SymbolLang, children};
+use super::explain::{EqIds, Justification, check_node_is_eq};
 use crate::exp::{BoolExp, EitherExp};
 use crate::intern::{
-    DisplayInterned, InternInfo, Sort, BOOL_SORT, EQ_SYM, FALSE_SYM, LET_SYM, TRUE_SYM,
+    BOOL_SORT, DisplayInterned, EQ_SYM, FALSE_SYM, InternInfo, LET_SYM, Sort, TRUE_SYM,
 };
 use crate::theory::{Incremental, Theory, TupleExtract};
-use crate::util::{minmax, Bind, DebugIter, DisplayFn, HashMap};
+use crate::util::{Bind, DebugIter, DisplayFn, HashMap, minmax};
 use crate::{SubExp, Symbol};
 use core::fmt::Display;
 use default_vec2::ConstDefault;
 use log::{debug, trace};
 use no_std_compat::prelude::v1::*;
 use perfect_derive::perfect_derive;
-use plat_egg::raw::Language;
 use plat_egg::Id;
-use platsat::{lbool, LMap, Lit};
+use plat_egg::raw::Language;
+use platsat::{LMap, Lit, lbool};
 use std::fmt::{Debug, Formatter};
 use std::mem;
 use std::ops::Range;
@@ -298,20 +298,21 @@ impl<'a, A: SatTheoryArgT<'a, M: TupleExtract<P, PushInfo>>, P> Theory<A, A::Exp
             debug_assert_eq!(id, id_for_bool(b));
             acts.log_def_exp(UExp::new(id, BOOL_SORT), BoolExp::from_bool(b));
         }
-        let t_eq_f = self.egraph.add(
-            EQ_OP,
-            children![id_for_bool(false), id_for_bool(true)],
-            |_, _| EClass::Bool(BoolClass::Const(false)),
-        );
-        self.egraph.union(
-            t_eq_f,
-            self.id_for_bool(false),
-            Justification::NOOP,
-            |d1, d2| {
-                debug_assert!(matches!(d1, EClass::Bool(BoolClass::Const(false))));
-                debug_assert!(matches!(d2, EClass::Bool(BoolClass::Const(false))));
-            },
-        )
+        for (l, r, res) in [
+            (true, true, true),
+            (false, false, true),
+            (false, true, false),
+        ] {
+            let eq = self
+                .egraph
+                .add(EQ_OP, children![id_for_bool(l), id_for_bool(r)], |_, _| {
+                    EClass::Bool(BoolClass::Const(res))
+                });
+            self.egraph
+                .union(eq, self.id_for_bool(res), Justification::NOOP, |d1, d2| {
+                    debug_assert_eq!(*d1, d2);
+                })
+        }
     }
     fn initial_check(&mut self, acts: &mut A) -> Result {
         while (self.requests_handled as usize) < self.eq_ids.requests.len() {

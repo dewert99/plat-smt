@@ -1,5 +1,5 @@
-use super::egraph::{children, Children, Op, SymbolLang, EQ_OP};
-use super::euf::{litvec, BoolClass, EClass, Euf, Exp, PushInfo};
+use super::egraph::{Children, EQ_OP, Op, SymbolLang, children};
+use super::euf::{BoolClass, EClass, Euf, Exp, PushInfo, litvec};
 use super::explain::Justification;
 use crate::collapse::{BaseMarker, Collapse, CollapseOut, ExprContext};
 use crate::core_ops::{DefaultIte, DistinctElts, DistinctPf, Eq, EqPf, ItePf, RawDistinct};
@@ -8,24 +8,24 @@ use crate::full_theory::{
     FnSort, FullTheory, FunctionAssignmentT, PrepareModelKind, TopLevelCollapse,
 };
 use crate::intern::{
-    DisplayInterned, InternInfo, Symbol, BOOL_SORT, DISTINCT_SYM, DISTINGUISHER_SYM, REAL_SORT,
+    BOOL_SORT, DISTINCT_SYM, DISTINGUISHER_SYM, DisplayInterned, InternInfo, REAL_SORT, Symbol,
 };
 use crate::outer_solver::Bound;
 use crate::parser::{SexpTerminal, SmtlibLogic};
-use crate::parser_fragment::{index_iter, ParserFragment, PfResult};
-use crate::recorder::{dep_checker, Recorder};
-use crate::rexp::{rexp_debug, AsRexp, Namespace, NamespaceVar, Rexp};
+use crate::parser_fragment::{ParserFragment, PfResult, index_iter};
+use crate::recorder::{Recorder, dep_checker};
+use crate::rexp::{AsRexp, Namespace, NamespaceVar, Rexp, rexp_debug};
 use crate::solver::{SolverCollapse, SolverWithBound};
 use crate::theory::{Incremental, TupleExtract};
 use crate::tseitin::{BoolOpPf, SatExplainTheoryArgT, SatTheoryArgT};
-use crate::util::{pairwise_sym, HashMap};
+use crate::util::{HashMap, pairwise_sym};
 use crate::{AddSexpError, BoolExp, Conjunction, ExpLike, HasSort, Solver, Sort, SubExp, SuperExp};
 use core::fmt::Formatter;
 use core::marker::PhantomData;
 use core::ops::Deref;
 use core::slice::Iter;
-use plat_egg::raw::Language;
 use plat_egg::Id;
+use plat_egg::raw::Language;
 use platsat::Lit;
 
 #[derive(Copy, Clone, Eq, PartialEq, Hash, Ord, PartialOrd)]
@@ -384,8 +384,14 @@ impl<'a, M, A: SatTheoryArgT<'a, M: TupleExtract<M, PushInfo>>> Collapse<Eq<Exp>
             let id2 = self.id_for_exp(e2, acts, false);
             let (added, res) = self.add_eq_node(id1, id2, ctx, acts);
             if added {
-                if let [Some(b1), Some(b2)] = [e1, e2].map(BoolExp::from_downcast) {
-                    acts.xor(b1, b2, ExprContext::AssertEq(!res));
+                for (e, id) in [(e1, id1), (e2, id2)] {
+                    if let Some(l) = e.downcast().and_then(|e: BoolExp| e.to_lit().ok()) {
+                        if let EClass::Bool(BoolClass::Unknown(lits)) = &mut *self.egraph[id] {
+                            if lits.is_empty() {
+                                lits.push(l)
+                            }
+                        }
+                    }
                 }
             }
             res
@@ -441,16 +447,16 @@ type FnSortSolver<Th, R> =
 pub struct UFnPf;
 
 impl<
-        M,
-        MExp,
-        MEq,
-        MS,
-        Th: Incremental
-            + FullTheory<R>
-            + TopLevelCollapse<Th::Exp, MExp, R>
-            + TopLevelCollapse<Eq<Th::Exp>, MEq, R>,
-        R: Recorder,
-    > ParserFragment<Th::Exp, FnSortSolver<Th, R>, (M, MExp, MEq, MS)> for UFnPf
+    M,
+    MExp,
+    MEq,
+    MS,
+    Th: Incremental
+        + FullTheory<R>
+        + TopLevelCollapse<Th::Exp, MExp, R>
+        + TopLevelCollapse<Eq<Th::Exp>, MEq, R>,
+    R: Recorder,
+> ParserFragment<Th::Exp, FnSortSolver<Th, R>, (M, MExp, MEq, MS)> for UFnPf
 where
     Solver<Th, R>: for<'a> SolverCollapse<UFn<UFnIter<'a, MS, Exp, Th::Exp>>, M>,
     Th::Exp: SuperExp<Exp, MS>,
@@ -533,15 +539,13 @@ impl<'a, M, Sub, Super: SuperExp<Sub, M> + Copy> Iterator for UFnIter<'a, M, Sub
 pub struct EgraphPf<I>(I);
 
 impl<
-        R: Recorder,
-        E: SuperExp<Exp, MS> + Copy,
-        S: TupleExtract<MS, Euf>
-            + FullTheory<R>
-            + Incremental<LevelMarker: TupleExtract<MS, PushInfo>>,
-        M,
-        MS,
-        I: ParserFragment<E, FnSortSolver<S, R>, M>,
-    > ParserFragment<E, FnSortSolver<S, R>, (M, MS)> for EgraphPf<I>
+    R: Recorder,
+    E: SuperExp<Exp, MS> + Copy,
+    S: TupleExtract<MS, Euf> + FullTheory<R> + Incremental<LevelMarker: TupleExtract<MS, PushInfo>>,
+    M,
+    MS,
+    I: ParserFragment<E, FnSortSolver<S, R>, M>,
+> ParserFragment<E, FnSortSolver<S, R>, (M, MS)> for EgraphPf<I>
 {
     fn supports(&self, s: Symbol) -> bool {
         self.0.supports(s)

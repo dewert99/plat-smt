@@ -1,7 +1,7 @@
 unsat
 ((= a b))
 sat
-((a (as @v4 S1))
- (b (as @v5 S1))
- ((f a a) (as @v6 (S2 S1)))
- ((f a b) (as @v7 (S2 S1))))
+((a (as @v6 S1))
+ (b (as @v7 S1))
+ ((f a a) (as @v8 (S2 S1)))
+ ((f a b) (as @v9 (S2 S1))))
