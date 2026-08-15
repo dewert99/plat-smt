@@ -894,8 +894,7 @@ impl Euf {
         mut prev_model_len: usize,
         acts: &mut impl SatTheoryArgT,
     ) -> CResult {
-        let other_prop_len = acts.model().len();
-        while prev_model_len < other_prop_len {
+        while prev_model_len < acts.model().len() {
             self.learn_inner(acts.model()[prev_model_len], acts)?;
             prev_model_len += 1;
         }
