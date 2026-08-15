@@ -163,12 +163,12 @@ impl Lra {
     pub(super) fn bind_sum<'a>(&mut self, sum: Sum, acts: &mut impl TheoryArgT) -> NumExp {
         self.tableau.sum(sum, acts)
     }
-    pub(super) fn bind_lower_bound<'a>(
+    pub(super) fn bind_lower_bound(
         &mut self,
         num: NumExp,
         bound: Rational32,
         mut strict: bool,
-        acts: &mut impl SatTheoryArgT<'a>,
+        acts: &mut impl SatTheoryArgT,
     ) -> BoolExp {
         let bound = bound - num.add;
         if num.mul.is_zero() {
@@ -187,12 +187,12 @@ impl Lra {
         }
     }
 
-    fn bind_lower_bound_h<'a>(
+    fn bind_lower_bound_h(
         &mut self,
         nvar: NumVar,
         bound: Rational32,
         strict: bool,
-        acts: &mut impl SatTheoryArgT<'a>,
+        acts: &mut impl SatTheoryArgT,
     ) -> Var {
         let lbound = LowerBound {
             var: nvar,
@@ -237,9 +237,9 @@ impl Lra {
     }
 }
 
-fn propagate<'a>(
+fn propagate(
     bounds: &BTreeMap<LowerBound, Var>,
-    acts: &mut impl SatTheoryArgT<'a>,
+    acts: &mut impl SatTheoryArgT,
     orig_var: NumVar,
     new: EpsilonRational,
     dir: BoundDir,
@@ -266,8 +266,8 @@ fn propagate<'a>(
     }
 }
 
-fn propagate_bound<'a>(
-    acts: &mut impl SatTheoryArgT<'a>,
+fn propagate_bound(
+    acts: &mut impl SatTheoryArgT,
     orig_var: NumVar,
     dir: BoundDir,
     bound: LowerBound,
@@ -329,7 +329,7 @@ impl Incremental for Lra {
     }
 }
 
-impl<'a, A: SatTheoryArgT<'a>, P> Theory<A, A::Explain<'a>, P> for Lra {
+impl<'a, A: SatTheoryArgT, P> Theory<A, A::Explain<'a>, P> for Lra {
     fn learn(&mut self, lit: Lit, acts: &mut A) -> Result<(), ()> {
         let bound = self.var_map.get(lit.var());
         if let Some(LowerBound { var, bound, strict }) = bound {
@@ -344,6 +344,15 @@ impl<'a, A: SatTheoryArgT<'a>, P> Theory<A, A::Explain<'a>, P> for Lra {
                 .add_bound(var, bound, dir, strict, |var, new, dir| {
                     propagate(&self.bounds, acts, var, new, dir)
                 })?;
+        }
+        Ok(())
+    }
+
+    fn learn_all(&mut self, mut prev_model_len: usize, acts: &mut A) -> Result<(), ()> {
+        let other_prop_len = acts.model().len();
+        while prev_model_len < other_prop_len {
+            Theory::<_, _>::learn(self, acts.model()[prev_model_len], acts)?;
+            prev_model_len += 1;
         }
         Ok(())
     }

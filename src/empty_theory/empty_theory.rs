@@ -19,8 +19,15 @@ pub struct EmptyTheory;
 #[derive(Copy, Clone, Debug)]
 pub struct PushInfo;
 
-impl<'a, A: SatTheoryArgT<'a>, P> Theory<A, A::Explain<'a>, P> for EmptyTheory {
+impl<A, E, P> Theory<A, E, P> for EmptyTheory {
     fn learn(&mut self, _: Lit, _: &mut A) -> Result<(), ()> {
+        Ok(())
+    }
+
+    fn learn_all<'a>(&mut self, _: usize, _: &mut A) -> Result<(), ()>
+    where
+        A: SatTheoryArgT,
+    {
         Ok(())
     }
 
@@ -28,7 +35,7 @@ impl<'a, A: SatTheoryArgT<'a>, P> Theory<A, A::Explain<'a>, P> for EmptyTheory {
         Ok(())
     }
 
-    fn explain_propagation(&mut self, _: Lit, _: &mut A::Explain<'a>, _: bool, _: u8) {
+    fn explain_propagation(&mut self, _: Lit, _: &mut E, _: bool, _: u8) {
         unreachable!()
     }
 }
@@ -57,7 +64,7 @@ impl<R: Recorder> FullTheory<R> for EmptyTheory {
     }
 }
 
-impl<'a, A: SatTheoryArgT<'a>> Collapse<Eq<BoolExp>, A, BaseMarker> for EmptyTheory {
+impl<A: SatTheoryArgT> Collapse<Eq<BoolExp>, A, BaseMarker> for EmptyTheory {
     fn collapse(&mut self, t: Eq<BoolExp>, acts: &mut A, ctx: ExprContext<BoolExp>) -> BoolExp {
         !acts.xor(t.0, t.1, ctx.negate())
     }
@@ -67,7 +74,7 @@ impl<'a, A: SatTheoryArgT<'a>> Collapse<Eq<BoolExp>, A, BaseMarker> for EmptyThe
     }
 }
 
-impl<'a, 'b, I: DistinctElts<Exp = BoolExp>, A: SatTheoryArgT<'a>>
+impl<'a, 'b, I: DistinctElts<Exp = BoolExp>, A: SatTheoryArgT>
     Collapse<RawDistinct<I>, A, BaseMarker> for EmptyTheory
 {
     fn collapse(&mut self, t: RawDistinct<I>, acts: &mut A, ctx: ExprContext<BoolExp>) -> BoolExp {

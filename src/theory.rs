@@ -287,6 +287,26 @@ pub trait Theory<Arg, ExplainArg, P = BaseMarker> {
     /// Add a literal to the model, return `Err` if there is a conflict
     fn learn(&mut self, lit: Lit, acts: &mut Arg) -> Result<(), ()>;
 
+    fn learn_own_prop(&mut self, lit: Lit, acts: &mut Arg) -> Result<(), ()> {
+        self.learn(lit, acts)
+    }
+
+    fn learn_all(&mut self, mut prev_model_len: usize, acts: &mut Arg) -> Result<(), ()>
+    where
+        Arg: SatTheoryArgT,
+    {
+        let other_prop_len = acts.model().len();
+        while prev_model_len < other_prop_len {
+            self.learn(acts.model()[prev_model_len], acts)?;
+            prev_model_len += 1;
+        }
+        while prev_model_len < acts.model().len() {
+            self.learn_own_prop(acts.model()[prev_model_len], acts)?;
+            prev_model_len += 1;
+        }
+        Ok(())
+    }
+
     /// Check partial model before a decision is made
     ///
     /// The whole partial model so far is `acts.model()`,
@@ -361,6 +381,26 @@ impl<
         self.0.learn(lit, acts)?;
         *acts.marker() += T1::adjusted_prop_types();
         self.1.learn(lit, acts)
+    }
+
+    fn learn_all(&mut self, prev_model_len: usize, acts: &mut Arg) -> Result<(), ()>
+    where
+        Arg: SatTheoryArgT,
+    {
+        let mut t0_len = prev_model_len;
+        let mut t1_len = prev_model_len;
+        loop {
+            self.0.learn_all(t0_len, acts)?;
+            t0_len = acts.model().len();
+            *acts.marker() += T1::adjusted_prop_types();
+            self.1.learn_all(t1_len, acts)?;
+            t1_len = acts.model().len();
+            if t1_len == t0_len {
+                return Ok(());
+            } else {
+                *acts.marker() -= T1::adjusted_prop_types();
+            }
+        }
     }
 
     fn pre_decision_check(&mut self, acts: &mut Arg) -> Result<(), ()> {
@@ -544,12 +584,9 @@ impl<
         };
         let _: Result<(), ()> = (|| {
             self.th.initial_check(&mut acts)?;
-            while (self.prev_model_len as usize) < acts.model().len() {
-                acts.prop_marker = 0;
-                self.th
-                    .learn(acts.model()[self.prev_model_len as usize], &mut acts)?;
-                self.prev_model_len += 1;
-            }
+            acts.prop_marker = 0;
+            self.th.learn_all(self.prev_model_len as usize, &mut acts)?;
+            self.prev_model_len = acts.model().len() as u32;
             if acts.model().len() == init_len {
                 acts.prop_marker = 0;
                 self.th.pre_decision_check(&mut acts)

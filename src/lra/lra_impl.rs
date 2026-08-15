@@ -24,7 +24,7 @@ impl SpecExp<NumSpec, BaseMarker> for Lra {
     type SpecExp = NumExp;
 }
 
-impl<'a, Arg: SatTheoryArgT<'a>> Collapse<NumExp, Arg, BaseMarker> for Lra {
+impl<Arg: SatTheoryArgT> Collapse<NumExp, Arg, BaseMarker> for Lra {
     fn collapse(&mut self, t: NumExp, _arg: &mut Arg, _: ExprContext<NumExp>) -> NumExp {
         if let Some(epsilon_def) = self.epsilon_def {
             let EpsilonRational { base, epsilon } = self.get_value(t);
@@ -93,7 +93,7 @@ impl CollapseOut for Inequality {
     type Out = BoolExp;
 }
 
-impl<'a, A: SatTheoryArgT<'a>> Collapse<Inequality, A, BaseMarker> for Lra {
+impl<A: SatTheoryArgT> Collapse<Inequality, A, BaseMarker> for Lra {
     fn collapse(&mut self, ineq: Inequality, acts: &mut A, _ctx: ExprContext<BoolExp>) -> BoolExp {
         if let Some(x) = ineq.lower.try_into_rational_for_opt() {
             self.bind_lower_bound(ineq.upper, x, ineq.strict, acts)
@@ -175,7 +175,7 @@ pub type LePf = InequalityPf<true, false>;
 pub type GtPf = InequalityPf<false, true>;
 pub type GePf = InequalityPf<false, false>;
 
-impl<'a, A: SatTheoryArgT<'a>> Collapse<Eq<NumExp>, A, BaseMarker> for Lra {
+impl<A: SatTheoryArgT> Collapse<Eq<NumExp>, A, BaseMarker> for Lra {
     fn collapse(&mut self, eq: Eq<NumExp>, acts: &mut A, ctx: ExprContext<BoolExp>) -> BoolExp {
         let le = self.collapse(Inequality::le(eq.0, eq.1), acts, ExprContext::Exact);
         let ge = self.collapse(Inequality::ge(eq.0, eq.1), acts, ExprContext::Exact);

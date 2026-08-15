@@ -129,13 +129,13 @@ impl Euf {
         }
     }
 
-    fn sorted_fn<'a, P>(
+    fn sorted_fn<P>(
         &mut self,
         f: Op,
         children: Children,
         target_sort: Sort,
         ctx: ExprContext<Exp>,
-        acts: &mut impl SatTheoryArgT<'a, M: TupleExtract<P, PushInfo>>,
+        acts: &mut impl SatTheoryArgT<M: TupleExtract<P, PushInfo>>,
     ) -> (Exp, bool) {
         if acts.in_model() {
             return self.model_sorted_fn(f, children, target_sort);
@@ -184,12 +184,12 @@ impl Euf {
         (exp, added)
     }
 
-    pub(super) fn add_eq_node<'a, P>(
+    pub(super) fn add_eq_node<P>(
         &mut self,
         id1: Id,
         id2: Id,
         ctx: ExprContext<BoolExp>,
-        acts: &mut impl SatTheoryArgT<'a, M: TupleExtract<P, PushInfo>>,
+        acts: &mut impl SatTheoryArgT<M: TupleExtract<P, PushInfo>>,
     ) -> (bool, BoolExp) {
         let cid1 = self.find(id1);
         let cid2 = self.find(id2);
@@ -207,11 +207,11 @@ impl Euf {
         (added, exp)
     }
 
-    fn assert_eq<'a, P>(
+    fn assert_eq<P>(
         &mut self,
         e1: Exp,
         e2: Exp,
-        acts: &mut impl SatTheoryArgT<'a, M: TupleExtract<P, PushInfo>>,
+        acts: &mut impl SatTheoryArgT<M: TupleExtract<P, PushInfo>>,
     ) -> () {
         match (e1, e2) {
             (Exp::Left(b1), Exp::Left(b2)) => match (b1.to_lit(), b2.to_lit()) {
@@ -241,9 +241,9 @@ impl Euf {
         }
     }
 
-    fn unify_lits<'a, P>(
+    fn unify_lits<P>(
         &mut self,
-        acts: &mut impl SatTheoryArgT<'a, M: TupleExtract<P, PushInfo>>,
+        acts: &mut impl SatTheoryArgT<M: TupleExtract<P, PushInfo>>,
         b1: Lit,
         b2: Lit,
     ) {
@@ -287,7 +287,7 @@ impl<'a, Arg> Collapse<Fresh<UExp>, Arg, BaseMarker> for Euf {
     }
 }
 
-impl<'a, 'b, M, I: DistinctElts<Exp = Exp>, A: SatTheoryArgT<'a, M: TupleExtract<M, PushInfo>>>
+impl<'a, 'b, M, I: DistinctElts<Exp = Exp>, A: SatTheoryArgT<M: TupleExtract<M, PushInfo>>>
     Collapse<RawDistinct<I>, A, BaseMarker<M>> for Euf
 {
     fn collapse(
@@ -360,7 +360,7 @@ impl<'a, 'b, M, I: DistinctElts<Exp = Exp>, A: SatTheoryArgT<'a, M: TupleExtract
     }
 }
 
-impl<'a, M, A: SatTheoryArgT<'a, M: TupleExtract<M, PushInfo>>> Collapse<Eq<Exp>, A, BaseMarker<M>>
+impl<'a, M, A: SatTheoryArgT<M: TupleExtract<M, PushInfo>>> Collapse<Eq<Exp>, A, BaseMarker<M>>
     for Euf
 {
     fn collapse(
@@ -412,7 +412,7 @@ where
     type Out = I::Item;
 }
 
-impl<'a, M, I: Iterator<Item = Exp>, A: SatTheoryArgT<'a, M: TupleExtract<M, PushInfo>>>
+impl<M, I: Iterator<Item = Exp>, A: SatTheoryArgT<M: TupleExtract<M, PushInfo>>>
     Collapse<UFn<I>, A, BaseMarker<M>> for Euf
 {
     fn collapse(

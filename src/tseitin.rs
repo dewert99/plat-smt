@@ -29,11 +29,11 @@ impl<Th: Incremental, R> TheoryWrapper<Th, R> {
     }
 }
 
-pub trait SatExplainTheoryArgT<'a>: TheoryArgT {
+pub trait SatExplainTheoryArgT: TheoryArgT {
     fn clause_builder(&mut self) -> &mut Vec<Lit>;
 }
 
-impl<'a, M, R: Recorder> SatExplainTheoryArgT<'a>
+impl<'a, M, R: Recorder> SatExplainTheoryArgT
     for TheoryArgRaw<'a, &'a mut SatExplainTheoryArg, M, R>
 {
     fn clause_builder(&mut self) -> &mut Vec<Lit> {
@@ -41,14 +41,14 @@ impl<'a, M, R: Recorder> SatExplainTheoryArgT<'a>
     }
 }
 
-pub trait SatTheoryArgT<'a>: TheoryArgT {
-    type Explain<'b>: SatExplainTheoryArgT<'b, M = Self::M>
+pub trait SatTheoryArgT: TheoryArgT {
+    type Explain<'b>: SatExplainTheoryArgT<M = Self::M>
     where
         Self: 'b;
 
-    fn sat_mut(&mut self) -> (&mut SatTheoryArg<'a>, &mut Self::R);
+    fn sat_mut(&mut self) -> (SatTheoryArg<'_>, &mut Self::R);
 
-    fn sat(&self) -> &SatTheoryArg<'a>;
+    fn sat(&self) -> &SatTheoryArg<'_>;
 
     fn in_model(&self) -> bool;
 
@@ -56,7 +56,7 @@ pub trait SatTheoryArgT<'a>: TheoryArgT {
     where
         I::IntoIter: ExactSizeIterator,
     {
-        let (sat, recorder) = self.sat_mut();
+        let (mut sat, recorder) = self.sat_mut();
         let added = sat.add_clause_unchecked(lits);
         recorder.log_clause(added, ClauseKind::Added)
     }
@@ -77,16 +77,13 @@ pub trait SatTheoryArgT<'a>: TheoryArgT {
         self.sat().is_ok()
     }
 
-    fn model<'b>(&'b self) -> &'b [Lit]
-    where
-        'a: 'b,
-    {
+    fn model(&self) -> &[Lit] {
         self.sat().model()
     }
 
     fn raise_conflict_using_builder(&mut self, costly: bool) {
         let marker = self.prop_marker();
-        let (sat, recorder) = self.sat_mut();
+        let (mut sat, recorder) = self.sat_mut();
         sat.raise_conflict_using_builder_with_marker(costly, marker);
         recorder.log_clause(
             sat.explain_arg().clause_builder(),
@@ -376,17 +373,17 @@ pub trait SatTheoryArgT<'a>: TheoryArgT {
     }
 }
 
-impl<'a, M, R: Recorder> SatTheoryArgT<'a> for TheoryArgRaw<'a, SatTheoryArg<'a>, M, R> {
+impl<'a, M, R: Recorder> SatTheoryArgT for TheoryArgRaw<'a, SatTheoryArg<'a>, M, R> {
     type Explain<'b>
         = TheoryArgRaw<'b, &'b mut SatExplainTheoryArg, M, R>
     where
         Self: 'b;
 
-    fn sat_mut(&mut self) -> (&mut platsat::TheoryArg<'a>, &mut R) {
-        (&mut self.sat, &mut self.incr.recorder)
+    fn sat_mut(&mut self) -> (platsat::TheoryArg<'_>, &mut R) {
+        (self.sat.reborrow(), &mut self.incr.recorder)
     }
 
-    fn sat(&self) -> &SatTheoryArg<'a> {
+    fn sat(&self) -> &SatTheoryArg<'_> {
         &self.sat
     }
 
@@ -404,7 +401,7 @@ impl<const IS_AND: bool> CollapseOut for Junction<IS_AND> {
     type Out = BoolExp;
 }
 
-impl<'a, T, A: SatTheoryArgT<'a>, const IS_AND: bool> Collapse<Junction<IS_AND>, A, TseitenMarker>
+impl<'a, T, A: SatTheoryArgT, const IS_AND: bool> Collapse<Junction<IS_AND>, A, TseitenMarker>
     for T
 {
     fn collapse(
@@ -427,7 +424,7 @@ impl CollapseOut for Xor {
     type Out = BoolExp;
 }
 
-impl<'a, T, A: SatTheoryArgT<'a>> Collapse<Xor, A, TseitenMarker> for T {
+impl<'a, T, A: SatTheoryArgT> Collapse<Xor, A, TseitenMarker> for T {
     fn collapse(&mut self, Xor(b1, b2): Xor, acts: &mut A, ctx: ExprContext<BoolExp>) -> BoolExp {
         acts.xor(b1, b2, ctx)
     }
@@ -441,7 +438,7 @@ impl CollapseOut for BoolExp {
     type Out = BoolExp;
 }
 
-impl<'a, T, A: SatTheoryArgT<'a>> Collapse<BoolExp, A, BaseMarker> for T {
+impl<'a, T, A: SatTheoryArgT> Collapse<BoolExp, A, BaseMarker> for T {
     fn collapse(&mut self, b: BoolExp, acts: &mut A, _: ExprContext<BoolExp>) -> BoolExp {
         acts.canonize(b)
     }
@@ -451,7 +448,7 @@ impl<'a, T, A: SatTheoryArgT<'a>> Collapse<BoolExp, A, BaseMarker> for T {
     }
 }
 
-impl<'a, A: SatTheoryArgT<'a>> Collapse<Fresh<BoolExp>, A, BaseMarker> for EmptyTheory {
+impl<'a, A: SatTheoryArgT> Collapse<Fresh<BoolExp>, A, BaseMarker> for EmptyTheory {
     fn collapse(&mut self, f: Fresh<BoolExp>, acts: &mut A, _: ExprContext<BoolExp>) -> BoolExp {
         assert_eq!(f.sort, BOOL_SORT);
         BoolExp::unknown(Lit::new(acts.new_var_default(), true))
@@ -464,7 +461,7 @@ impl<'a, A: SatTheoryArgT<'a>> Collapse<Fresh<BoolExp>, A, BaseMarker> for Empty
 }
 
 #[cfg(feature = "euf")]
-impl<'a, A: SatTheoryArgT<'a>> Collapse<Fresh<BoolExp>, A, BaseMarker> for crate::euf::Euf {
+impl<'a, A: SatTheoryArgT> Collapse<Fresh<BoolExp>, A, BaseMarker> for crate::euf::Euf {
     fn collapse(&mut self, f: Fresh<BoolExp>, acts: &mut A, _: ExprContext<BoolExp>) -> BoolExp {
         assert_eq!(f.sort, BOOL_SORT);
         BoolExp::unknown(Lit::new(acts.new_var_default(), true))
