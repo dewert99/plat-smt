@@ -1,10 +1,9 @@
 use crate::collapse::{BaseMarker, Collapse, ExprContext};
 use crate::core_ops::{CoreOpsPf, DefaultIte, DistinctElts, Eq, RawDistinct};
-use crate::full_theory::{empty_fn_info, FullTheory, FunctionAssignmentT, PrepareModelKind};
+use crate::full_theory::{Bound, FullTheory, FunctionAssignmentT, PrepareModelKind, empty_fn_info};
 use crate::intern::Symbol;
-use crate::outer_solver::Bound;
 use crate::parser_fragment::ParserFragment;
-use crate::recorder::{dep_checker, Recorder};
+use crate::recorder::{Recorder, dep_checker};
 use crate::solver::SolverWithBound;
 use crate::theory::{Incremental, Theory};
 use crate::tseitin::SatTheoryArgT;
@@ -56,6 +55,8 @@ impl<R: Recorder> FullTheory<R> for EmptyTheory {
     type Exp = BoolExp;
 
     type FnSort = Infallible;
+
+    type QExtractor = ();
 
     fn prepare_model(&mut self, _: PrepareModelKind) {}
 

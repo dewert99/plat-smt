@@ -1,9 +1,9 @@
 use crate::collapse::{BaseMarker, Collapse, CollapseOut, ExprContext};
 use crate::empty_theory::EmptyTheory;
 use crate::exp::Fresh;
-use crate::intern::{Symbol, AND_SYM, BOOL_SORT, IMP_SYM, NOT_SYM, OR_SYM, XOR_SYM};
+use crate::intern::{AND_SYM, BOOL_SORT, IMP_SYM, NOT_SYM, OR_SYM, Symbol, XOR_SYM};
 use crate::junction::Junction;
-use crate::parser_fragment::{exact_args, index_iter, mandatory_args, ParserFragment};
+use crate::parser_fragment::{ParserFragment, exact_args, index_iter, mandatory_args};
 use crate::recorder::{ClauseKind, Recorder};
 use crate::reuse_mem::ReuseMem;
 use crate::solver::SolverCollapse;
@@ -13,8 +13,8 @@ use crate::{AddSexpError, BLit, BoolExp, Disjunction, ExpLike, SubExp, SuperExp}
 use alloc::vec::Vec;
 use core::cmp::Ordering;
 use log::debug;
-use platsat::{core::ExplainTheoryArg as SatExplainTheoryArg, TheoryArg as SatTheoryArg, Var};
-use platsat::{lbool, Lit};
+use platsat::{Lit, lbool};
+use platsat::{TheoryArg as SatTheoryArg, Var, core::ExplainTheoryArg as SatExplainTheoryArg};
 use std::mem;
 
 impl<Th: Incremental, R> TheoryWrapper<Th, R> {
@@ -461,7 +461,7 @@ impl<'a, A: SatTheoryArgT> Collapse<Fresh<BoolExp>, A, BaseMarker> for EmptyTheo
 }
 
 #[cfg(feature = "euf")]
-impl<'a, A: SatTheoryArgT> Collapse<Fresh<BoolExp>, A, BaseMarker> for crate::euf::Euf {
+impl<'a, A: SatTheoryArgT, Q> Collapse<Fresh<BoolExp>, A, BaseMarker> for crate::euf::Euf<Q> {
     fn collapse(&mut self, f: Fresh<BoolExp>, acts: &mut A, _: ExprContext<BoolExp>) -> BoolExp {
         assert_eq!(f.sort, BOOL_SORT);
         BoolExp::unknown(Lit::new(acts.new_var_default(), true))
@@ -477,12 +477,12 @@ impl<'a, A: SatTheoryArgT> Collapse<Fresh<BoolExp>, A, BaseMarker> for crate::eu
 pub struct JunctionPf<const B: bool>;
 
 impl<
-        'a,
-        M,
-        Exp: ExpLike + SuperExp<BoolExp, M>,
-        S: SolverCollapse<Junction<IS_AND>, TseitenMarker> + ReuseMem<Junction<IS_AND>>,
-        const IS_AND: bool,
-    > ParserFragment<Exp, S, M> for JunctionPf<IS_AND>
+    'a,
+    M,
+    Exp: ExpLike + SuperExp<BoolExp, M>,
+    S: SolverCollapse<Junction<IS_AND>, TseitenMarker> + ReuseMem<Junction<IS_AND>>,
+    const IS_AND: bool,
+> ParserFragment<Exp, S, M> for JunctionPf<IS_AND>
 {
     fn supports(&self, s: Symbol) -> bool {
         s == (if IS_AND { AND_SYM } else { OR_SYM })
@@ -563,11 +563,11 @@ impl<'a, M, Exp: ExpLike + SuperExp<BoolExp, M>, S: SolverCollapse<Xor, TseitenM
 pub struct ImpPf;
 
 impl<
-        'a,
-        M,
-        Exp: ExpLike + SuperExp<BoolExp, M>,
-        S: SolverCollapse<Disjunction, TseitenMarker> + ReuseMem<Disjunction>,
-    > ParserFragment<Exp, S, M> for ImpPf
+    'a,
+    M,
+    Exp: ExpLike + SuperExp<BoolExp, M>,
+    S: SolverCollapse<Disjunction, TseitenMarker> + ReuseMem<Disjunction>,
+> ParserFragment<Exp, S, M> for ImpPf
 {
     fn supports(&self, s: Symbol) -> bool {
         s == IMP_SYM

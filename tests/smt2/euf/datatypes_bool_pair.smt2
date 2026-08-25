@@ -1,0 +1,10 @@
+(declare-codatatypes ((BoolPair 0)) (
+  ((bool-pair (b0 Bool) (b1 Bool)))
+))
+(declare-const p0 BoolPair)
+(declare-const p1 BoolPair)
+(declare-const p2 BoolPair)
+(declare-const p3 BoolPair)
+(declare-const p4 BoolPair)
+(check-sat-assuming ((distinct p0 p1 p2 p3)))
+(check-sat-assuming ((distinct p0 p1 p2 p3 p4)))

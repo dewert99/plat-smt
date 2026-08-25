@@ -1,8 +1,8 @@
 use crate::collapse::{BaseMarker, Collapse, CollapseOut, ExprContext, LeftMarker, RightMarker};
 use crate::intern::{
-    DisplayInterned, InternInfo, Sort, Symbol, BOOL_SORT, FALSE_SYM, NOT_SYM, TRUE_SYM,
+    BOOL_SORT, DisplayInterned, FALSE_SYM, InternInfo, NOT_SYM, Sort, Symbol, TRUE_SYM,
 };
-use crate::rexp::{rexp_debug, AsRexp, Namespace, NamespaceVar, Rexp};
+use crate::rexp::{AsRexp, Namespace, NamespaceVar, Rexp, rexp_debug};
 use core::fmt::{Debug, Display, Formatter};
 use core::hash::Hash;
 use core::marker::PhantomData;
@@ -269,11 +269,13 @@ impl<E1: ExpLike, E2: ExpLike> CollapseOut for EitherExp<E1, E2> {
 }
 
 impl<
-        E1: ExpLike,
-        E2: ExpLike,
-        Arg,
-        Th: Collapse<E1, Arg, BaseMarker> + Collapse<E2, Arg, BaseMarker>,
-    > Collapse<EitherExp<E1, E2>, Arg, BaseMarker> for Th
+    E1: ExpLike,
+    E2: ExpLike,
+    M1,
+    M2,
+    Arg,
+    Th: Collapse<E1, Arg, BaseMarker<M1>> + Collapse<E2, Arg, BaseMarker<M2>>,
+> Collapse<EitherExp<E1, E2>, Arg, BaseMarker<(M1, M2)>> for Th
 {
     fn collapse(
         &mut self,
@@ -293,13 +295,13 @@ impl<
 }
 
 impl<
-        E1: ExpLike,
-        E2: ExpLike,
-        Arg,
-        M1,
-        M2,
-        Th: Collapse<E1, Arg, LeftMarker<M1>> + Collapse<E2, Arg, RightMarker<M2>>,
-    > Collapse<EitherExp<E1, E2>, Arg, (M1, M2)> for Th
+    E1: ExpLike,
+    E2: ExpLike,
+    Arg,
+    M1,
+    M2,
+    Th: Collapse<E1, Arg, LeftMarker<M1>> + Collapse<E2, Arg, RightMarker<M2>>,
+> Collapse<EitherExp<E1, E2>, Arg, (M1, M2)> for Th
 {
     fn collapse(
         &mut self,
@@ -356,11 +358,13 @@ impl<E: ExpLike> CollapseOut for Fresh<E> {
 }
 
 impl<
-        E1: ExpLike,
-        E2: ExpLike,
-        Arg,
-        Th: Collapse<Fresh<E1>, Arg, BaseMarker> + Collapse<Fresh<E2>, Arg, BaseMarker>,
-    > Collapse<Fresh<EitherExp<E1, E2>>, Arg, BaseMarker> for Th
+    E1: ExpLike,
+    E2: ExpLike,
+    M1,
+    M2,
+    Arg,
+    Th: Collapse<Fresh<E1>, Arg, BaseMarker<M1>> + Collapse<Fresh<E2>, Arg, BaseMarker<M2>>,
+> Collapse<Fresh<EitherExp<E1, E2>>, Arg, BaseMarker<(M1, M2)>> for Th
 {
     fn collapse(
         &mut self,
@@ -395,13 +399,13 @@ impl<
 }
 
 impl<
-        E1: ExpLike,
-        E2: ExpLike,
-        Arg,
-        M1,
-        M2,
-        Th: Collapse<Fresh<E1>, Arg, LeftMarker<M1>> + Collapse<Fresh<E2>, Arg, RightMarker<M2>>,
-    > Collapse<Fresh<EitherExp<E1, E2>>, Arg, (M1, M2)> for Th
+    E1: ExpLike,
+    E2: ExpLike,
+    Arg,
+    M1,
+    M2,
+    Th: Collapse<Fresh<E1>, Arg, LeftMarker<M1>> + Collapse<Fresh<E2>, Arg, RightMarker<M2>>,
+> Collapse<Fresh<EitherExp<E1, E2>>, Arg, (M1, M2)> for Th
 {
     fn collapse(
         &mut self,

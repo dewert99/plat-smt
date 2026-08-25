@@ -1,9 +1,9 @@
+use crate::ExpLike;
 use crate::collapse::{BaseMarker, LeftMarker, RightMarker};
 use crate::intern::{InternInfo, Symbol};
 use crate::recorder::{ClauseKind, DefExp, InterpolateArg, Recorder};
 use crate::rexp::AsRexp;
 use crate::tseitin::SatTheoryArgT;
-use crate::ExpLike;
 use core::fmt::{Debug, Formatter};
 use log::debug;
 use no_std_compat::prelude::v1::*;
@@ -25,6 +25,16 @@ pub trait Incremental: Default {
     fn pop_to_level(&mut self, marker: Self::LevelMarker, clear_lits: bool);
 
     fn clear(&mut self);
+}
+
+impl Incremental for () {
+    type LevelMarker = ();
+
+    fn create_level(&self) -> Self::LevelMarker {}
+
+    fn pop_to_level(&mut self, _: Self::LevelMarker, _: bool) {}
+
+    fn clear(&mut self) {}
 }
 
 impl<I1: Incremental, I2: Incremental> Incremental for (I1, I2) {
@@ -357,12 +367,12 @@ pub trait Theory<Arg, ExplainArg, P = BaseMarker> {
 }
 
 impl<
-        Arg: TheoryArgMarker,
-        ExplainArg: TheoryArgMarker,
-        P,
-        T1: Theory<Arg, ExplainArg, LeftMarker<P>>,
-        T2: Theory<Arg, ExplainArg, RightMarker<P>>,
-    > Theory<Arg, ExplainArg, P> for (T1, T2)
+    Arg: TheoryArgMarker,
+    ExplainArg: TheoryArgMarker,
+    P,
+    T1: Theory<Arg, ExplainArg, LeftMarker<P>>,
+    T2: Theory<Arg, ExplainArg, RightMarker<P>>,
+> Theory<Arg, ExplainArg, P> for (T1, T2)
 {
     fn init(&mut self, acts: &mut Arg) {
         self.0.init(acts);
@@ -450,13 +460,10 @@ impl<
 }
 
 impl<
-        R: Recorder,
-        Th: Incremental
-            + for<'a> Theory<
-                TheoryArg<'a, Th::LevelMarker, R>,
-                ExplainTheoryArg<'a, Th::LevelMarker, R>,
-            >,
-    > TheoryWrapper<Th, R>
+    R: Recorder,
+    Th: Incremental
+        + for<'a> Theory<TheoryArg<'a, Th::LevelMarker, R>, ExplainTheoryArg<'a, Th::LevelMarker, R>>,
+> TheoryWrapper<Th, R>
 {
     pub fn clear(&mut self) {
         self.th.clear();
@@ -517,13 +524,10 @@ impl<
 }
 
 impl<
-        R: Recorder,
-        Th: Incremental
-            + for<'a> Theory<
-                TheoryArg<'a, Th::LevelMarker, R>,
-                ExplainTheoryArg<'a, Th::LevelMarker, R>,
-            >,
-    > SatTheory for TheoryWrapper<Th, R>
+    R: Recorder,
+    Th: Incremental
+        + for<'a> Theory<TheoryArg<'a, Th::LevelMarker, R>, ExplainTheoryArg<'a, Th::LevelMarker, R>>,
+> SatTheory for TheoryWrapper<Th, R>
 {
     fn final_check(&mut self, acts: &mut SatTheoryArg) {
         let mut acts = TheoryArg {

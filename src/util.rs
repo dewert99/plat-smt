@@ -77,13 +77,10 @@ pub trait Bind<X> {}
 impl<T, X> Bind<X> for T {}
 
 pub(crate) fn minmax<T: Ord>(t1: T, t2: T) -> [T; 2] {
-    if t1 < t2 {
-        [t1, t2]
-    } else {
-        [t2, t1]
-    }
+    if t1 < t2 { [t1, t2] } else { [t2, t1] }
 }
 
+#[derive(Copy, Clone, Hash, Ord, PartialOrd, Eq, PartialEq)]
 pub enum Either<L, R> {
     Left(L),
     Right(R),

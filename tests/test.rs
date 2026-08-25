@@ -1,13 +1,15 @@
 use log::info;
+use plat_smt::Logic;
+use plat_smt::default::DefaultLogic;
 use plat_smt::empty_theory::{EmptyTheory, EmptyTheoryPf};
+use plat_smt::euf::quantifier_applier::QuantifierApplier;
 use plat_smt::euf::{Euf, EufPf};
-use plat_smt::interp_smt2;
 use plat_smt::lra::{LinearArithPf, Lra};
-use plat_smt::outer_solver::Logic;
 use plat_smt::recorder::{InterpolantRecorder, LoggingRecorder};
+use plat_smt::{euf, interp_smt2};
 use rstest::rstest;
 use std::any::type_name;
-use std::fs::{remove_file, File, ReadDir};
+use std::fs::{File, ReadDir, remove_file};
 use std::io::{BufWriter, Read};
 use std::path::{Path, PathBuf};
 use std::str::from_utf8;
@@ -88,12 +90,17 @@ fn test_file<L: Logic>(mut file: PathBuf) {
 
 #[rstest]
 fn test_all(#[files("tests/smt2/**/*.smt2")] file: PathBuf) {
-    test_file::<((Euf, Lra), (LinearArithPf, EufPf), InterpolantRecorder, _)>(file)
+    test_file::<DefaultLogic<_>>(file)
 }
 
 #[rstest]
 fn test_euf(#[files("tests/smt2/euf/**/*.smt2")] file: PathBuf) {
-    test_file::<(Euf, EufPf, InterpolantRecorder, _)>(file)
+    test_file::<(
+        Euf<QuantifierApplier<euf::Exp>>,
+        EufPf,
+        InterpolantRecorder,
+        _,
+    )>(file)
 }
 
 #[rstest]
@@ -114,7 +121,7 @@ fn test_empty_theory(#[files("tests/smt2/empty_theory/**/*.smt2")] file: PathBuf
 mod error_lines {
     use super::*;
     use log::warn;
-    use plat_smt::lra::LinearArithPf;
+    use plat_smt::default::DefaultTh;
 
     #[rstest]
     fn test_file_with_error_lines(#[files("tests/smt2/**/*.smt2")] mut file: PathBuf) {
@@ -122,7 +129,7 @@ mod error_lines {
         info!(
             "Starting error line test {:?} using {}",
             file,
-            type_name::<(Euf, Lra)>()
+            type_name::<DefaultTh>()
         );
         let smt2_data = read_path(&mut file, "smt2");
         let mut error_smt2_data = Vec::new();
@@ -147,11 +154,7 @@ mod error_lines {
         let stdout_expected = String::from_utf8(read_path(&mut file, "stdout")).unwrap();
         let mut stdout_actual = String::new();
         let mut stderr_actual = String::new();
-        interp_smt2::<((Euf, Lra), (LinearArithPf, EufPf), InterpolantRecorder, _)>(
-            &*error_smt2_data,
-            &mut stdout_actual,
-            &mut stderr_actual,
-        );
+        interp_smt2::<DefaultLogic<_>>(&*error_smt2_data, &mut stdout_actual, &mut stderr_actual);
         assert_eq!(stdout_actual, stdout_expected);
     }
 }
@@ -186,7 +189,7 @@ fn test_sequential(init_command: &str, split_command: &str, exact: bool) {
         path.set_extension("stdout");
         read_path_into(&mut path, "stdout", &mut expect_out);
     }
-    interp_smt2::<(Euf, EufPf, InterpolantRecorder, _)>(&*file_buf, &mut out, &mut err);
+    interp_smt2::<DefaultLogic<_>>(&*file_buf, &mut out, &mut err);
     assert_eq!(&err, "");
     if exact {
         assert_eq!(&out, from_utf8(&expect_out).unwrap());
@@ -211,12 +214,12 @@ fn test_sequential_push_pop() {
 #[cfg(not(debug_assertions))]
 mod test_smtlib_benchmarks {
     use super::*;
+    use plat_smt::IncrementalParser;
     use plat_smt::euf::{Euf, EufPf};
     use plat_smt::recorder::LoggingRecorder;
-    use plat_smt::IncrementalParser;
     use std::env;
     use std::fmt::Display;
-    use std::io::{stderr, Seek, Write};
+    use std::io::{Seek, Write, stderr};
     use std::process::{Command, Stdio};
     use std::time::Instant;
     use walkdir::{DirEntry, Error, WalkDir};

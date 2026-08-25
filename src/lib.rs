@@ -37,6 +37,7 @@ use intern::Symbol;
 
 pub use exp::{BoolExp, EitherExp, ExpLike, Fresh, HasSort, StaticSort, SubExp, SuperExp};
 pub use full_buf_read::FullBufRead;
+pub use full_theory::Logic;
 pub use intern::Sort;
 #[doc(inline)]
 pub use junction::{Conjunction, Disjunction};
@@ -46,11 +47,17 @@ pub use parser_fragment::AddSexpError;
 pub use solver::{Approx, BLit, SolveResult, Solver, SolverCollapse};
 
 pub mod default {
+    use crate::full_theory::FullTheory;
+
     #[cfg(feature = "euf")]
     use crate::euf::{Euf as Th0, EufPf as Pf0};
 
     #[cfg(not(feature = "euf"))]
-    use crate::empty_theory::{EmptyTheory as Th0, EmptyTheoryPf as Pf0};
+    use crate::empty_theory::EmptyTheoryPf as Pf0;
+
+    #[cfg(not(feature = "euf"))]
+    #[ignore(unused)]
+    type Th0<Q> = crate::empty_theory::EmptyTheory;
 
     #[cfg(feature = "interpolant")]
     pub use crate::recorder::InterpolantRecorder as DefaultRecorder;
@@ -64,11 +71,20 @@ pub mod default {
     type Pf1 = (crate::lra::LinearArithPf, Pf0);
 
     #[cfg(not(feature = "lra"))]
-    type Th1 = Th0;
+    type Th1<Q> = Th0<Q>;
     #[cfg(feature = "lra")]
-    type Th1 = (Th0, crate::lra::Lra);
+    type Th1<Q> = (Th0<Q>, crate::lra::Lra);
 
-    pub type DefaultTh = Th1;
+    #[cfg(not(feature = "simple_quantifiers"))]
+    pub type DefaultTh = Th1<()>;
+
+    #[cfg(feature = "simple_quantifiers")]
+    pub type DefaultTh = Th1<
+        crate::euf::quantifier_applier::QuantifierApplier<
+            <Th1<()> as FullTheory<DefaultRecorder>>::Exp,
+        >,
+    >;
+
     pub type DefaultPf = Pf1;
 
     pub type DefaultLogic<M> = (DefaultTh, DefaultPf, DefaultRecorder, M);

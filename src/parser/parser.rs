@@ -1,21 +1,23 @@
+use crate::AddSexpError::*;
 use crate::full_buf_read::FullBufRead;
-use crate::full_theory::{FullTheory, FunctionAssignmentT};
-use crate::intern::*;
-use crate::outer_solver::BoundDefinitions;
-use crate::outer_solver::{
-    Bound, BoundDefinition, DefineError, FnSort, Logic, MaybeFnSort, OuterSolver, StartExpCtx,
+use crate::full_theory::{
+    Bound, FullTheory, FunctionAssignmentT, Instruction, Logic, QuantExp, QuantifierApplier,
 };
+use crate::intern::*;
+use crate::outer_solver::{
+    BoundDefinition, DefineError, FnSort, MaybeFnSort, OuterSolver, StartExpCtx,
+};
+use crate::outer_solver::{BoundDefinitions, QuantifierBuilder};
 use crate::parser::parser::Error::*;
 use crate::parser::parser_core::{
     ParseError, SexpLexer, SexpParser, SexpTerminal, SexpToken, SexpVisitor, SpanRange,
 };
 use crate::parser::{Decimal, SmtlibLogic};
 use crate::recorder::recorder::{Feature, InterpolantGroup};
-use crate::recorder::{dep_checker, Recorder};
+use crate::recorder::{Recorder, dep_checker};
 use crate::solver::{SolveResult, SolverCollapse, UnsatCoreConjunction};
-use crate::util::{format_args2, parenthesized, powi, HashMap, HashSet};
-use crate::AddSexpError::*;
-use crate::{solver, AddSexpError, BoolExp, ExpLike, HasSort, SubExp, SuperExp};
+use crate::util::{HashMap, HashSet, format_args2, parenthesized, powi};
+use crate::{AddSexpError, BoolExp, ExpLike, HasSort, SubExp, SuperExp, solver};
 use alloc::borrow::Cow;
 use core::fmt::Arguments;
 use core::str::FromStr;
@@ -72,6 +74,7 @@ impl DisplayInterned for StrSym {
 enum Error {
     BindSortMismatch(Sort),
     AddSexp(StrSym, AddSexpError),
+    AddSexpQ(StrSym, AddSexpError),
     AssertBool(Sort),
     UnboundSort(Symbol),
     Shadow(Symbol),
@@ -111,38 +114,80 @@ macro_rules! not_enabled {
     };
 }
 
+fn fmt_add_sexp(
+    f: &StrSym,
+    e: &AddSexpError,
+    fmt: &mut Formatter<'_>,
+    i: &InternInfo,
+) -> std::fmt::Result {
+    match e {
+        SortMismatch {
+            arg_n,
+            actual,
+            expected,
+        } => write!(
+            fmt,
+            "the {arg_n}th argument of the function {} has sort {} but should have sort {}",
+            f.with_intern(i),
+            actual.with_intern(i),
+            expected.with_intern(i)
+        ),
+        CustomSexpErr(u) => write!(fmt, "{u} in the function {} ", f.with_intern(i)),
+        AsSortMismatch { actual, expected } => write!(
+            fmt,
+            "the function {} has return sort {} but should have sort {} because of as",
+            f.with_intern(i),
+            actual.with_intern(i),
+            expected.with_intern(i)
+        ),
+        MissingArgument { actual, expected } => write!(
+            fmt,
+            "the function `{}` expects at least {expected} arguments but only got {actual}",
+            f.with_intern(i)
+        ),
+        ExtraArgument { expected } => write!(
+            fmt,
+            "the function `{}` expects at most {expected} arguments",
+            f.with_intern(i)
+        ),
+        Unbound => write!(fmt, "unknown identifier `{}`", f.with_intern(i)),
+    }
+}
+
 impl DisplayInterned for Error {
     fn fmt(&self, i: &InternInfo, fmt: &mut Formatter<'_>) -> std::fmt::Result {
         match self {
-            AddSexp(f, SortMismatch {
-                arg_n,
-                actual,
-                expected,
-            }) => write!(fmt, "the {arg_n}th argument of the function {} has sort {} but should have sort {}", f.with_intern(i), actual.with_intern(i), expected.with_intern(i)),
-            AddSexp(f, CustomSexpErr(u)) => write!(fmt, "{u} in the function {} ", f.with_intern(i)),
-            AddSexp(f, AsSortMismatch {
-                actual,
-                expected
-            }) => write!(fmt, "the function {} has return sort {} but should have sort {} because of as", f.with_intern(i), actual.with_intern(i), expected.with_intern(i)),
-            AddSexp(f, MissingArgument {
-                actual,
-                expected,
-            }) => write!(fmt, "the function `{}` expects at least {expected} arguments but only got {actual}", f.with_intern(i)),
-            AddSexp(f, ExtraArgument {
-                expected,
-            }) => write!(fmt, "the function `{}` expects at most {expected} arguments", f.with_intern(i)),
-            AddSexp(f, Unbound) => write!(fmt, "unknown identifier `{}`", f.with_intern(i)),
+            AddSexp(f, err) => fmt_add_sexp(f, err, fmt, i),
+            AddSexpQ(f, err) => {
+                fmt_add_sexp(f, err, fmt, i)?;
+                write!(fmt, " (in quantifier expansion)")
+            }
             AssertBool(s) => write!(fmt, "assertions expect `Bool` got `{}`", s.with_intern(i)),
-            BindSortMismatch(s) => write!(fmt, "the definition had the incorrect sort {}", s.with_intern(i)),
+            BindSortMismatch(s) => write!(
+                fmt,
+                "the definition had the incorrect sort {}",
+                s.with_intern(i)
+            ),
             UnboundSort(s) => write!(fmt, "unknown sort `{}`", s.with_intern(i)),
-            Shadow(s) => write!(fmt, "the identifier `{}` shadows a global constant", s.with_intern(i)),
-            NamedShadow(s) => write!(fmt, "the :named identifier `{}` is already in scope", s.with_intern(i)),
+            Shadow(s) => write!(
+                fmt,
+                "the identifier `{}` shadows a global constant",
+                s.with_intern(i)
+            ),
+            NamedShadow(s) => write!(
+                fmt,
+                "the :named identifier `{}` is already in scope",
+                s.with_intern(i)
+            ),
             InvalidSort => write!(fmt, "unexpected token when parsing sort"),
             UnsupportedSort(s) => write!(fmt, "unsupported sort `{}`", s.with_intern(i)),
             InvalidExp => write!(fmt, "unexpected token when parsing expression"),
             InvalidCommand => write!(fmt, "unexpected token when parsing command"),
             InvalidOption => write!(fmt, "unexpected token when parsing option"),
-            InvalidDefineFun => write!(fmt, "`define-fun` does not support functions with arguments"),
+            InvalidDefineFun => write!(
+                fmt,
+                "`define-fun` does not support functions with arguments"
+            ),
             InvalidBinding => write!(fmt, "unexpected token when parsing binding"),
             InvalidLet => write!(fmt, "unexpected token when parsing let expression"),
             InvalidAnnot => write!(fmt, "unexpected token when parsing annotation"),
@@ -150,14 +195,28 @@ impl DisplayInterned for Error {
             InvalidInt => write!(fmt, "expected integer token"),
             InvalidFloat => write!(fmt, "expected decimal token"),
             InvalidBool => write!(fmt, "expected boolean token"),
-            CheckSatStatusMismatch {
-                actual,
-                expected,
-            } => write!(fmt, "`check-sat` returned {} but should have returned {} based on last (set-info :status)", actual.as_lower_str(), expected.as_lower_str()),
-            NoUnsat => write!(fmt, "The last command was not `check-sat-assuming` that returned `unsat`"),
-            InterpolantCore => write!(fmt, "`get-unsat-core` must be called before `get-interpolants`"),
-            NoModel => write!(fmt, "The last command was not `check-sat-assuming` that returned `sat`"),
-            NonInit => write!(fmt, "This option cannot be set after assertions, declarations, or definitions"),
+            CheckSatStatusMismatch { actual, expected } => write!(
+                fmt,
+                "`check-sat` returned {} but should have returned {} based on last (set-info :status)",
+                actual.as_lower_str(),
+                expected.as_lower_str()
+            ),
+            NoUnsat => write!(
+                fmt,
+                "The last command was not `check-sat-assuming` that returned `unsat`"
+            ),
+            InterpolantCore => write!(
+                fmt,
+                "`get-unsat-core` must be called before `get-interpolants`"
+            ),
+            NoModel => write!(
+                fmt,
+                "The last command was not `check-sat-assuming` that returned `sat`"
+            ),
+            NonInit => write!(
+                fmt,
+                "This option cannot be set after assertions, declarations, or definitions"
+            ),
             Custom(s) => write!(fmt, "{s}"),
             Parser(err) => write!(fmt, "{err}"),
         }
@@ -269,6 +328,8 @@ enum_str! {Smt2Command{
     "declare-fun" => DeclareFn(3),
     "declare-const" => DeclareConst(2),
     "define-const" => DefineConst(3),
+    "declare-codatatypes" => DeclareCoDatatypes(2),
+    "declare-codatatype" => DeclareCoDatatype(2),
     "define-fun" => DefineFn(4),
     "get-unsat-assumptions" => GetUnsatAssumptions(0),
     "get-unsat-core" => GetUnsatCore(0),
@@ -355,11 +416,38 @@ enum State {
     Init,
 }
 
+type SLevelMarker<L> = solver::LevelMarker<<L as Logic>::LevelMarker, <L as Logic>::RLevelMarker>;
+
 struct LevelMarker<L: Logic> {
     sort: u32,
     bound: u32,
     named_assert: u32,
-    solver: solver::LevelMarker<L::LevelMarker, L::RLevelMarker>,
+    solver: SLevelMarker<L>,
+}
+
+struct SortInfo {
+    params: u32,
+    infinite: bool,
+}
+
+impl SortInfo {
+    fn new(params: u32) -> Self {
+        SortInfo {
+            params,
+            infinite: true,
+        }
+    }
+
+    fn finite(params: u32) -> Self {
+        SortInfo {
+            params,
+            infinite: false,
+        }
+    }
+
+    fn params(&self) -> usize {
+        self.params as usize
+    }
 }
 
 pub(super) struct Parser<W: Write, L: Logic> {
@@ -369,7 +457,7 @@ pub(super) struct Parser<W: Write, L: Logic> {
     /// A symbol we are currently defining (it cannot be used with :named even though it's not bound
     /// yet
     currently_defining: Option<Symbol>,
-    declared_sorts: HashMap<Symbol, u32>,
+    declared_sorts: HashMap<Symbol, SortInfo>,
     sort_stack: Vec<Symbol>,
     /// assertions named a top level that we always add to assumption list of `check_sat` instead
     /// of immediately asserting.
@@ -384,7 +472,7 @@ pub(super) struct Parser<W: Write, L: Logic> {
     core: OuterSolver<L>,
     pub(super) writer: PrintSuccessWriter<W>,
     state: State,
-    command_level_marker: Option<solver::LevelMarker<L::LevelMarker, L::RLevelMarker>>,
+    command_level_marker: Option<SLevelMarker<L>>,
     options: Options,
     last_status_info: Option<SolveResult>,
 }
@@ -491,10 +579,7 @@ impl<'a, W: Write, L: Logic> ExpVisitor<'a, W, L> {
             SexpTerminal::Symbol(s) => {
                 let s = self.0.core.intern_mut().symbols.intern(s);
                 self.0.core.start_exp(s, None, ctx);
-                self.0
-                    .core
-                    .end_exp_take()
-                    .map_err(|(s, e)| AddSexp(s.into(), e))
+                self.0.core.end_exp_take().map_err(add_sexp_error)
             }
             SexpTerminal::Keyword(_) => Err(InvalidExp),
             terminal => match self.0.core.try_handle_terminal(terminal, ctx) {
@@ -673,8 +758,8 @@ impl<W: Write, L: Logic> Parser<W, L> {
             this_named_assert: Vec::new(),
             options: Default::default(),
         };
-        res.declared_sorts.insert(BOOL_SYM, 0);
-        res.declared_sorts.insert(REAL_SYM, 0);
+        res.declared_sorts.insert(BOOL_SYM, SortInfo::finite(0));
+        res.declared_sorts.insert(REAL_SYM, SortInfo::new(0));
         res
     }
 
@@ -753,17 +838,17 @@ impl<W: Write, L: Logic> Parser<W, L> {
         let len = params.len();
         match self.declared_sorts.get(&name) {
             None => Err(UnboundSort(name)),
-            Some(x) if len < (*x as usize) => Err(AddSexp(
+            Some(x) if len < x.params() => Err(AddSexp(
                 name.into(),
                 MissingArgument {
-                    expected: *x as usize,
+                    expected: x.params(),
                     actual: len,
                 },
             )),
-            Some(x) if len > *x as usize => Err(AddSexp(
+            Some(x) if len > x.params() => Err(AddSexp(
                 name.into(),
                 ExtraArgument {
-                    expected: *x as usize,
+                    expected: x.params(),
                 },
             )),
             _ => Ok(self.core.intern_mut().sorts.intern(name, params)),
@@ -795,10 +880,140 @@ impl<W: Write, L: Logic> Parser<W, L> {
         }
         Ok(res)
     }
+    fn parse_declare_sort<R: FullBufRead>(&mut self, mut rest: CountingParser<R>) -> Result<()> {
+        let SexpToken::Terminal(SexpTerminal::Symbol(name)) = rest.next()? else {
+            return Err(InvalidCommand);
+        };
+        let name = self.core.intern_mut().symbols.intern(name);
+        if self.declared_sorts.contains_key(&name) {
+            return Err(Shadow(name));
+        }
+        let args = rest.try_next_parse()?.unwrap_or(0);
+        rest.finish()?;
+        self.sort_stack.push(name);
+        self.declared_sorts.insert(name, SortInfo::new(args));
+        Ok(())
+    }
+
+    fn sort_info(&self, s: Sort) -> &SortInfo {
+        let s = self.core.intern().sorts.resolve(s).0;
+        self.declared_sorts.get(&s).unwrap()
+    }
+
+    fn parse_declare_datatype<R: FullBufRead>(
+        &mut self,
+        t: SexpToken<R>,
+        sort_sym: Symbol,
+    ) -> Result<()> {
+        let constructor_sort = match self.declared_sorts.get(&sort_sym).map(SortInfo::params) {
+            Some(0) => self.core.intern_mut().sorts.intern(sort_sym, &[]),
+            Some(_) => return Err(custom_err("unsupported polymorphic datatypes")),
+            None => {
+                self.sort_stack.push(sort_sym);
+                self.declared_sorts.insert(sort_sym, SortInfo::new(0));
+                self.core.intern_mut().sorts.intern(sort_sym, &[])
+            }
+        };
+        let SexpToken::List(mut p) = t else {
+            return Err(InvalidCommand);
+        };
+        let mut variants = 0;
+        let mut discrim_sort = None;
+        let mut last_constructor = None;
+        let mut infinite = false;
+        let mut var_infinite = false;
+        while let Some(t) = p.next() {
+            var_infinite = false;
+            if let Some((last, dname)) = last_constructor {
+                let discrim_sort = if let Some(ds) = discrim_sort {
+                    ds
+                } else {
+                    let dsort_sym = self
+                        .core
+                        .intern_mut()
+                        .symbols
+                        .intern_modified(sort_sym, "@D");
+                    let ds = self.core.intern_mut().sorts.intern(dsort_sym, &[]);
+                    discrim_sort = Some(ds);
+                    ds
+                };
+                let d_sym = self.core.intern_mut().symbols.intern_modified(last, dname);
+                self.insert_bound(d_sym, Bound::Fn(FnSort::slice_new(&[], discrim_sort)))?;
+            }
+            variants += 1;
+            let SexpToken::List(mut p) = t? else {
+                return Err(InvalidCommand);
+            };
+            let constructor = self.parse_fresh_binder(p.next().ok_or(InvalidCommand)??)?;
+            let mut args = SmallVec::new();
+            while let Some(t) = p.next() {
+                let SexpToken::List(mut p) = t? else {
+                    return Err(InvalidCommand);
+                };
+                let accessor = self.parse_fresh_binder(p.next().ok_or(InvalidCommand)??)?;
+                let accessor_sort = self.parse_sort(p.next().ok_or(InvalidCommand)??)?;
+                // TODO declare-datatypes where a datatype contains a finite datatype declared after it are broken
+                var_infinite |= self.sort_info(accessor_sort).infinite;
+                args.push(accessor_sort);
+                self.insert_bound(
+                    accessor,
+                    Bound::Fn(FnSort::slice_new(&[constructor_sort], accessor_sort)),
+                )?;
+            }
+            infinite |= var_infinite;
+            self.insert_bound(constructor, Bound::Fn(FnSort::new(args, constructor_sort)))?;
+            let discrim_name = if var_infinite { "@di" } else { "@df" };
+            last_constructor = Some((constructor, discrim_name));
+        }
+        if variants == 0 {
+            return Err(custom_err("datatypes must have at least one variant"));
+        }
+        let (global_len, discrim) =
+            if let (Some(d_sort), Some((last, dname))) = (discrim_sort, last_constructor) {
+                let d_sym = self.core.intern_mut().symbols.intern_modified(last, dname);
+                self.insert_bound(d_sym, Bound::Fn(FnSort::slice_new(&[], d_sort)))?;
+                let fn_sym = self
+                    .core
+                    .intern_mut()
+                    .symbols
+                    .intern_modified(sort_sym, "@d");
+                self.insert_bound(
+                    fn_sym,
+                    Bound::Fn(FnSort::slice_new(&[constructor_sort], d_sort)),
+                )?;
+                (self.global_stack.len() - 1, Some(fn_sym))
+            } else {
+                (self.global_stack.len(), None)
+            };
+        self.declared_sorts.insert(
+            sort_sym,
+            SortInfo {
+                params: 0,
+                infinite,
+            },
+        );
+        let global_slice = &self.global_stack[..global_len];
+
+        let mut iter = DatatypeIter {
+            variants,
+            global_slice,
+            discrim_fn: discrim,
+        };
+        build_constructor_quantifiers(&mut iter, &mut self.core, var_infinite)?;
+
+        let mut iter = DatatypeIter {
+            variants,
+            global_slice,
+            discrim_fn: discrim,
+        };
+        build_global_quantifier(&mut iter, &mut self.core, var_infinite, constructor_sort)?;
+        Ok(())
+    }
 
     fn reset_state(&mut self) {
         if !matches!(self.state, State::Base) {
             self.core.solver_mut().pop_model();
+            self.core.quantifier_applier().clear_pending();
             let interpolant_enabled = self
                 .core
                 .recorder_mut()
@@ -806,7 +1021,7 @@ impl<W: Write, L: Logic> Parser<W, L> {
             if interpolant_enabled {
                 if let Some(marker) = self.command_level_marker.clone() {
                     // When working with interpolants don't remember clauses from prior solves
-                    // since interpolating treats all clauses from before the most recent solve as non learned
+                    // since interpolating treats all clauses from before the most recent solve as non-learned
                     self.core.solver_mut().pop_to_level(marker)
                 }
             }
@@ -911,17 +1126,7 @@ impl<W: Write, L: Logic> Parser<W, L> {
         let mut rest = name.bind(&mut rest_orig);
         match name {
             Smt2Command::DeclareSort => {
-                let SexpToken::Terminal(SexpTerminal::Symbol(name)) = rest.next()? else {
-                    return Err(InvalidCommand);
-                };
-                let name = self.core.intern_mut().symbols.intern(name);
-                if self.declared_sorts.contains_key(&name) {
-                    return Err(Shadow(name));
-                }
-                let args = rest.try_next_parse()?.unwrap_or(0);
-                rest.finish()?;
-                self.sort_stack.push(name);
-                self.declared_sorts.insert(name, args);
+                self.parse_declare_sort(rest)?;
             }
             Smt2Command::GetUnsatAssumptions | Smt2Command::GetUnsatCore => {
                 let assumptions = matches!(name, Smt2Command::GetUnsatAssumptions);
@@ -1244,14 +1449,20 @@ impl<W: Write, L: Logic> Parser<W, L> {
         Ok(name)
     }
 
+    fn create_solver_level(&mut self) -> Result<SLevelMarker<L>> {
+        QuantifierApplier::run(&mut self.core)
+            .map_err(|(s, err)| AddSexpQ(s.map_or(StrSym::Str("assert"), Into::into), err))?;
+        Ok(self.core.solver_mut().create_level())
+    }
+
     pub(super) fn clear(&mut self) {
         self.push_info.clear();
         self.global_stack.clear();
         self.core.full_clear();
         self.declared_sorts.clear();
         self.sort_stack.clear();
-        self.declared_sorts.insert(BOOL_SYM, 0);
-        self.declared_sorts.insert(REAL_SYM, 0);
+        self.declared_sorts.insert(BOOL_SYM, SortInfo::finite(0));
+        self.declared_sorts.insert(REAL_SYM, SortInfo::new(0));
         self.named_assertions.pop_to(0);
         self.command_level_marker = None;
         self.set_old_named_assertions();
@@ -1290,7 +1501,7 @@ impl<W: Write, L: Logic> Parser<W, L> {
                 if let ProduceModelState::True(s) = &mut self.options.produce_models {
                     s.insert(name);
                 }
-                self.insert_bound(name, Bound::Fn(FnSort::new([].into_iter().collect(), ret)))?;
+                self.insert_bound(name, Bound::Fn(FnSort::slice_new(&[], ret)))?;
             }
             Smt2Command::DefineConst => {
                 let name = self.parse_fresh_binder(rest.next()?)?;
@@ -1307,11 +1518,28 @@ impl<W: Write, L: Logic> Parser<W, L> {
                 drop(args);
                 self.define_const(name, rest)?;
             }
+            Smt2Command::DeclareCoDatatypes => {
+                let sort_stack_len = self.sort_stack.len();
+                let res = self.parse_declare_datatypes(rest);
+                if let Err(e) = res {
+                    for s in self.sort_stack.drain(sort_stack_len..) {
+                        self.declared_sorts.remove(&s);
+                    }
+                    return Err(e);
+                }
+            }
+            Smt2Command::DeclareCoDatatype => {
+                if !self.core.quantifier_applier().enabled() {
+                    return Err(custom_err("unsupported datatypes"));
+                }
+                let constructor_sort = self.parse_fresh_binder(rest.next()?)?;
+                self.parse_declare_datatype(rest.next()?, constructor_sort)?;
+                rest.finish()?;
+            }
             Smt2Command::Assert => {
-                let exp = self.parse_exp(rest.next()?, StartExpCtx::Assert)?;
-                self.core
-                    .solver_mut()
-                    .assert(exp.downcast().ok_or(AssertBool(exp.sort()))?);
+                let res = self.parse_exp(rest.next()?, StartExpCtx::Assert)?;
+                let res_bool = res.downcast().ok_or(AssertBool(res.sort()))?;
+                self.core.solver_mut().assert(res_bool);
                 rest.finish()?;
                 self.truncate_named_assertions();
                 self.extend_named_assertions();
@@ -1341,7 +1569,7 @@ impl<W: Write, L: Logic> Parser<W, L> {
                 // arbitrary builtin symbol so references inside the check-sat-assuming aren't
                 // treated as in a and b
                 self.core.dep_checker_act(dep_checker::ExitScope(LET_SYM));
-                self.command_level_marker = Some(self.core.solver_mut().create_level());
+                self.command_level_marker = Some(self.create_solver_level()?);
                 self.check_sat()?;
             }
             Smt2Command::Push => {
@@ -1352,7 +1580,7 @@ impl<W: Write, L: Logic> Parser<W, L> {
                         bound: self.global_stack.len() as u32,
                         sort: self.sort_stack.len() as u32,
                         named_assert: self.old_named_assertions,
-                        solver: self.core.solver_mut().create_level(),
+                        solver: self.create_solver_level()?,
                     };
                     info!(
                         "Push ({} -> {})",
@@ -1409,9 +1637,49 @@ impl<W: Write, L: Logic> Parser<W, L> {
             _ => return Err(InvalidCommand),
         }
         if matches!(self.state, State::Base) {
-            self.command_level_marker = Some(self.core.solver_mut().create_level());
+            self.command_level_marker = Some(self.create_solver_level()?);
         }
         Ok(())
+    }
+
+    fn parse_declare_datatypes<R: FullBufRead>(
+        &mut self,
+        mut rest: CountingParser<R>,
+    ) -> Result<()> {
+        if !self.core.quantifier_applier().enabled() {
+            return Err(custom_err("unsupported datatypes"));
+        }
+        let sort_stack_len = self.sort_stack.len();
+        let SexpToken::List(mut l) = rest.next()? else {
+            return Err(InvalidCommand);
+        };
+        while let Some(t) = l.next() {
+            let SexpToken::List(mut l) = t? else {
+                return Err(InvalidCommand);
+            };
+            self.parse_declare_sort(CountingParser::new(
+                &mut l,
+                StrSym::Str("declare-datatypes sort declaration"),
+                1,
+            ))?
+        }
+        drop(l);
+        let SexpToken::List(mut l) = rest.next()? else {
+            return Err(InvalidCommand);
+        };
+        let mut cl = CountingParser::new(
+            &mut l,
+            StrSym::Str("declare-datatypes datatype list"),
+            self.sort_stack.len() - sort_stack_len,
+        );
+        for i in sort_stack_len..self.sort_stack.len() {
+            let sort = self.sort_stack[i];
+            let t = cl.next()?;
+            self.parse_declare_datatype(t, sort)?;
+        }
+        cl.finish()?;
+        drop(l);
+        rest.finish()
     }
 
     fn extend_named_assertions(&mut self) {
@@ -1543,6 +1811,186 @@ fn write_body<'a, W: Write, L: Logic>(
         L::Exp::default_with_sort(ret.0).with_intern(intern),
         ""
     );
+}
+
+struct DatatypeIter<'a> {
+    variants: u32,
+    global_slice: &'a [Symbol],
+    discrim_fn: Option<Symbol>,
+}
+
+impl<'a> DatatypeIter<'a> {
+    fn next<L: Logic>(
+        &mut self,
+        s: &OuterSolver<L>,
+    ) -> Option<(Option<(Symbol, Symbol)>, Symbol, &'a [Symbol])> {
+        if self.variants == 0 {
+            return None;
+        }
+        self.variants -= 1;
+        let discrim = if let Some(descrim_fn) = self.discrim_fn {
+            Some((descrim_fn, *self.global_slice.split_off_last().unwrap()))
+        } else {
+            None
+        };
+        let constructor = *self.global_slice.split_off_last().unwrap();
+        let args_len = if let Some(Bound::Fn(f)) = s.definition(constructor) {
+            f.as_fn_sort().args().len()
+        } else {
+            0
+        };
+        let accessors = self
+            .global_slice
+            .split_off(self.global_slice.len() - args_len..)
+            .unwrap();
+        Some((discrim, constructor, accessors))
+    }
+}
+
+fn build_constructor_quantifiers<L: Logic>(
+    iter: &mut DatatypeIter,
+    core: &mut OuterSolver<L>,
+    last_var_infinite: bool,
+) -> Result<()> {
+    while let Some((discrim, constructor, accessors)) = iter.next(core) {
+        if accessors.len() != 0 {
+            let mut builder = core.quantifier_builder(accessors.len() as u32);
+            builder.add_instruction(Instruction::Start(LET_STAR_SYM));
+            builder.add_instruction(Instruction::Start(constructor));
+            for i in 0..accessors.len() as u32 {
+                builder.add_instruction(Instruction::Var(QuantExp::QuantVar(i)))
+            }
+            builder.add_instruction(Instruction::END);
+            builder.add_instruction(Instruction::END);
+            builder.add_instruction(Instruction::Start(AND_SYM));
+            let (discrim, infinite) = if let Some((discrim_fn, cdiscrim)) = discrim {
+                let Some(Bound::Const(e)) = builder.definition(cdiscrim) else {
+                    unreachable!();
+                };
+                let e = *e;
+                builder.add_instruction(Instruction::Start(EQ_SYM));
+                builder.add_instruction(Instruction::Var(QuantExp::Exp(e)));
+                builder.add_instruction(Instruction::Start(discrim_fn));
+                builder.add_instruction(Instruction::Var(QuantExp::LetVar(0)));
+                builder.add_instruction(Instruction::END);
+                builder.add_instruction(Instruction::END);
+                let infinite = builder.intern().symbols.resolve(cdiscrim).ends_with("i");
+                (Some((discrim_fn, e)), infinite)
+            } else {
+                (None, last_var_infinite)
+            };
+            for (i, &accessor) in accessors.iter().enumerate() {
+                builder.add_instruction(Instruction::Start(EQ_SYM));
+                builder.add_instruction(Instruction::Var(QuantExp::QuantVar(i as u32)));
+                builder.add_instruction(Instruction::Start(accessor));
+                builder.add_instruction(Instruction::Var(QuantExp::LetVar(0)));
+                builder.add_instruction(Instruction::END);
+                builder.add_instruction(Instruction::END);
+            }
+            builder.add_instruction(Instruction::END);
+            builder.bind([constructor].into_iter());
+            if infinite {
+                // Infinite instances of this variant
+                let mut builder = core.quantifier_builder(1);
+                if let Some((discrim_fn, e)) = discrim {
+                    builder.add_instruction(Instruction::Start(OR_SYM));
+                    builder.add_instruction(Instruction::Start(NOT_SYM));
+                    builder.add_instruction(Instruction::Start(EQ_SYM));
+                    builder.add_instruction(Instruction::Var(QuantExp::Exp(e)));
+                    builder.add_instruction(Instruction::Start(discrim_fn));
+                    builder.add_instruction(Instruction::Var(QuantExp::QuantVar(0)));
+                    builder.add_instruction(Instruction::END);
+                    builder.add_instruction(Instruction::END);
+                    builder.add_instruction(Instruction::END);
+                }
+
+                q_build_constructor_of_accessors(&mut builder, constructor, accessors);
+                if discrim.is_some() {
+                    builder.add_instruction(Instruction::END);
+                }
+                builder.bind(accessors.iter().copied())
+            }
+        } else if let Some((discrim_fn, cdiscrim)) = discrim {
+            core.start_exp(EQ_SYM, None, StartExpCtx::Assert);
+            core.start_exp(cdiscrim, None, StartExpCtx::Opt);
+            core.end_exp().map_err(add_sexp_error)?;
+            core.start_exp(discrim_fn, None, StartExpCtx::Opt);
+            core.start_exp(constructor, None, StartExpCtx::Opt);
+            core.end_exp().map_err(add_sexp_error)?;
+            core.end_exp().map_err(add_sexp_error)?;
+            let res = core.end_exp_take().map_err(add_sexp_error)?;
+            let res_bool = res.downcast().ok_or(AssertBool(res.sort()))?;
+            core.solver_mut().assert(res_bool);
+        }
+    }
+    Ok(())
+}
+
+fn build_global_quantifier<L: Logic>(
+    iter: &mut DatatypeIter,
+    core: &mut OuterSolver<L>,
+    last_var_infinite: bool,
+    sort: Sort,
+) -> Result<()> {
+    let mut builder = core.quantifier_builder(1);
+    if iter.discrim_fn.is_some() {
+        builder.start_exp(DISTINCT_SYM, None, StartExpCtx::Assert);
+        builder.add_instruction(Instruction::Start(OR_SYM));
+    }
+    while let Some((discrim, constructor, accessors)) = iter.next(&builder) {
+        if let Some((discrim_fn, cdiscrim)) = discrim {
+            builder.start_exp(cdiscrim, None, StartExpCtx::Opt);
+            builder.end_exp().map_err(add_sexp_error)?;
+            let infinite = builder.intern().symbols.resolve(cdiscrim).ends_with("i");
+            if infinite {
+                let Some(Bound::Const(e)) = builder.definition(cdiscrim) else {
+                    unreachable!();
+                };
+                let e = *e;
+                builder.add_instruction(Instruction::Start(EQ_SYM));
+                builder.add_instruction(Instruction::Var(QuantExp::Exp(e)));
+                builder.add_instruction(Instruction::Start(discrim_fn));
+                builder.add_instruction(Instruction::Var(QuantExp::QuantVar(0)));
+                builder.add_instruction(Instruction::END);
+                builder.add_instruction(Instruction::END);
+                continue;
+            }
+        } else {
+            if last_var_infinite {
+                return Ok(());
+            }
+        };
+        q_build_constructor_of_accessors(&mut builder, constructor, accessors);
+    }
+    if iter.discrim_fn.is_some() {
+        let res = builder.end_exp_take().map_err(add_sexp_error)?;
+        let res_bool = res.downcast().ok_or(AssertBool(res.sort()))?;
+        builder.solver_mut().assert(res_bool);
+        builder.add_instruction(Instruction::END)
+    }
+    builder.bind_to_sort(sort);
+    Ok(())
+}
+
+fn q_build_constructor_of_accessors<L: Logic>(
+    builder: &mut QuantifierBuilder<L>,
+    constructor: Symbol,
+    accessors: &[Symbol],
+) {
+    builder.add_instruction(Instruction::Start(EQ_SYM));
+    builder.add_instruction(Instruction::Var(QuantExp::QuantVar(0)));
+    builder.add_instruction(Instruction::Start(constructor));
+    for &accessor in accessors {
+        builder.add_instruction(Instruction::Start(accessor));
+        builder.add_instruction(Instruction::Var(QuantExp::QuantVar(0)));
+        builder.add_instruction(Instruction::END);
+    }
+    builder.add_instruction(Instruction::END);
+    builder.add_instruction(Instruction::END);
+}
+
+fn add_sexp_error((s, e): (Symbol, AddSexpError)) -> Error {
+    AddSexp(s.into(), e)
 }
 
 /// Evaluate `data`, the bytes of an `smt2` file, reporting results to `stdout` and errors to

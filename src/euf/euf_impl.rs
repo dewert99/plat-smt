@@ -1,31 +1,32 @@
-use super::egraph::{children, Children, Op, SymbolLang, EQ_OP};
-use super::euf::{litvec, BoolClass, EClass, Euf, Exp, PushInfo};
+use super::egraph::{Children, EQ_OP, Op, SymbolLang, children};
+use super::euf::{BoolClass, EClass, Euf, Exp, PushInfo, litvec};
 use super::explain::Justification;
 use crate::collapse::{BaseMarker, Collapse, CollapseOut, ExprContext};
 use crate::core_ops::{DefaultIte, DistinctElts, DistinctPf, Eq, EqPf, ItePf, RawDistinct};
+use crate::euf::quantifier_applier::QuantifierChecker;
 use crate::exp::Fresh;
 use crate::full_theory::{
-    FnSort, FullTheory, FunctionAssignmentT, PrepareModelKind, TopLevelCollapse,
+    Bound, FnSort, FullTheory, FunctionAssignmentT, PrepareModelKind, QExtractor, TopLevelCollapse,
 };
 use crate::intern::{
-    DisplayInterned, InternInfo, Symbol, BOOL_SORT, DISTINCT_SYM, DISTINGUISHER_SYM, REAL_SORT,
+    BOOL_SORT, DISTINCT_SYM, DISTINGUISHER_SYM, DisplayInterned, InternInfo, REAL_SORT, Symbol,
 };
-use crate::outer_solver::Bound;
 use crate::parser::{SexpTerminal, SmtlibLogic};
-use crate::parser_fragment::{index_iter, ParserFragment, PfResult};
-use crate::recorder::{dep_checker, Recorder};
-use crate::rexp::{rexp_debug, AsRexp, Namespace, NamespaceVar, Rexp};
+use crate::parser_fragment::{ParserFragment, PfResult, index_iter};
+use crate::recorder::{Recorder, dep_checker};
+use crate::rexp::{AsRexp, Namespace, NamespaceVar, Rexp, rexp_debug};
 use crate::solver::{SolverCollapse, SolverWithBound};
 use crate::theory::{Incremental, TupleExtract};
 use crate::tseitin::{BoolOpPf, SatExplainTheoryArgT, SatTheoryArgT};
-use crate::util::{pairwise_sym, HashMap};
+use crate::util::{HashMap, pairwise_sym};
 use crate::{AddSexpError, BoolExp, Conjunction, ExpLike, HasSort, Solver, Sort, SubExp, SuperExp};
 use core::fmt::Formatter;
 use core::marker::PhantomData;
 use core::ops::Deref;
 use core::slice::Iter;
-use plat_egg::raw::Language;
+use perfect_derive::perfect_derive;
 use plat_egg::Id;
+use plat_egg::raw::Language;
 use platsat::Lit;
 
 #[derive(Copy, Clone, Eq, PartialEq, Hash, Ord, PartialOrd)]
@@ -100,10 +101,26 @@ impl ExpLike for UExp {
     }
 }
 
-impl<R: Recorder> FullTheory<R> for Euf {
+pub struct EufQExtractor;
+
+impl<Q> QExtractor<Euf<Q>> for EufQExtractor {
+    type Target = Q;
+
+    fn extract(t: &mut Euf<Q>) -> &mut Self::Target {
+        &mut t.q
+    }
+
+    fn extract_shr(t: &Euf<Q>) -> &Self::Target {
+        &t.q
+    }
+}
+
+impl<R: Recorder, Q: Incremental + Clone + 'static> FullTheory<R> for Euf<Q> {
     type Exp = Exp;
 
     type FnSort = FnSort;
+
+    type QExtractor = EufQExtractor;
     fn prepare_model(&mut self, kind: PrepareModelKind) {
         if matches!(kind, PrepareModelKind::GetModel) {
             self.init_function_info()
@@ -119,7 +136,7 @@ impl<R: Recorder> FullTheory<R> for Euf {
     }
 }
 
-impl Euf {
+impl<Q: Incremental> Euf<Q> {
     fn model_sorted_fn(&mut self, f: Op, children: Children, target_sort: Sort) -> (Exp, bool) {
         let node = SymbolLang::new(f, children);
         if let Some(id) = self.egraph.lookup(node) {
@@ -135,7 +152,7 @@ impl Euf {
         children: Children,
         target_sort: Sort,
         ctx: ExprContext<Exp>,
-        acts: &mut impl SatTheoryArgT<M: TupleExtract<P, PushInfo>>,
+        acts: &mut impl SatTheoryArgT<M: TupleExtract<P, PushInfo<Q>>>,
     ) -> (Exp, bool) {
         if acts.in_model() {
             return self.model_sorted_fn(f, children, target_sort);
@@ -189,7 +206,7 @@ impl Euf {
         id1: Id,
         id2: Id,
         ctx: ExprContext<BoolExp>,
-        acts: &mut impl SatTheoryArgT<M: TupleExtract<P, PushInfo>>,
+        acts: &mut impl SatTheoryArgT<M: TupleExtract<P, PushInfo<Q>>>,
     ) -> (bool, BoolExp) {
         let cid1 = self.find(id1);
         let cid2 = self.find(id2);
@@ -211,7 +228,7 @@ impl Euf {
         &mut self,
         e1: Exp,
         e2: Exp,
-        acts: &mut impl SatTheoryArgT<M: TupleExtract<P, PushInfo>>,
+        acts: &mut impl SatTheoryArgT<M: TupleExtract<P, PushInfo<Q>>>,
     ) -> () {
         match (e1, e2) {
             (Exp::Left(b1), Exp::Left(b2)) => match (b1.to_lit(), b2.to_lit()) {
@@ -243,7 +260,7 @@ impl Euf {
 
     fn unify_lits<P>(
         &mut self,
-        acts: &mut impl SatTheoryArgT<M: TupleExtract<P, PushInfo>>,
+        acts: &mut impl SatTheoryArgT<M: TupleExtract<P, PushInfo<Q>>>,
         b1: Lit,
         b2: Lit,
     ) {
@@ -260,7 +277,7 @@ impl Euf {
     }
 }
 
-impl<'a, Arg> Collapse<UExp, Arg, BaseMarker> for Euf {
+impl<'a, Arg, Q: QuantifierChecker<UExp, M>, M> Collapse<UExp, Arg, BaseMarker<M>> for Euf<Q> {
     fn collapse(&mut self, t: UExp, _: &mut Arg, _: ExprContext<UExp>) -> UExp {
         UExp::new(self.find(t.id), t.sort)
     }
@@ -270,16 +287,22 @@ impl<'a, Arg> Collapse<UExp, Arg, BaseMarker> for Euf {
     }
 }
 
-impl<T> DefaultIte<T> for Euf {}
+impl<T, Q> DefaultIte<T> for Euf<Q> {}
 
-impl<'a, Arg> Collapse<Fresh<UExp>, Arg, BaseMarker> for Euf {
-    fn collapse(&mut self, fresh: Fresh<UExp>, _: &mut Arg, _: ExprContext<UExp>) -> UExp {
+impl<'a, Arg, M, Q: QuantifierChecker<UExp, M>> Collapse<Fresh<UExp>, Arg, BaseMarker<M>>
+    for Euf<Q>
+{
+    fn collapse(&mut self, fresh: Fresh<UExp>, _: &mut Arg, ctx: ExprContext<UExp>) -> UExp {
         let mut added = false;
         let id = self.egraph.add(fresh.name.into(), Children::new(), |_, _| {
             added = true;
             EClass::Uninterpreted(fresh.sort)
         });
-        UExp::new(if added { id } else { Id::MAX }, fresh.sort)
+        let res = UExp::new(if added { id } else { Id::MAX }, fresh.sort);
+        if added && !matches!(ctx, ExprContext::AssertEq(_)) {
+            self.q.check_new_exp(res)
+        }
+        res
     }
 
     fn placeholder(&self, fresh: &Fresh<UExp>) -> UExp {
@@ -287,8 +310,14 @@ impl<'a, Arg> Collapse<Fresh<UExp>, Arg, BaseMarker> for Euf {
     }
 }
 
-impl<'a, 'b, M, I: DistinctElts<Exp = Exp>, A: SatTheoryArgT<M: TupleExtract<M, PushInfo>>>
-    Collapse<RawDistinct<I>, A, BaseMarker<M>> for Euf
+impl<
+    'a,
+    'b,
+    Q: Incremental,
+    M,
+    I: DistinctElts<Exp = Exp>,
+    A: SatTheoryArgT<M: TupleExtract<M, PushInfo<Q>>>,
+> Collapse<RawDistinct<I>, A, BaseMarker<M>> for Euf<Q>
 {
     fn collapse(
         &mut self,
@@ -360,8 +389,8 @@ impl<'a, 'b, M, I: DistinctElts<Exp = Exp>, A: SatTheoryArgT<M: TupleExtract<M, 
     }
 }
 
-impl<'a, M, A: SatTheoryArgT<M: TupleExtract<M, PushInfo>>> Collapse<Eq<Exp>, A, BaseMarker<M>>
-    for Euf
+impl<'a, M, Q: Incremental, A: SatTheoryArgT<M: TupleExtract<M, PushInfo<Q>>>>
+    Collapse<Eq<Exp>, A, BaseMarker<M>> for Euf<Q>
 {
     fn collapse(
         &mut self,
@@ -412,17 +441,29 @@ where
     type Out = I::Item;
 }
 
-impl<M, I: Iterator<Item = Exp>, A: SatTheoryArgT<M: TupleExtract<M, PushInfo>>>
-    Collapse<UFn<I>, A, BaseMarker<M>> for Euf
+impl<
+    M1,
+    M2,
+    Q: Incremental + QuantifierChecker<Exp, M1>,
+    I: Iterator<Item = Exp> + Clone,
+    A: SatTheoryArgT<M: TupleExtract<M2, PushInfo<Q>>>,
+> Collapse<UFn<I>, A, BaseMarker<(M1, M2)>> for Euf<Q>
 {
     fn collapse(
         &mut self,
-        UFn(f, children, sort): UFn<I>,
+        UFn(f, exp_children, sort): UFn<I>,
         acts: &mut A,
         ctx: ExprContext<Exp>,
     ) -> Exp {
-        let children = self.resolve_children(children, acts);
-        self.sorted_fn(f.into(), children, sort, ctx, acts).0
+        let children = self.resolve_children(exp_children.clone(), acts);
+        let (res, added) = self.sorted_fn(f.into(), children, sort, ctx, acts);
+        if added {
+            self.q.check_call(f, exp_children, res);
+            if !matches!(ctx, ExprContext::AssertEq(_)) {
+                self.q.check_new_exp(res);
+            }
+        }
+        res
     }
 
     fn placeholder(&self, &UFn(_, _, sort): &UFn<I>) -> Exp {
@@ -441,16 +482,16 @@ type FnSortSolver<Th, R> =
 pub struct UFnPf;
 
 impl<
-        M,
-        MExp,
-        MEq,
-        MS,
-        Th: Incremental
-            + FullTheory<R>
-            + TopLevelCollapse<Th::Exp, MExp, R>
-            + TopLevelCollapse<Eq<Th::Exp>, MEq, R>,
-        R: Recorder,
-    > ParserFragment<Th::Exp, FnSortSolver<Th, R>, (M, MExp, MEq, MS)> for UFnPf
+    M,
+    MExp,
+    MEq,
+    MS,
+    Th: Incremental
+        + FullTheory<R>
+        + TopLevelCollapse<Th::Exp, MExp, R>
+        + TopLevelCollapse<Eq<Th::Exp>, MEq, R>,
+    R: Recorder,
+> ParserFragment<Th::Exp, FnSortSolver<Th, R>, (M, MExp, MEq, MS)> for UFnPf
 where
     Solver<Th, R>: for<'a> SolverCollapse<UFn<UFnIter<'a, MS, Exp, Th::Exp>>, M>,
     Th::Exp: SuperExp<Exp, MS>,
@@ -519,6 +560,7 @@ where
     }
 }
 
+#[perfect_derive(Clone)]
 struct UFnIter<'a, M, Sub, Super: SuperExp<Sub, M>>(Iter<'a, Super>, PhantomData<(M, Sub)>);
 
 impl<'a, M, Sub, Super: SuperExp<Sub, M> + Copy> Iterator for UFnIter<'a, M, Sub, Super> {
@@ -533,15 +575,16 @@ impl<'a, M, Sub, Super: SuperExp<Sub, M> + Copy> Iterator for UFnIter<'a, M, Sub
 pub struct EgraphPf<I>(I);
 
 impl<
-        R: Recorder,
-        E: SuperExp<Exp, MS> + Copy,
-        S: TupleExtract<MS, Euf>
-            + FullTheory<R>
-            + Incremental<LevelMarker: TupleExtract<MS, PushInfo>>,
-        M,
-        MS,
-        I: ParserFragment<E, FnSortSolver<S, R>, M>,
-    > ParserFragment<E, FnSortSolver<S, R>, (M, MS)> for EgraphPf<I>
+    R: Recorder,
+    E: SuperExp<Exp, MS> + Copy,
+    Q: Incremental,
+    S: TupleExtract<MS, Euf<Q>>
+        + FullTheory<R>
+        + Incremental<LevelMarker: TupleExtract<MS, PushInfo<Q>>>,
+    M,
+    MS,
+    I: ParserFragment<E, FnSortSolver<S, R>, M>,
+> ParserFragment<E, FnSortSolver<S, R>, (M, MS, Q)> for EgraphPf<I>
 {
     fn supports(&self, s: Symbol) -> bool {
         self.0.supports(s)
@@ -564,7 +607,7 @@ impl<
     ) -> Result<E, AddSexpError> {
         let Some(children_ids) = solver.solver.open(
             |s, acts| {
-                let euf: &mut Euf = s.tuple_extract_mut();
+                let euf: &mut Euf<Q> = s.tuple_extract_mut();
                 children
                     .iter()
                     .map(|&x| Some(euf.id_for_exp(x.downcast()?, acts, true)))
@@ -577,7 +620,7 @@ impl<
 
         let mut enode = SymbolLang::new(f.into(), children_ids);
 
-        let euf: &Euf = solver.solver.th.deref().tuple_extract();
+        let euf: &Euf<Q> = solver.solver.th.deref().tuple_extract();
 
         if let Some(existing_id) = euf.egraph.lookup(&mut enode) {
             let res: Exp = match &*euf.egraph[existing_id] {
@@ -599,7 +642,7 @@ impl<
         if let Ok(Some(res)) = res.as_ref().map(|x| x.downcast()) {
             solver.solver.open(
                 |euf, acts| {
-                    let euf: &mut Euf = euf.tuple_extract_mut();
+                    let euf: &mut Euf<Q> = euf.tuple_extract_mut();
                     euf.sorted_fn(
                         enode.op(),
                         enode.children_owned(),

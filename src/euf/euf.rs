@@ -169,12 +169,13 @@ enum MergeInfo {
     Neither(LitVec),
 }
 
-#[derive(Debug, Clone)]
-pub struct PushInfo {
+#[perfect_derive(Debug, Clone)]
+pub struct PushInfo<Q: Incremental> {
     egraph: EGPushInfo,
     lit_log_len: u32,
     eq_id_log_len: u32,
     requests_handled: u32,
+    q: Q::LevelMarker,
 }
 
 pub(super) fn id_for_bool(b: bool) -> Id {
@@ -205,7 +206,7 @@ impl LitInfo {
 }
 
 #[derive(Debug, Default, Clone)]
-pub struct Euf {
+pub struct Euf<Q = ()> {
     pub(super) egraph: EGraph<EClass>,
     bool_class_history: Vec<MergeInfo>,
     pub(super) lit: LitInfo,
@@ -214,24 +215,26 @@ pub struct Euf {
     eq_id_log: Vec<[Id; 2]>,
     requests_handled: u32,
     function_info: FunctionInfo,
+    pub(super) q: Q,
 }
 
 type Result = core::result::Result<(), ()>;
 type CResult = core::result::Result<(), Option<(Id, Id)>>;
 
-impl Incremental for Euf {
-    type LevelMarker = PushInfo;
+impl<Q: Incremental> Incremental for Euf<Q> {
+    type LevelMarker = PushInfo<Q>;
 
-    fn create_level(&self) -> PushInfo {
+    fn create_level(&self) -> PushInfo<Q> {
         PushInfo {
             egraph: self.egraph.push(),
             lit_log_len: self.lit.log.len() as u32,
             eq_id_log_len: self.eq_id_log.len() as u32,
             requests_handled: self.requests_handled,
+            q: self.q.create_level(),
         }
     }
 
-    fn pop_to_level(&mut self, info: PushInfo, clear_lits: bool) {
+    fn pop_to_level(&mut self, info: PushInfo<Q>, clear_lits: bool) {
         debug!("Requests handled = {}", info.requests_handled);
         for lit in self.lit.log.drain(info.lit_log_len as usize..) {
             self.lit.ids[lit] = LitId::NONE;
@@ -268,6 +271,7 @@ impl Incremental for Euf {
             }
             EClass::Singleton(x) => EClass::Singleton(*x),
         });
+        self.q.pop_to_level(info.q, clear_lits);
         trace!("\n{:?}", self.egraph.dump_uncanonical());
         trace!("\n{:?}", self.egraph.dump_classes())
     }
@@ -278,11 +282,14 @@ impl Incremental for Euf {
         self.lit.ids.clear();
         self.bool_class_history.clear();
         self.eq_ids.clear();
+        self.q.clear();
         self.requests_handled = 0;
     }
 }
 
-impl<'a, A: SatTheoryArgT<M: TupleExtract<P, PushInfo>>, P> Theory<A, A::Explain<'a>, P> for Euf {
+impl<'a, Q: Incremental, A: SatTheoryArgT<M: TupleExtract<P, PushInfo<Q>>>, P>
+    Theory<A, A::Explain<'a>, P> for Euf<Q>
+{
     fn init(&mut self, acts: &mut A) {
         // Dummy id 0 is used to represent UExps produced by evaluating function expression in
         // the model that didn't exist until now
@@ -506,7 +513,7 @@ impl<'a, 'b, A: SatTheoryArgT> MergeContext<'a, A> {
         }
     }
 }
-impl Euf {
+impl<Q: Incremental> Euf<Q> {
     pub(super) fn find(&self, id: Id) -> Id {
         self.egraph.find(id)
     }
@@ -601,7 +608,7 @@ impl Euf {
         &mut self,
         exp: Exp,
         id: Id,
-        acts: &mut impl SatTheoryArgT<M: TupleExtract<P, PushInfo>>,
+        acts: &mut impl SatTheoryArgT<M: TupleExtract<P, PushInfo<Q>>>,
     ) {
         debug!("Union exp {exp:?}, @v{id:?}");
         let exp_id = match exp {
@@ -710,7 +717,7 @@ impl Euf {
     pub(super) fn get_function_info(
         &self,
         s: Symbol,
-    ) -> impl FunctionAssignmentT<Exp = Exp> + use<'_> {
+    ) -> impl FunctionAssignmentT<Exp = Exp> + use<'_, Q> {
         self.function_info.get(s).iter().map(move |(node, cid)| {
             (
                 node.children().iter().map(|&id| self.id_to_exp(id)),
@@ -731,7 +738,7 @@ impl Euf {
         self.egraph[id].to_display_exp(id, acts.intern())
     }
 
-    pub(super) fn add_uncanonical<P, A: SatTheoryArgT<M: TupleExtract<P, PushInfo>>>(
+    pub(super) fn add_uncanonical<P, A: SatTheoryArgT<M: TupleExtract<P, PushInfo<Q>>>>(
         &mut self,
         op: Op,
         children: Children,
@@ -771,7 +778,7 @@ impl Euf {
         id1: Id,
         id2: Id,
         is_final: bool,
-        arg: &mut impl SatExplainTheoryArgT<M: TupleExtract<P, PushInfo>>,
+        arg: &mut impl SatExplainTheoryArgT<M: TupleExtract<P, PushInfo<Q>>>,
     ) -> bool {
         let [base_unions, last_unions] = if is_final {
             [0, 0] // don't use shortcut explanations for `explain_propagation_final`
@@ -793,7 +800,7 @@ impl Euf {
 
     fn conflict<P>(
         &mut self,
-        acts: &mut impl SatTheoryArgT<M: TupleExtract<P, PushInfo>>,
+        acts: &mut impl SatTheoryArgT<M: TupleExtract<P, PushInfo<Q>>>,
         id1: Id,
         id2: Id,
     ) {
@@ -809,7 +816,7 @@ impl Euf {
 
     pub(super) fn rebuild<P>(
         &mut self,
-        acts: &mut impl SatTheoryArgT<M: TupleExtract<P, PushInfo>>,
+        acts: &mut impl SatTheoryArgT<M: TupleExtract<P, PushInfo<Q>>>,
     ) -> CResult {
         debug!("Rebuilding EGraph");
         EGraph::try_rebuild(
@@ -853,7 +860,7 @@ impl Euf {
 
     pub(super) fn union<'a, P>(
         &mut self,
-        acts: &mut impl SatTheoryArgT<M: TupleExtract<P, PushInfo>>,
+        acts: &mut impl SatTheoryArgT<M: TupleExtract<P, PushInfo<Q>>>,
         id1: Id,
         id2: Id,
         just: Justification,
@@ -904,7 +911,7 @@ impl Euf {
     fn generate_conflict_ids_for_interpolant<
         'a,
         P,
-        A: SatTheoryArgT<M: TupleExtract<P, PushInfo>>,
+        A: SatTheoryArgT<M: TupleExtract<P, PushInfo<Q>>>,
     >(
         &mut self,
         acts: &mut A,

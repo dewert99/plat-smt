@@ -1,7 +1,7 @@
-use crate::outer_solver::Logic;
+use crate::FullBufRead;
+use crate::full_theory::Logic;
 use crate::parser::parser::Parser;
 use crate::parser::parser_core::SexpLexer;
-use crate::FullBufRead;
 use core::fmt::Display;
 use core::fmt::Write;
 use std::string::String;

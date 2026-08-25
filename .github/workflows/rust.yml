@@ -17,8 +17,8 @@ jobs:
         with:
           channel: stable
           cache-target: dev
-      - run: cargo test
-      - run: cargo test --features test_add_more_mid_search_equalities
+      - run: cargo test --features interpolant
+      - run: cargo test --features interpolant --features test_add_more_mid_search_equalities
   test-starexec-bench:
     name: StarExec SMT tests
     runs-on: ubuntu-latest
@@ -30,7 +30,7 @@ jobs:
         with:
           channel: stable
           cache-target: release
-      - run: cargo test --release --package plat-smt --test test test_smtlib_benchmarks
+      - run: cargo test --release --features interpolant --package plat-smt --test test test_smtlib_benchmarks
   test-more-a:
     name: StarExec SMT tests with extra equalities and randomized activations
     runs-on: ubuntu-latest
@@ -42,7 +42,7 @@ jobs:
         with:
           channel: stable
           cache-target: release
-      - run: SCRAMBLE_SEED=1 cargo test --release --features test_add_more_mid_search_equalities --package plat-smt --test test test_smtlib_benchmarks
+      - run: SCRAMBLE_SEED=1 cargo test --release --features interpolant --features test_add_more_mid_search_equalities --package plat-smt --test test test_smtlib_benchmarks
   test-more-b:
     name: StarExec SMT tests with extra equalities and randomized activations
     runs-on: ubuntu-latest
@@ -54,7 +54,7 @@ jobs:
         with:
           channel: stable
           cache-target: release
-      - run: SEED=1 SCRAMBLE_SEED=2 cargo test --release --features test_add_more_mid_search_equalities --package plat-smt --test test test_smtlib_benchmarks
+      - run: SEED=1 SCRAMBLE_SEED=2 cargo test --release --features interpolant --features test_add_more_mid_search_equalities --package plat-smt --test test test_smtlib_benchmarks
   test-more-c:
     name: StarExec SMT tests with extra equalities and randomized activations
     runs-on: ubuntu-latest
@@ -66,7 +66,7 @@ jobs:
         with:
           channel: stable
           cache-target: release
-      - run: SEED=1 SCRAMBLE_SEED=3 cargo test --release --package plat-smt --test test test_smtlib_benchmarks
+      - run: SEED=1 SCRAMBLE_SEED=3 cargo test --release --features interpolant --package plat-smt --test test test_smtlib_benchmarks
 
   benchmarks:
     name: Simulation Benchmark
