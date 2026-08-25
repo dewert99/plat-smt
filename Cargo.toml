@@ -23,9 +23,10 @@ bytemuck = { version = "1.14.0", default-features = false, features = ["must_cas
 dary_heap = { version = "0.3.9", optional = true }
 
 [features]
-default = ["log/release_max_level_warn", "euf", "lra"]
+default = ["log/release_max_level_warn", "euf", "lra", "simple_quantifiers"]
 euf = ["plat-egg"]
 lra= ["dary_heap", "lazy-rational"]
+simple_quantifiers = ["euf"]
 interpolant = []
 # Add more equalities mid-search, used for testing
 test_add_more_mid_search_equalities = []
@@ -49,6 +50,6 @@ inherits = "release"
 debug = true
 
 [profile.test-release]
-inherits = "release"
+inherits = "bench"
 panic = "unwind"
 debug-assertions = true

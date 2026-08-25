@@ -1,16 +1,16 @@
 use crate::collapse::CollapseOut;
-use crate::full_theory::{empty_fn_info, FullTheory, FunctionAssignmentT, PrepareModelKind};
-use crate::intern::{Symbol, ADD_SYM, DIV_SYM, GE_SYM, GT_SYM, MUL_SYM, REAL_SORT, SUB_SYM};
+use crate::full_theory::{FullTheory, FunctionAssignmentT, PrepareModelKind, empty_fn_info};
+use crate::intern::{ADD_SYM, DIV_SYM, GE_SYM, GT_SYM, MUL_SYM, REAL_SORT, SUB_SYM, Symbol};
 use crate::lra::bound::EpsilonRational;
-use crate::lra::tableau::{ineq, BoundDir, ModeledTableau, NumExp, NumVar, Sum};
+use crate::lra::tableau::{BoundDir, ModeledTableau, NumExp, NumVar, Sum, ineq};
 use crate::parser::SmtlibLogic;
 use crate::recorder::Recorder;
-use crate::rexp::{rexp_debug, AsRexp, Rexp};
+use crate::rexp::{AsRexp, Rexp, rexp_debug};
 use crate::theory::{Incremental, Theory, TheoryArgT};
 use crate::tseitin::{SatExplainTheoryArgT, SatTheoryArgT};
 use crate::{BoolExp, ExpLike, Sort, StaticSort};
-use alloc::collections::btree_map::Entry;
 use alloc::collections::BTreeMap;
+use alloc::collections::btree_map::Entry;
 use alloc::vec::Vec;
 use core::convert::Infallible;
 use core::fmt::{Debug, Display, Formatter};
@@ -18,7 +18,7 @@ use core::ops::Bound::{Excluded, Unbounded};
 use default_vec2::DefaultVec;
 use lazy_rational::Rational32;
 use log::debug;
-use platsat::{lbool, Lit, Var};
+use platsat::{Lit, Var, lbool};
 use std::mem;
 
 impl AsRexp for i32 {
@@ -409,6 +409,8 @@ impl<R: Recorder> FullTheory<R> for Lra {
     type Exp = NumExp;
 
     type FnSort = Infallible;
+
+    type QExtractor = ();
     fn prepare_model(&mut self, kind: PrepareModelKind) {
         match (kind, self.epsilon_def) {
             (PrepareModelKind::GetModel | PrepareModelKind::GetValues, None) => {

@@ -1,96 +1,30 @@
+use crate::AddSexpError::{AsSortMismatch, Unbound};
 use crate::collapse::ExprContext;
 use crate::exp::Fresh;
-use crate::full_theory::{FullTheory, FunctionAssignmentT, PrepareModelKind};
-use crate::intern::*;
-use crate::parser_fragment::{ParserFragment, PfResult};
-use crate::recorder::{dep_checker, Recorder};
-use crate::solver::{SolverCollapse, SolverWithBound};
-use crate::theory::{TheoryArg, TheoryArgT};
-use crate::util::HashMap;
-use crate::AddSexpError::{AsSortMismatch, Unbound};
-use crate::{
-    collapse, util, AddSexpError, BoolExp, ExpLike, HasSort, Solver, Sort, SubExp, SuperExp,
+pub use crate::full_theory::{FnSort, MaybeFnSort};
+use crate::full_theory::{
+    FullTheory, FunctionAssignmentT, Instruction, PrepareModelKind, QuantContext, QuantExp,
+    QuantifierApplier, WrapSolver,
 };
+use crate::intern::*;
+use crate::parser::SexpTerminal;
+use crate::parser_fragment::{ParserFragment, PfResult};
+use crate::recorder::dep_checker::DepCheckerAction;
+use crate::recorder::{Recorder, dep_checker};
+use crate::solver::SolverCollapse;
+use crate::theory::TheoryArgT;
+use crate::util::{DebugIter, Either};
+use crate::{AddSexpError, BoolExp, HasSort, Solver, Sort, SubExp, full_theory, util};
 use alloc::vec::Vec;
+use core::fmt::{Debug, Formatter};
+use core::ops::{Deref, DerefMut};
+pub use full_theory::{Bound, BoundL, Logic};
 use hashbrown::hash_map::Entry;
 use log::info;
 use std::{iter, mem};
 
-pub use crate::full_theory::{FnSort, MaybeFnSort};
-use crate::parser::SexpTerminal;
-use crate::recorder::dep_checker::DepCheckerAction;
-
-#[allow(type_alias_bounds)]
-type WrapSolver<L: Logic> = SolverWithBound<Solver<L::Theory, L::R>, HashMap<Symbol, BoundL<L>>>;
-
-pub trait Logic: Sized {
-    type Exp: SuperExp<BoolExp, Self::EM> + ExpLike;
-
-    type FnSort: MaybeFnSort;
-
-    type LevelMarker: Clone;
-
-    type Theory: FullTheory<Self::R, Exp = Self::Exp, FnSort = Self::FnSort, LevelMarker = Self::LevelMarker>
-        + for<'a> collapse::Collapse<Self::Exp, TheoryArg<'a, Self::LevelMarker, Self::R>, Self::CM>
-        + for<'a> collapse::Collapse<
-            Fresh<Self::Exp>,
-            TheoryArg<'a, Self::LevelMarker, Self::R>,
-            Self::CM,
-        >;
-
-    type RLevelMarker: Clone;
-
-    type R: Recorder<LevelMarker = Self::RLevelMarker>;
-    type Parser: ParserFragment<Self::Exp, WrapSolver<Self>, Self::M>;
-
-    type EM;
-
-    type CM;
-    type M;
-}
-
-impl<
-        R: Recorder,
-        M,
-        EM,
-        CM,
-        Th: FullTheory<R>
-            + for<'a> collapse::Collapse<Th::Exp, TheoryArg<'a, Th::LevelMarker, R>, CM>
-            + for<'a> collapse::Collapse<Fresh<Th::Exp>, TheoryArg<'a, Th::LevelMarker, R>, CM>,
-        P: ParserFragment<
-            Th::Exp,
-            SolverWithBound<Solver<Th, R>, HashMap<Symbol, Bound<Th::Exp, Th::FnSort>>>,
-            M,
-        >,
-    > Logic for (Th, P, R, (M, EM, CM))
-where
-    Th::Exp: SuperExp<BoolExp, EM>,
-{
-    type Exp = Th::Exp;
-    type FnSort = Th::FnSort;
-    type LevelMarker = Th::LevelMarker;
-
-    type Theory = Th;
-
-    type RLevelMarker = R::LevelMarker;
-    type R = R;
-    type Parser = P;
-    type EM = EM;
-    type CM = CM;
-
-    type M = M;
-}
-
-#[derive(Clone)]
-pub enum Bound<Exp, Fn = FnSort> {
-    /// An uninterpreted function with the given sort
-    Fn(Fn),
-    /// A constant with the given value
-    Const(Exp),
-}
-
-pub type BoundL<L> = Bound<<L as Logic>::Exp, <L as Logic>::FnSort>;
-
+#[derive(Debug, Copy, Clone)]
+struct Inner;
 /// Requirements on the `Exp` created
 #[derive(Debug, Copy, Clone)]
 pub enum StartExpCtx {
@@ -100,6 +34,12 @@ pub enum StartExpCtx {
     Assert,
     /// Optimize to satisfy parent constraints (only available when continuing an existing expression)
     Opt,
+    #[doc(hidden)]
+    AssertOrOpt(#[expect(private_interfaces)] Inner),
+}
+
+impl StartExpCtx {
+    pub(crate) const ASSERT_OR_OPT: Self = StartExpCtx::AssertOrOpt(Inner);
 }
 
 // If `f` is `LET_SYM` then `stack_len` refers to let_bound_stack instead of exp_stack
@@ -209,7 +149,7 @@ pub enum DefineError<L: Logic> {
 /// solver.end_exp_take().unwrap(); // (not (f (f true false) x))
 /// ```
 pub struct OuterSolver<L: Logic> {
-    inner: WrapSolver<L>,
+    inner: WrapSolver<L::Theory, L::R>,
     parser: L::Parser,
     stack: Vec<Frame<L::Exp>>,
     /// List of let bound variable with the old value they are shadowing
@@ -378,6 +318,7 @@ impl<L: Logic> OuterSolver<L> {
         self.exp_stack.clear();
         self.stack.clear();
         self.undo_let_bindings(0);
+        self.quantifier_applier().clear_pending();
     }
 
     /// Enter a context where the next [`end_exp_take`] will call `undo_let_bindings(old_len)`
@@ -393,9 +334,11 @@ impl<L: Logic> OuterSolver<L> {
 
     fn resolve_ctx(&self, ctx: StartExpCtx) -> ExprContext<L::Exp> {
         match (ctx, self.stack.last()) {
-            (StartExpCtx::Assert, None) => ExprContext::AssertEq(BoolExp::TRUE.upcast()).into(),
+            (StartExpCtx::Assert | StartExpCtx::AssertOrOpt(_), None) => {
+                ExprContext::AssertEq(BoolExp::TRUE.upcast()).into()
+            }
             (StartExpCtx::Exact, _) => ExprContext::Exact.into(),
-            (StartExpCtx::Opt, Some(x)) => self.child_context(x),
+            (StartExpCtx::Opt | StartExpCtx::AssertOrOpt(_), Some(x)) => self.child_context(x),
             (ctx, last) => {
                 let not = if last.is_some() { "" } else { " not" };
                 panic!("Invalid ctx {ctx:?} when{not} building existing expression")
@@ -462,6 +405,36 @@ impl<L: Logic> OuterSolver<L> {
             self.undo_let_bindings(stack_len);
             return Ok(self.exp_stack.pop().unwrap());
         }
+        self.end_exp_take_inner(ctx, f, expected, stack_len)
+    }
+
+    #[inline]
+    pub(crate) fn end_exp_take_q(&mut self) -> Result<Option<L::Exp>, (Symbol, AddSexpError)> {
+        let Frame {
+            ctx,
+            f,
+            expected,
+            stack_len,
+        } = self.stack.pop().unwrap();
+        if f == LET_STAR_SYM {
+            self.exp_stack.truncate(stack_len as usize);
+            return Ok(None);
+        }
+        self.end_exp_take_inner(ctx, f, expected, stack_len)
+            .map(Some)
+    }
+
+    pub(crate) fn in_q_let(&self) -> bool {
+        self.stack.last().is_some_and(|x| x.f == LET_STAR_SYM)
+    }
+
+    fn end_exp_take_inner(
+        &mut self,
+        ctx: ExprContext<L::Exp>,
+        f: Symbol,
+        expected: Option<Sort>,
+        stack_len: u32,
+    ) -> Result<L::Exp, (Symbol, AddSexpError)> {
         match self.end_exp_inner(f, ctx, expected, stack_len) {
             Ok(x) => {
                 info!(
@@ -554,6 +527,104 @@ impl<L: Logic> OuterSolver<L> {
 
     pub fn intern_mut(&mut self) -> &mut InternInfo {
         self.inner.solver.intern_mut()
+    }
+
+    pub(crate) fn quantifier_applier(&mut self) -> &mut L::Q {
+        self.inner.solver.th.quantifier_applier()
+    }
+
+    pub(crate) fn quantifier_builder(&mut self, qvars: u32) -> QuantifierBuilder<'_, L> {
+        let ctx = self.quantifier_applier().create_context(qvars);
+        QuantifierBuilder { solver: self, ctx }
+    }
+}
+
+pub struct QuantifierBuilder<'a, L: Logic> {
+    solver: &'a mut OuterSolver<L>,
+    ctx: QuantContext,
+}
+
+impl<'a, L: Logic> Deref for QuantifierBuilder<'a, L> {
+    type Target = OuterSolver<L>;
+    fn deref(&self) -> &Self::Target {
+        &self.solver
+    }
+}
+
+impl<'a, L: Logic> DerefMut for QuantifierBuilder<'a, L> {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        self.solver
+    }
+}
+
+impl<'a, L: Logic> QuantifierBuilder<'a, L> {
+    ///
+    /// Let
+    /// * `(<s>` denote `Instruction::Start(s)` e.g. `(and` for `Instruction::Start(AND_SYM)`
+    /// * `)` denotes `Instruction::End`
+    /// * `@c{<e>}` denote `Instruction::Var(QuantExp::Exp(e))`
+    /// * `q!<v>` denote `Instruction::Var(QuantExp::QuantVar(v))`
+    /// * `l!<v>` denote `Instruction::Var(QuantExp::LetVar(v))`
+    ///
+    /// When translating `let` the special `Instruction::Start(LET_STAR)`/`(let*` instruction is used
+    /// It is not counted as argument to its parent and its children are incrementally bound for `LetVar` instructions
+    ///
+    /// `(forall ((x Int) (y Int)) (let ((z (max x y))) (and (>= z x) (>= z y))))` would translate to
+    /// `(let*`, `(max`, `q!0`, `q!1`, `)`, `)`, `(and`, `(>=`, `l!0`, `q!0`, `)`, `(>=`, `l!0`, `q!1`, `)`, `)`
+    ///
+    /// `(forall ((x Int) (y Int)) (not (let ((z (max x y))) (or (< z x) (< z y)))))` would translate to
+    /// (leaving out commas) `(not (let* (max q!0 q!1)) (and (< l!0 q!0 ) (< l!0 q!1)))`
+    pub fn add_instruction(&mut self, instruction: Instruction<QuantExp<L::Exp>>) {
+        self.solver
+            .quantifier_applier()
+            .add_instruction(&self.ctx, instruction);
+    }
+
+    pub fn bind(self, syms: impl Iterator<Item = Symbol> + Clone) {
+        #[cfg(debug_assertions)]
+        syms.clone().for_each(|x| {
+            let intern = self.solver.intern();
+            if let Some(Bound::Fn(f)) = self.solver.inner.bound.get(&x) {
+                debug_assert_eq!(
+                    self.ctx.qvars as usize,
+                    f.as_fn_sort().args().len(),
+                    "Symbol {} has incorrect number of args",
+                    x.with_intern(intern)
+                )
+            } else {
+                debug_assert!(
+                    false,
+                    "Symbol {} bound to quantifier is not a function",
+                    x.with_intern(intern)
+                )
+            }
+        });
+        info!(
+            "Adding quantifier to {:?}:{self:?}",
+            DebugIter(syms.clone().map(|x| x.with_intern(self.solver.intern())))
+        );
+
+        self.solver
+            .quantifier_applier()
+            .bind_instructions(&self.ctx, syms.map(Either::Left));
+    }
+
+    pub fn bind_to_sort(self, sort: Sort) {
+        debug_assert_eq!(self.ctx.qvars, 1);
+        info!(
+            "Adding quantifier to sort {}:{self:?}",
+            sort.with_intern(self.solver.intern())
+        );
+        self.solver
+            .quantifier_applier()
+            .bind_instructions(&self.ctx, [Either::Right(sort)].into_iter());
+    }
+}
+
+impl<'a, L: Logic> Debug for QuantifierBuilder<'a, L> {
+    fn fmt(&self, f: &mut Formatter<'_>) -> core::fmt::Result {
+        let q = self.solver.inner.solver.th.quantifier_applier_shr();
+        q.debug_cxt(&self.ctx, self.solver.inner.solver.intern(), f)
     }
 }
 

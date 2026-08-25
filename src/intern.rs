@@ -1,8 +1,8 @@
 use crate::util::DefaultHashBuilder;
 use core::hash::Hash;
 use core::num::NonZeroU32;
-use hashbrown::hash_table::Entry;
 use hashbrown::HashTable;
+use hashbrown::hash_table::Entry;
 use no_std_compat::prelude::v1::*;
 use std::fmt::{Debug, Display, Formatter};
 use std::hash::BuildHasher;
@@ -170,6 +170,41 @@ impl SymbolInfo {
             Entry::Vacant(vac) => {
                 let old_len = self.symbol_data.len();
                 self.symbol_data.push_str(s);
+                let res = self.symbol_indices.len();
+                if res > (u32::MAX as usize >> 2) {
+                    panic!("Too many symbols");
+                }
+                let res = Symbol(NonZeroU32::new(res as u32).unwrap());
+                vac.insert((old_len, self.symbol_data.len(), res));
+                self.symbol_indices.push(self.symbol_data.len());
+                res
+            }
+        }
+    }
+
+    pub fn intern_modified(&mut self, s: Symbol, extra: &str) -> Symbol {
+        let old_len = self.symbol_data.len();
+        let idx = s.0.get() as usize;
+        self.symbol_data
+            .extend_from_within(self.symbol_indices[idx - 1]..self.symbol_indices[idx]);
+        self.symbol_data.push_str(extra);
+        let s = &self.symbol_data[old_len..];
+        let hash = self.hasher.hash_one(s);
+        match self.map.entry(
+            hash,
+            |&(start, end, _)| &self.symbol_data.as_bytes()[start..end] == s.as_bytes(),
+            |&(start, end, _)| {
+                self.hasher
+                    .hash_one(&self.symbol_data.as_bytes()[start..end])
+            },
+        ) {
+            Entry::Occupied(occ) => {
+                let res = occ.get().2;
+                self.symbol_data.truncate(old_len);
+                res
+            }
+            Entry::Vacant(vac) => {
+                let old_len = self.symbol_data.len();
                 let res = self.symbol_indices.len();
                 if res > (u32::MAX as usize >> 2) {
                     panic!("Too many symbols");

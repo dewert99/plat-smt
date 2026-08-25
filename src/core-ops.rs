@@ -1,10 +1,10 @@
 use crate::collapse::{BaseMarker, Collapse, CollapseOut, ExprContext, LeftMarker, RightMarker};
 use crate::exp::{EitherExp, Fresh};
-use crate::intern::{Symbol, DISTINCT_SYM, EQ_SYM, IF_SYM, ITE_SYM};
-use crate::parser_fragment::{exact_args, index_iter, mandatory_args, ParserFragment};
+use crate::intern::{DISTINCT_SYM, EQ_SYM, IF_SYM, ITE_SYM, Symbol};
+use crate::parser_fragment::{ParserFragment, exact_args, index_iter, mandatory_args};
 use crate::reuse_mem::ReuseMem;
 use crate::solver::SolverCollapse;
-use crate::tseitin::{andor_sub_ctx, BoolOpPf, SatTheoryArgT, TseitenMarker};
+use crate::tseitin::{SatTheoryArgT, TseitenMarker, andor_sub_ctx};
 use crate::util::{extend_result, pairwise_sym};
 use crate::{AddSexpError, BoolExp, Conjunction, ExpLike, SubExp, SuperExp};
 use core::marker::PhantomData;
@@ -110,23 +110,15 @@ impl<I: DistinctElts> CollapseOut for RawDistinct<I> {
 }
 
 impl<
-        I: DistinctElts<Exp = EitherExp<Exp1, Exp2>>,
-        Exp1: ExpLike,
-        Exp2: ExpLike,
-        Arg,
-        M1,
-        M2,
-        Th1: Collapse<
-            RawDistinct<DowncastDistinct<I, LeftMarker<BaseMarker>, Exp1>>,
-            Arg,
-            BaseMarker<M1>,
-        >,
-        Th2: Collapse<
-            RawDistinct<DowncastDistinct<I, RightMarker<BaseMarker>, Exp2>>,
-            Arg,
-            BaseMarker<M2>,
-        >,
-    > Collapse<RawDistinct<I>, Arg, BaseMarker<(M1, M2)>> for (Th1, Th2)
+    I: DistinctElts<Exp = EitherExp<Exp1, Exp2>>,
+    Exp1: ExpLike,
+    Exp2: ExpLike,
+    Arg,
+    M1,
+    M2,
+    Th1: Collapse<RawDistinct<DowncastDistinct<I, LeftMarker<BaseMarker>, Exp1>>, Arg, BaseMarker<M1>>,
+    Th2: Collapse<RawDistinct<DowncastDistinct<I, RightMarker<BaseMarker>, Exp2>>, Arg, BaseMarker<M2>>,
+> Collapse<RawDistinct<I>, Arg, BaseMarker<(M1, M2)>> for (Th1, Th2)
 {
     fn collapse(
         &mut self,
@@ -158,10 +150,10 @@ impl<
 pub trait DefaultDistinct {}
 
 impl<
-        I: DistinctElts,
-        Arg: SatTheoryArgT,
-        Th: Collapse<Eq<I::Exp>, Arg, BaseMarker> + DefaultDistinct,
-    > Collapse<RawDistinct<I>, Arg, BaseMarker> for Th
+    I: DistinctElts,
+    Arg: SatTheoryArgT,
+    Th: Collapse<Eq<I::Exp>, Arg, BaseMarker> + DefaultDistinct,
+> Collapse<RawDistinct<I>, Arg, BaseMarker> for Th
 {
     fn collapse(
         &mut self,
@@ -211,13 +203,15 @@ pub trait DefaultIte<Exp> {
     fn post_ite(&mut self, _ite: Ite<Exp>, _res: &mut Exp) {}
 }
 
-pub struct IteMarker<Eq, Fresh>(Eq, Fresh);
 impl<
-        Exp: ExpLike,
-        A: SatTheoryArgT,
-        M,
-        Th: Collapse<Eq<Exp>, A, BaseMarker<M>> + Collapse<Fresh<Exp>, A, BaseMarker> + DefaultIte<Exp>,
-    > Collapse<Ite<Exp>, A, BaseMarker<M>> for Th
+    Exp: ExpLike,
+    A: SatTheoryArgT,
+    ME,
+    MF,
+    Th: Collapse<Eq<Exp>, A, BaseMarker<ME>>
+        + Collapse<Fresh<Exp>, A, BaseMarker<MF>>
+        + DefaultIte<Exp>,
+> Collapse<Ite<Exp>, A, BaseMarker<(ME, MF)>> for Th
 {
     fn collapse(&mut self, t: Ite<Exp>, acts: &mut A, ctx: ExprContext<Exp>) -> Exp {
         let mut res = match t.0.to_lit() {
@@ -263,14 +257,14 @@ impl<
 }
 
 impl<
-        Exp1: ExpLike,
-        Exp2: ExpLike,
-        Arg,
-        M1,
-        M2,
-        Th1: Collapse<Ite<Exp1>, Arg, M1>,
-        Th2: Collapse<Ite<Exp2>, Arg, M2>,
-    > Collapse<Ite<EitherExp<Exp1, Exp2>>, Arg, (M1, M2)> for (Th1, Th2)
+    Exp1: ExpLike,
+    Exp2: ExpLike,
+    Arg,
+    M1,
+    M2,
+    Th1: Collapse<Ite<Exp1>, Arg, M1>,
+    Th2: Collapse<Ite<Exp2>, Arg, M2>,
+> Collapse<Ite<EitherExp<Exp1, Exp2>>, Arg, (M1, M2)> for (Th1, Th2)
 {
     fn collapse(
         &mut self,
@@ -297,14 +291,14 @@ impl<
 #[derive(Default)]
 pub struct EqPf;
 impl<
-        'a,
-        M1,
-        M2,
-        Exp: ExpLike + SuperExp<BoolExp, M1>,
-        S: SolverCollapse<Eq<Exp>, M2>
-            + SolverCollapse<Conjunction, TseitenMarker>
-            + ReuseMem<Conjunction>,
-    > ParserFragment<Exp, S, (M1, M2)> for EqPf
+    'a,
+    M1,
+    M2,
+    Exp: ExpLike + SuperExp<BoolExp, M1>,
+    S: SolverCollapse<Eq<Exp>, M2>
+        + SolverCollapse<Conjunction, TseitenMarker>
+        + ReuseMem<Conjunction>,
+> ParserFragment<Exp, S, (M1, M2)> for EqPf
 {
     fn supports(&self, s: Symbol) -> bool {
         s == EQ_SYM
@@ -345,12 +339,12 @@ impl<
 #[derive(Default)]
 pub struct DistinctPf;
 impl<
-        'a,
-        M1,
-        M2,
-        Exp: ExpLike + SuperExp<BoolExp, M1>,
-        S: for<'b> SolverCollapse<Distinct<'b, Exp>, M2>,
-    > ParserFragment<Exp, S, (M1, M2)> for DistinctPf
+    'a,
+    M1,
+    M2,
+    Exp: ExpLike + SuperExp<BoolExp, M1>,
+    S: for<'b> SolverCollapse<Distinct<'b, Exp>, M2>,
+> ParserFragment<Exp, S, (M1, M2)> for DistinctPf
 {
     fn supports(&self, s: Symbol) -> bool {
         s == DISTINCT_SYM
@@ -415,4 +409,5 @@ impl<'a, Th1: Collapse<Eq<E1>, A, M1>, Th2: Collapse<Eq<E2>, A, M2>, E1, E2, M1,
     }
 }
 
+pub use crate::tseitin::BoolOpPf;
 pub type CoreOpsPf = (BoolOpPf, (EqPf, (ItePf, DistinctPf)));
