@@ -42,6 +42,7 @@ const BASE_SYMBOLS: &[&str] = &[
     "@distinguisher",
     "let",
     "let*",
+    "match",
     "!",
     "+",
     "-",
@@ -96,6 +97,8 @@ pub const DISTINGUISHER_SYM: Symbol = base_symbol("@distinguisher");
 pub const LET_SYM: Symbol = base_symbol("let");
 
 pub const LET_STAR_SYM: Symbol = base_symbol("let*");
+
+pub const MATCH_SYM: Symbol = base_symbol("match");
 
 pub const ANNOT_SYM: Symbol = base_symbol("!");
 

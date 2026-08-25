@@ -428,6 +428,8 @@ struct LevelMarker<L: Logic> {
 struct SortInfo {
     params: u32,
     infinite: bool,
+    variants: u32,
+    global_index: u32,
 }
 
 impl SortInfo {
@@ -435,6 +437,8 @@ impl SortInfo {
         SortInfo {
             params,
             infinite: true,
+            variants: 0,
+            global_index: 0,
         }
     }
 
@@ -442,6 +446,8 @@ impl SortInfo {
         SortInfo {
             params,
             infinite: false,
+            variants: 0,
+            global_index: 0,
         }
     }
 
@@ -636,9 +642,93 @@ impl<'a, W: Write, L: Logic> ExpVisitor<'a, W, L> {
         ctx: StartExpCtx,
     ) -> Result<()> {
         match f {
+            MATCH_SYM => {
+                let mut rest = CountingParser::new(rest, StrSym::Sym(f), 2);
+                self.0.core.start_let(ctx);
+                let scrutinee = self.0.parse_exp(rest.next()?, StartExpCtx::Exact)?;
+                self.0.core.add_let_binding(MATCH_SYM, scrutinee);
+                let SexpToken::List(mut l) = rest.next()? else {
+                    return Err(custom_err("unexpected token when parsing match expression"));
+                };
+                let mut variants_used = 0u64;
+                let Some((_, iter)) = self.0.sort_to_datatype_iter(scrutinee.sort()) else {
+                    return Err(custom_err("match must be used on a datatype"));
+                };
+                let mut variants_target = (1u64 << iter.variants) - 1;
+                let mut ends_needed = 0;
+                while let Some(arm) = l.next() {
+                    let SexpToken::List(mut arm) = arm? else {
+                        return Err(custom_err("unexpected token when parsing match expression"));
+                    };
+                    let mut arm = CountingParser::new(&mut arm, StrSym::Str("match arm"), 2);
+                    let let_len = self.0.core.let_bindings_len();
+                    match arm.next()? {
+                        SexpToken::Terminal(SexpTerminal::Symbol("_")) => {
+                            variants_used = variants_target;
+                        }
+                        SexpToken::List(mut l) => {
+                            let ctor = l.next().ok_or(custom_err(
+                                "unexpected token when parsing match binder",
+                            ))??;
+                            let ctor = parse_symbol(ctor, self.0.core.intern_mut())?;
+                            let (solver, mut iter) =
+                                self.0.sort_to_datatype_iter(scrutinee.sort()).unwrap();
+                            let (discrim, accessors) = loop {
+                                match iter.next(solver) {
+                                    None => return Err(custom_err("invalid variant")),
+                                    Some((discrim, var_ctor, accessors)) if ctor == var_ctor => {
+                                        break (discrim, accessors);
+                                    }
+                                    _ => continue,
+                                }
+                            };
+                            let updated_variants_used = variants_used | 1 << iter.variants;
+                            if updated_variants_used == variants_used {
+                                return Err(custom_err("repeated variant"));
+                            }
+                            variants_used = updated_variants_used;
+                            if variants_used != variants_target {
+                                let (discrim_fn, discrim_var) = discrim.unwrap();
+                                solver.start_exp(ITE_SYM, None, StartExpCtx::Opt);
+                                solver.start_exp(EQ_SYM, None, StartExpCtx::Opt);
+                                solver.start_exp(discrim_var, None, StartExpCtx::Opt);
+                                solver.end_exp().map_err(add_sexp_error)?;
+                                solver.start_exp(discrim_fn, None, StartExpCtx::Opt);
+                                solver.start_exp(MATCH_SYM, None, StartExpCtx::Opt);
+                                solver.end_exp().map_err(add_sexp_error)?;
+                                solver.end_exp().map_err(add_sexp_error)?;
+                                solver.end_exp().map_err(add_sexp_error)?;
+                                ends_needed += 1;
+                            }
+                            let mut rest =
+                                CountingParser::new(&mut l, StrSym::Sym(ctor), accessors.len());
+                            for &accessor in accessors {
+                                let binder = parse_symbol(rest.next()?, solver.intern_mut())?;
+                                solver.start_exp(accessor, None, StartExpCtx::Exact);
+                                solver.start_exp(MATCH_SYM, None, StartExpCtx::Opt);
+                                solver.end_exp().map_err(add_sexp_error)?;
+                                let field = solver.end_exp_take().map_err(add_sexp_error)?;
+                                solver.add_let_binding(binder, field);
+                            }
+                            rest.finish()?;
+                        }
+                        _ => return Err(custom_err("unexpected token when parsing match binder")),
+                    }
+                    let bound = self.0.parse_exp(arm.next()?, StartExpCtx::Opt)?;
+                    self.0.core.undo_let_bindings(let_len);
+                    arm.finish()?;
+                    self.0.core.inject_exp(bound);
+                }
+                for _ in 0..ends_needed {
+                    self.0.core.end_exp().map_err(add_sexp_error)?;
+                }
+                drop(l);
+                rest.finish()?;
+            }
             LET_SYM => {
                 let mut rest = CountingParser::new(rest, StrSym::Sym(f), 2);
                 let old_len = self.0.core.let_bindings_len();
+                self.0.core.start_let(ctx);
                 let res = match rest.next()? {
                     SexpToken::List(mut l) => l
                         .map(|token| {
@@ -654,11 +744,10 @@ impl<'a, W: Write, L: Logic> ExpVisitor<'a, W, L> {
                     return Err(err);
                 }
                 self.0.core.finish_let_bindings_since(old_len);
-                self.0.core.start_let(old_len, ctx);
             }
             LET_STAR_SYM => {
                 let mut rest = CountingParser::new(rest, StrSym::Sym(f), 2);
-                let old_len = self.0.core.let_bindings_len();
+                self.0.core.start_let(ctx);
                 match rest.next()? {
                     SexpToken::List(mut l) => l
                         .map(|token| {
@@ -669,7 +758,6 @@ impl<'a, W: Write, L: Logic> ExpVisitor<'a, W, L> {
                         .collect::<Result<()>>()?,
                     _ => return Err(InvalidLet),
                 }
-                self.0.core.start_let(old_len, ctx);
             }
             ANNOT_SYM => {
                 let mut rest = CountingParser::new(rest, StrSym::Sym(f), 3);
@@ -900,6 +988,31 @@ impl<W: Write, L: Logic> Parser<W, L> {
         self.declared_sorts.get(&s).unwrap()
     }
 
+    fn sort_to_datatype_iter(
+        &mut self,
+        s: Sort,
+    ) -> Option<(&mut OuterSolver<L>, DatatypeIter<'_>)> {
+        let &SortInfo {
+            global_index,
+            variants,
+            ..
+        } = self.sort_info(s);
+        if variants == 0 {
+            return None;
+        }
+        let discrim_fn = if variants == 1 {
+            None
+        } else {
+            Some(self.global_stack[global_index as usize])
+        };
+        let iter = DatatypeIter {
+            variants,
+            global_slice: &self.global_stack[..global_index as usize],
+            discrim_fn,
+        };
+        Some((&mut self.core, iter))
+    }
+
     fn parse_declare_datatype<R: FullBufRead>(
         &mut self,
         t: SexpToken<R>,
@@ -944,13 +1057,15 @@ impl<W: Write, L: Logic> Parser<W, L> {
             let SexpToken::List(mut p) = t? else {
                 return Err(InvalidCommand);
             };
-            let constructor = self.parse_fresh_binder(p.next().ok_or(InvalidCommand)??)?;
+            let token = p.next().ok_or(InvalidCommand)??;
+            let constructor = parse_symbol(token, self.core.intern_mut())?;
             let mut args = SmallVec::new();
             while let Some(t) = p.next() {
                 let SexpToken::List(mut p) = t? else {
                     return Err(InvalidCommand);
                 };
-                let accessor = self.parse_fresh_binder(p.next().ok_or(InvalidCommand)??)?;
+                let token = p.next().ok_or(InvalidCommand)??;
+                let accessor = parse_symbol(token, self.core.intern_mut())?;
                 let accessor_sort = self.parse_sort(p.next().ok_or(InvalidCommand)??)?;
                 // TODO declare-datatypes where a datatype contains a finite datatype declared after it are broken
                 var_infinite |= self.sort_info(accessor_sort).infinite;
@@ -990,6 +1105,8 @@ impl<W: Write, L: Logic> Parser<W, L> {
             SortInfo {
                 params: 0,
                 infinite,
+                variants,
+                global_index: global_len as u32,
             },
         );
         let global_slice = &self.global_stack[..global_len];
@@ -1441,14 +1558,6 @@ impl<W: Write, L: Logic> Parser<W, L> {
         Ok(())
     }
 
-    fn parse_fresh_binder<R: FullBufRead>(&mut self, token: SexpToken<R>) -> Result<Symbol> {
-        let SexpToken::Terminal(SexpTerminal::Symbol(name)) = token else {
-            return Err(InvalidCommand);
-        };
-        let name = self.core.intern_mut().symbols.intern(name);
-        Ok(name)
-    }
-
     fn create_solver_level(&mut self) -> Result<SLevelMarker<L>> {
         QuantifierApplier::run(&mut self.core)
             .map_err(|(s, err)| AddSexpQ(s.map_or(StrSym::Str("assert"), Into::into), err))?;
@@ -1478,7 +1587,8 @@ impl<W: Write, L: Logic> Parser<W, L> {
         debug_assert!(self.this_named_assert.is_empty());
         match name {
             Smt2Command::DeclareFn => {
-                let name = self.parse_fresh_binder(rest.next()?)?;
+                let token = rest.next()?;
+                let name = parse_symbol(token, self.core.intern_mut())?;
                 let SexpToken::List(mut l) = rest.next()? else {
                     return Err(InvalidCommand);
                 };
@@ -1495,7 +1605,8 @@ impl<W: Write, L: Logic> Parser<W, L> {
                 self.insert_bound(name, Bound::Fn(fn_sort))?;
             }
             Smt2Command::DeclareConst => {
-                let name = self.parse_fresh_binder(rest.next()?)?;
+                let token = rest.next()?;
+                let name = parse_symbol(token, self.core.intern_mut())?;
                 let ret = self.parse_sort(rest.next()?)?;
                 rest.finish()?;
                 if let ProduceModelState::True(s) = &mut self.options.produce_models {
@@ -1504,11 +1615,13 @@ impl<W: Write, L: Logic> Parser<W, L> {
                 self.insert_bound(name, Bound::Fn(FnSort::slice_new(&[], ret)))?;
             }
             Smt2Command::DefineConst => {
-                let name = self.parse_fresh_binder(rest.next()?)?;
+                let token = rest.next()?;
+                let name = parse_symbol(token, self.core.intern_mut())?;
                 self.define_const(name, rest)?;
             }
             Smt2Command::DefineFn => {
-                let name = self.parse_fresh_binder(rest.next()?)?;
+                let token = rest.next()?;
+                let name = parse_symbol(token, self.core.intern_mut())?;
                 let SexpToken::List(mut args) = rest.next()? else {
                     return Err(InvalidCommand);
                 };
@@ -1532,7 +1645,8 @@ impl<W: Write, L: Logic> Parser<W, L> {
                 if !self.core.quantifier_applier().enabled() {
                     return Err(custom_err("unsupported datatypes"));
                 }
-                let constructor_sort = self.parse_fresh_binder(rest.next()?)?;
+                let token = rest.next()?;
+                let constructor_sort = parse_symbol(token, self.core.intern_mut())?;
                 self.parse_declare_datatype(rest.next()?, constructor_sort)?;
                 rest.finish()?;
             }
@@ -1775,6 +1889,17 @@ impl<W: Write, L: Logic> Parser<W, L> {
             |this, e| writeln!(err, "{}", e.map(|x| x.with_intern(this.core.intern()))).unwrap(),
         );
     }
+}
+
+fn parse_symbol<R: FullBufRead>(
+    token: SexpToken<R>,
+    intern_mut: &mut InternInfo,
+) -> Result<Symbol> {
+    let SexpToken::Terminal(SexpTerminal::Symbol(name)) = token else {
+        return Err(InvalidCommand);
+    };
+    let name = intern_mut.symbols.intern(name);
+    Ok(name)
 }
 
 fn write_body<'a, W: Write, L: Logic>(
