@@ -322,13 +322,14 @@ impl<L: Logic> OuterSolver<L> {
     }
 
     /// Enter a context where the next [`end_exp_take`] will call `undo_let_bindings(old_len)`
-    pub fn start_let(&mut self, old_len: u32, ctx: StartExpCtx) {
+    pub fn start_let(&mut self, ctx: StartExpCtx) {
+        let stack_len = self.let_bindings_len();
         let ctx = self.resolve_ctx(ctx);
         self.stack.push(Frame {
             ctx,
             f: LET_SYM,
             expected: None,
-            stack_len: old_len,
+            stack_len,
         })
     }
 
