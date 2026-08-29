@@ -1,0 +1,4 @@
+recursive datatypes are not supported, consider using co-datatypes instead at 1:82
+(declare-datatypes ((BoolList 0)) (((empty) (cons (first Bool) (rest BoolList)))))
+                                                                                 ^
+

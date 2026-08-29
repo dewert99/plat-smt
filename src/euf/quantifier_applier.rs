@@ -142,7 +142,12 @@ impl<Exp: ExpLike> full_theory::QuantifierApplier<Exp> for QuantifierApplier<Exp
         self.vm.push(instruction)
     }
 
-    fn bind_instructions(&mut self, ctx: &QuantContext, triggers: impl Iterator<Item = Trigger>) {
+    fn bind_instructions(
+        &mut self,
+        ctx: &QuantContext,
+        triggers: impl Iterator<Item = Trigger>,
+        block: bool,
+    ) {
         // To save space the last end paren is skipped
         let last = self.vm.pop();
         debug_assert_eq!(last.map(CompactInstruction::expand), Some(Instruction::END));
@@ -154,8 +159,14 @@ impl<Exp: ExpLike> full_theory::QuantifierApplier<Exp> for QuantifierApplier<Exp
                 *x = CompactInstruction::var(U31_MAX - v + non_let_vars)
             }
         }
+        let captures_start = if block {
+            assert_eq!(self.vars.len() as u32, ctx.captures);
+            u32::MAX
+        } else {
+            ctx.captures
+        };
         let body = QuantifierBody {
-            captures_start: ctx.captures,
+            captures_start,
             captures_end: self.vars.len() as u32,
             vm_start: ctx.vm,
             vm_end: self.vm.len() as u32,
@@ -197,12 +208,14 @@ impl<Exp: ExpLike> full_theory::QuantifierApplier<Exp> for QuantifierApplier<Exp
 }
 
 pub(super) trait QuantifierChecker<Exp, M>: Incremental {
-    fn check_call(&mut self, f: Symbol, args: impl Iterator<Item = Exp> + Clone, res: Exp);
+    fn check_call(&mut self, f: Symbol, args: impl Iterator<Item = Exp> + Clone, res: Exp) -> bool;
     fn check_new_exp(&mut self, e: Exp);
 }
 
 impl<Exp> QuantifierChecker<Exp, BaseMarker> for () {
-    fn check_call(&mut self, _: Symbol, _: impl Iterator<Item = Exp>, _: Exp) {}
+    fn check_call(&mut self, _: Symbol, _: impl Iterator<Item = Exp>, _: Exp) -> bool {
+        true
+    }
 
     fn check_new_exp(&mut self, _: Exp) {}
 }
@@ -210,15 +223,22 @@ impl<Exp> QuantifierChecker<Exp, BaseMarker> for () {
 impl<M, Exp: ExpLike, Super: SuperExp<Exp, M>> QuantifierChecker<Exp, M>
     for QuantifierApplier<Super>
 {
-    fn check_call(&mut self, f: Symbol, args: impl Iterator<Item = Exp> + Clone, _: Exp) {
+    fn check_call(&mut self, f: Symbol, args: impl Iterator<Item = Exp> + Clone, _: Exp) -> bool {
+        let mut block = false;
         if let Some(qs) = self.simple_quantifiers.get(&Either::Left(f)) {
-            for &q in qs {
+            for q in qs {
+                let mut q = *q;
+                if q.captures_start == u32::MAX {
+                    block = true;
+                    q.captures_start = q.captures_end;
+                }
                 let matched_start = self.vars.len() as u32;
                 self.vars.extend(args.clone().map(SubExp::upcast));
                 self.pending_instantiations
                     .push(Pending { q, matched_start })
             }
-        }
+        };
+        block
     }
 
     fn check_new_exp(&mut self, e: Exp) {
@@ -239,7 +259,12 @@ impl<Exp: Copy> QuantifierApplier<Exp> {
         vm: &[CompactInstruction],
         var_buf: &mut Vec<Exp>,
     ) -> Result<(), (Option<Symbol>, AddSexpError)> {
+        let mut c = 0;
         while let Some(pending) = outer.quantifier_applier().pending_instantiations.pop() {
+            c += 1;
+            if c > 20 {
+                panic!();
+            }
             let vars = &mut outer.quantifier_applier().vars;
             var_buf.clear();
             var_buf.extend(&vars[pending.matched_start as usize..]);

@@ -310,7 +310,12 @@ pub trait QuantifierApplier<Exp> {
     fn enabled(&self) -> bool;
     fn create_context(&self, qvars: u32) -> QuantContext;
     fn add_instruction(&mut self, ctx: &QuantContext, instruction: Instruction<QuantExp<Exp>>);
-    fn bind_instructions(&mut self, ctx: &QuantContext, syms: impl Iterator<Item = Trigger>);
+    fn bind_instructions(
+        &mut self,
+        ctx: &QuantContext,
+        syms: impl Iterator<Item = Trigger>,
+        block: bool,
+    );
 
     fn debug_cxt(&self, ctx: &QuantContext, intern: &InternInfo, f: &mut Formatter) -> fmt::Result;
 }
@@ -338,7 +343,7 @@ impl<E> QuantifierApplier<E> for () {
 
     fn add_instruction(&mut self, _: &QuantContext, _: Instruction<QuantExp<E>>) {}
 
-    fn bind_instructions(&mut self, _: &QuantContext, _: impl Iterator<Item = Trigger>) {}
+    fn bind_instructions(&mut self, _: &QuantContext, _: impl Iterator<Item = Trigger>, _: bool) {}
 
     fn debug_cxt(&self, _: &QuantContext, _: &InternInfo, f: &mut Formatter) -> fmt::Result {
         write!(f, "NoQuantifyApplier")

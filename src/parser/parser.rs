@@ -19,6 +19,7 @@ use crate::solver::{SolveResult, SolverCollapse, UnsatCoreConjunction};
 use crate::util::{HashMap, HashSet, format_args2, parenthesized, powi};
 use crate::{AddSexpError, BoolExp, ExpLike, HasSort, SubExp, SuperExp, solver};
 use alloc::borrow::Cow;
+use core::cmp::max;
 use core::fmt::Arguments;
 use core::str::FromStr;
 use internal_iterator::InternalIterator;
@@ -330,6 +331,8 @@ enum_str! {Smt2Command{
     "define-const" => DefineConst(3),
     "declare-codatatypes" => DeclareCoDatatypes(2),
     "declare-codatatype" => DeclareCoDatatype(2),
+    "declare-datatypes" => DeclareDatatypes(2),
+    "declare-datatype" => DeclareDatatype(2),
     "define-fun" => DefineFn(4),
     "get-unsat-assumptions" => GetUnsatAssumptions(0),
     "get-unsat-core" => GetUnsatCore(0),
@@ -425,27 +428,26 @@ struct LevelMarker<L: Logic> {
     solver: SLevelMarker<L>,
 }
 
+#[derive(Ord, PartialOrd, Eq, PartialEq, Copy, Clone)]
+enum SortCard {
+    Finite,
+    Infinite,
+    Recursive,
+    Undef,
+}
+
 struct SortInfo {
     params: u32,
-    infinite: bool,
+    card: SortCard,
     variants: u32,
     global_index: u32,
 }
 
 impl SortInfo {
-    fn new(params: u32) -> Self {
+    fn new(params: u32, card: SortCard) -> Self {
         SortInfo {
             params,
-            infinite: true,
-            variants: 0,
-            global_index: 0,
-        }
-    }
-
-    fn finite(params: u32) -> Self {
-        SortInfo {
-            params,
-            infinite: false,
+            card,
             variants: 0,
             global_index: 0,
         }
@@ -651,10 +653,10 @@ impl<'a, W: Write, L: Logic> ExpVisitor<'a, W, L> {
                     return Err(custom_err("unexpected token when parsing match expression"));
                 };
                 let mut variants_used = 0u64;
-                let Some((_, iter)) = self.0.sort_to_datatype_iter(scrutinee.sort()) else {
+                let Some((_, iter, _)) = self.0.sort_to_datatype_iter(scrutinee.sort()) else {
                     return Err(custom_err("match must be used on a datatype"));
                 };
-                let mut variants_target = (1u64 << iter.variants) - 1;
+                let variants_target = (1u64 << iter.variants) - 1;
                 let mut ends_needed = 0;
                 while let Some(arm) = l.next() {
                     let SexpToken::List(mut arm) = arm? else {
@@ -671,7 +673,7 @@ impl<'a, W: Write, L: Logic> ExpVisitor<'a, W, L> {
                                 "unexpected token when parsing match binder",
                             ))??;
                             let ctor = parse_symbol(ctor, self.0.core.intern_mut())?;
-                            let (solver, mut iter) =
+                            let (solver, mut iter, _) =
                                 self.0.sort_to_datatype_iter(scrutinee.sort()).unwrap();
                             let (discrim, accessors) = loop {
                                 match iter.next(solver) {
@@ -718,6 +720,9 @@ impl<'a, W: Write, L: Logic> ExpVisitor<'a, W, L> {
                     self.0.core.undo_let_bindings(let_len);
                     arm.finish()?;
                     self.0.core.inject_exp(bound);
+                }
+                if variants_used != variants_target {
+                    return Err(custom_err("missing variant"));
                 }
                 for _ in 0..ends_needed {
                     self.0.core.end_exp().map_err(add_sexp_error)?;
@@ -846,8 +851,10 @@ impl<W: Write, L: Logic> Parser<W, L> {
             this_named_assert: Vec::new(),
             options: Default::default(),
         };
-        res.declared_sorts.insert(BOOL_SYM, SortInfo::finite(0));
-        res.declared_sorts.insert(REAL_SYM, SortInfo::new(0));
+        res.declared_sorts
+            .insert(BOOL_SYM, SortInfo::new(0, SortCard::Finite));
+        res.declared_sorts
+            .insert(REAL_SYM, SortInfo::new(0, SortCard::Infinite));
         res
     }
 
@@ -968,7 +975,11 @@ impl<W: Write, L: Logic> Parser<W, L> {
         }
         Ok(res)
     }
-    fn parse_declare_sort<R: FullBufRead>(&mut self, mut rest: CountingParser<R>) -> Result<()> {
+    fn parse_declare_sort<R: FullBufRead>(
+        &mut self,
+        mut rest: CountingParser<R>,
+        card: SortCard,
+    ) -> Result<()> {
         let SexpToken::Terminal(SexpTerminal::Symbol(name)) = rest.next()? else {
             return Err(InvalidCommand);
         };
@@ -979,7 +990,7 @@ impl<W: Write, L: Logic> Parser<W, L> {
         let args = rest.try_next_parse()?.unwrap_or(0);
         rest.finish()?;
         self.sort_stack.push(name);
-        self.declared_sorts.insert(name, SortInfo::new(args));
+        self.declared_sorts.insert(name, SortInfo::new(args, card));
         Ok(())
     }
 
@@ -991,10 +1002,11 @@ impl<W: Write, L: Logic> Parser<W, L> {
     fn sort_to_datatype_iter(
         &mut self,
         s: Sort,
-    ) -> Option<(&mut OuterSolver<L>, DatatypeIter<'_>)> {
+    ) -> Option<(&mut OuterSolver<L>, DatatypeIter<'_>, SortCard)> {
         let &SortInfo {
             global_index,
             variants,
+            card,
             ..
         } = self.sort_info(s);
         if variants == 0 {
@@ -1010,7 +1022,7 @@ impl<W: Write, L: Logic> Parser<W, L> {
             global_slice: &self.global_stack[..global_index as usize],
             discrim_fn,
         };
-        Some((&mut self.core, iter))
+        Some((&mut self.core, iter, card))
     }
 
     fn parse_declare_datatype<R: FullBufRead>(
@@ -1023,7 +1035,8 @@ impl<W: Write, L: Logic> Parser<W, L> {
             Some(_) => return Err(custom_err("unsupported polymorphic datatypes")),
             None => {
                 self.sort_stack.push(sort_sym);
-                self.declared_sorts.insert(sort_sym, SortInfo::new(0));
+                self.declared_sorts
+                    .insert(sort_sym, SortInfo::new(0, SortCard::Recursive));
                 self.core.intern_mut().sorts.intern(sort_sym, &[])
             }
         };
@@ -1033,10 +1046,9 @@ impl<W: Write, L: Logic> Parser<W, L> {
         let mut variants = 0;
         let mut discrim_sort = None;
         let mut last_constructor = None;
-        let mut infinite = false;
-        let mut var_infinite = false;
+        let mut card = SortCard::Finite;
         while let Some(t) = p.next() {
-            var_infinite = false;
+            let mut var_card = SortCard::Finite;
             if let Some((last, dname)) = last_constructor {
                 let discrim_sort = if let Some(ds) = discrim_sort {
                     ds
@@ -1067,23 +1079,26 @@ impl<W: Write, L: Logic> Parser<W, L> {
                 let token = p.next().ok_or(InvalidCommand)??;
                 let accessor = parse_symbol(token, self.core.intern_mut())?;
                 let accessor_sort = self.parse_sort(p.next().ok_or(InvalidCommand)??)?;
-                // TODO declare-datatypes where a datatype contains a finite datatype declared after it are broken
-                var_infinite |= self.sort_info(accessor_sort).infinite;
+                var_card = max(var_card, self.sort_info(accessor_sort).card);
                 args.push(accessor_sort);
                 self.insert_bound(
                     accessor,
                     Bound::Fn(FnSort::slice_new(&[constructor_sort], accessor_sort)),
                 )?;
             }
-            infinite |= var_infinite;
+            card = max(card, var_card);
             self.insert_bound(constructor, Bound::Fn(FnSort::new(args, constructor_sort)))?;
-            let discrim_name = if var_infinite { "@di" } else { "@df" };
+            let discrim_name = match var_card {
+                SortCard::Finite => "@df",
+                SortCard::Infinite | SortCard::Recursive => "@di",
+                SortCard::Undef => "@du",
+            };
             last_constructor = Some((constructor, discrim_name));
         }
         if variants == 0 {
             return Err(custom_err("datatypes must have at least one variant"));
         }
-        let (global_len, discrim) =
+        let global_len =
             if let (Some(d_sort), Some((last, dname))) = (discrim_sort, last_constructor) {
                 let d_sym = self.core.intern_mut().symbols.intern_modified(last, dname);
                 self.insert_bound(d_sym, Bound::Fn(FnSort::slice_new(&[], d_sort)))?;
@@ -1096,34 +1111,102 @@ impl<W: Write, L: Logic> Parser<W, L> {
                     fn_sym,
                     Bound::Fn(FnSort::slice_new(&[constructor_sort], d_sort)),
                 )?;
-                (self.global_stack.len() - 1, Some(fn_sym))
+                self.global_stack.len() - 1
             } else {
-                (self.global_stack.len(), None)
+                self.global_stack.len()
             };
         self.declared_sorts.insert(
             sort_sym,
             SortInfo {
                 params: 0,
-                infinite,
+                card,
                 variants,
                 global_index: global_len as u32,
             },
         );
-        let global_slice = &self.global_stack[..global_len];
+        Ok(())
+    }
 
-        let mut iter = DatatypeIter {
-            variants,
-            global_slice,
-            discrim_fn: discrim,
-        };
-        build_constructor_quantifiers(&mut iter, &mut self.core, var_infinite)?;
+    fn resolve_undef_card(&mut self, sort_sym: Symbol) -> SortCard {
+        let info = self.declared_sorts.get_mut(&sort_sym).unwrap();
+        if info.card != SortCard::Undef {
+            return info.card;
+        }
+        info.card = SortCard::Recursive;
+        let mut variants = info.variants;
+        debug_assert_ne!(variants, 0);
+        let singleton = variants == 1;
+        let mut cursor = info.global_index as usize + singleton as usize;
+        let mut card = SortCard::Finite;
+        while variants > 0 {
+            cursor -= 2;
+            let mut var_card = SortCard::Finite;
+            variants -= 1;
+            let constructor = self.global_stack[cursor];
+            info!(
+                "checking constructor {}",
+                constructor.with_intern(self.core.intern())
+            );
+            let def = self.core.raw_define(constructor, None).unwrap();
+            let field_sorts = match &def {
+                Bound::Const(_) => &[],
+                Bound::Fn(f) => f.as_fn_sort().args(),
+            };
+            for &sort in field_sorts {
+                let mut sort_card = self.sort_info(sort).card;
+                if sort_card == SortCard::Undef {
+                    sort_card = self.resolve_undef_card(self.core.intern().sorts.resolve(sort).0)
+                }
+                var_card = max(sort_card, var_card);
+            }
+            if !singleton {
+                let discrim_name = match var_card {
+                    SortCard::Finite => "@df",
+                    SortCard::Infinite | SortCard::Recursive => "@di",
+                    SortCard::Undef => unreachable!(),
+                };
+                let discrim_sym = self
+                    .core
+                    .intern_mut()
+                    .symbols
+                    .intern_modified(constructor, discrim_name);
+                let old_discrim_sym = self.global_stack[cursor + 1];
+                if discrim_sym != old_discrim_sym {
+                    info!(
+                        "Renaming {} to {}",
+                        old_discrim_sym.with_intern(self.core.intern()),
+                        discrim_sym.with_intern(self.core.intern())
+                    );
+                    self.global_stack[cursor + 1] = discrim_sym;
+                    let def = self.core.raw_define(old_discrim_sym, None);
+                    let none = self.core.raw_define(discrim_sym, def);
+                    debug_assert!(none.is_none())
+                }
+            }
 
-        let mut iter = DatatypeIter {
-            variants,
-            global_slice,
-            discrim_fn: discrim,
-        };
-        build_global_quantifier(&mut iter, &mut self.core, var_infinite, constructor_sort)?;
+            cursor -= field_sorts.len();
+            self.core.raw_define(constructor, Some(def));
+            card = max(card, var_card);
+        }
+        self.declared_sorts.get_mut(&sort_sym).unwrap().card = card;
+        card
+    }
+
+    fn add_datatype_quantifiers(&mut self, sort_sym: Symbol, is_codata: bool) -> Result<()> {
+        let info = self.declared_sorts.get_mut(&sort_sym).unwrap();
+        if info.card == SortCard::Recursive {
+            if !is_codata {
+                return Err(custom_err(
+                    "recursive datatypes are not supported, consider using co-datatypes instead",
+                ));
+            }
+            info.card = SortCard::Infinite;
+        }
+        let sort = self.core.intern_mut().sorts.intern(sort_sym, &[]);
+        let (solver, mut iter, card) = self.sort_to_datatype_iter(sort).unwrap();
+        build_constructor_quantifiers(&mut iter, solver, card == SortCard::Infinite)?;
+        let (solver, mut iter, card) = self.sort_to_datatype_iter(sort).unwrap();
+        build_global_quantifier(&mut iter, solver, card == SortCard::Infinite, sort)?;
         Ok(())
     }
 
@@ -1243,7 +1326,7 @@ impl<W: Write, L: Logic> Parser<W, L> {
         let mut rest = name.bind(&mut rest_orig);
         match name {
             Smt2Command::DeclareSort => {
-                self.parse_declare_sort(rest)?;
+                self.parse_declare_sort(rest, SortCard::Infinite)?;
             }
             Smt2Command::GetUnsatAssumptions | Smt2Command::GetUnsatCore => {
                 let assumptions = matches!(name, Smt2Command::GetUnsatAssumptions);
@@ -1570,8 +1653,10 @@ impl<W: Write, L: Logic> Parser<W, L> {
         self.core.full_clear();
         self.declared_sorts.clear();
         self.sort_stack.clear();
-        self.declared_sorts.insert(BOOL_SYM, SortInfo::finite(0));
-        self.declared_sorts.insert(REAL_SYM, SortInfo::new(0));
+        self.declared_sorts
+            .insert(BOOL_SYM, SortInfo::new(0, SortCard::Finite));
+        self.declared_sorts
+            .insert(REAL_SYM, SortInfo::new(0, SortCard::Infinite));
         self.named_assertions.pop_to(0);
         self.command_level_marker = None;
         self.set_old_named_assertions();
@@ -1631,9 +1716,10 @@ impl<W: Write, L: Logic> Parser<W, L> {
                 drop(args);
                 self.define_const(name, rest)?;
             }
-            Smt2Command::DeclareCoDatatypes => {
+            Smt2Command::DeclareCoDatatypes | Smt2Command::DeclareDatatypes => {
                 let sort_stack_len = self.sort_stack.len();
-                let res = self.parse_declare_datatypes(rest);
+                let res = self
+                    .parse_declare_datatypes(rest, matches!(name, Smt2Command::DeclareCoDatatypes));
                 if let Err(e) = res {
                     for s in self.sort_stack.drain(sort_stack_len..) {
                         self.declared_sorts.remove(&s);
@@ -1641,13 +1727,17 @@ impl<W: Write, L: Logic> Parser<W, L> {
                     return Err(e);
                 }
             }
-            Smt2Command::DeclareCoDatatype => {
+            Smt2Command::DeclareCoDatatype | Smt2Command::DeclareDatatype => {
                 if !self.core.quantifier_applier().enabled() {
                     return Err(custom_err("unsupported datatypes"));
                 }
                 let token = rest.next()?;
                 let constructor_sort = parse_symbol(token, self.core.intern_mut())?;
                 self.parse_declare_datatype(rest.next()?, constructor_sort)?;
+                self.add_datatype_quantifiers(
+                    constructor_sort,
+                    matches!(name, Smt2Command::DeclareCoDatatype),
+                )?;
                 rest.finish()?;
             }
             Smt2Command::Assert => {
@@ -1759,6 +1849,7 @@ impl<W: Write, L: Logic> Parser<W, L> {
     fn parse_declare_datatypes<R: FullBufRead>(
         &mut self,
         mut rest: CountingParser<R>,
+        is_codata: bool,
     ) -> Result<()> {
         if !self.core.quantifier_applier().enabled() {
             return Err(custom_err("unsupported datatypes"));
@@ -1771,11 +1862,9 @@ impl<W: Write, L: Logic> Parser<W, L> {
             let SexpToken::List(mut l) = t? else {
                 return Err(InvalidCommand);
             };
-            self.parse_declare_sort(CountingParser::new(
-                &mut l,
-                StrSym::Str("declare-datatypes sort declaration"),
-                1,
-            ))?
+            let c =
+                CountingParser::new(&mut l, StrSym::Str("declare-datatypes sort declaration"), 1);
+            self.parse_declare_sort(c, SortCard::Undef)?
         }
         drop(l);
         let SexpToken::List(mut l) = rest.next()? else {
@@ -1793,7 +1882,16 @@ impl<W: Write, L: Logic> Parser<W, L> {
         }
         cl.finish()?;
         drop(l);
-        rest.finish()
+        rest.finish()?;
+        for i in sort_stack_len..self.sort_stack.len() {
+            let sort = self.sort_stack[i];
+            self.resolve_undef_card(sort);
+        }
+        for i in sort_stack_len..self.sort_stack.len() {
+            let sort = self.sort_stack[i];
+            self.add_datatype_quantifiers(sort, is_codata)?;
+        }
+        Ok(())
     }
 
     fn extend_named_assertions(&mut self) {
@@ -1994,7 +2092,8 @@ fn build_constructor_quantifiers<L: Logic>(
                 };
                 let e = *e;
                 builder.add_instruction(Instruction::Start(EQ_SYM));
-                builder.add_instruction(Instruction::Var(QuantExp::Exp(e)));
+                builder.add_instruction(Instruction::Start(cdiscrim));
+                builder.add_instruction(Instruction::End);
                 builder.add_instruction(Instruction::Start(discrim_fn));
                 builder.add_instruction(Instruction::Var(QuantExp::LetVar(0)));
                 builder.add_instruction(Instruction::END);
@@ -2013,7 +2112,7 @@ fn build_constructor_quantifiers<L: Logic>(
                 builder.add_instruction(Instruction::END);
             }
             builder.add_instruction(Instruction::END);
-            builder.bind([constructor].into_iter());
+            builder.bind([constructor].into_iter(), true);
             if infinite {
                 // Infinite instances of this variant
                 let mut builder = core.quantifier_builder(1);
@@ -2033,7 +2132,7 @@ fn build_constructor_quantifiers<L: Logic>(
                 if discrim.is_some() {
                     builder.add_instruction(Instruction::END);
                 }
-                builder.bind(accessors.iter().copied())
+                builder.bind(accessors.iter().copied(), false)
             }
         } else if let Some((discrim_fn, cdiscrim)) = discrim {
             core.start_exp(EQ_SYM, None, StartExpCtx::Assert);

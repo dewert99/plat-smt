@@ -1,4 +1,4 @@
-(declare-codatatypes ((BoolPair 0)) (
+(declare-datatypes ((BoolPair 0)) (
   ((bool-pair (b0 Bool) (b1 Bool)))
 ))
 (declare-const p0 BoolPair)

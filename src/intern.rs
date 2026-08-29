@@ -192,7 +192,7 @@ impl SymbolInfo {
             .extend_from_within(self.symbol_indices[idx - 1]..self.symbol_indices[idx]);
         self.symbol_data.push_str(extra);
         let s = &self.symbol_data[old_len..];
-        let hash = self.hasher.hash_one(s);
+        let hash = self.hasher.hash_one(s.as_bytes());
         match self.map.entry(
             hash,
             |&(start, end, _)| &self.symbol_data.as_bytes()[start..end] == s.as_bytes(),
@@ -207,7 +207,6 @@ impl SymbolInfo {
                 res
             }
             Entry::Vacant(vac) => {
-                let old_len = self.symbol_data.len();
                 let res = self.symbol_indices.len();
                 if res > (u32::MAX as usize >> 2) {
                     panic!("Too many symbols");
@@ -272,7 +271,14 @@ fn test_symbols() {
     assert_ne!(g1, g2);
     assert!(symbols.resolve(g1).starts_with("gen_sym"));
     assert!(symbols.resolve(g2).starts_with("gen_sym"));
-    assert_eq!(symbols.resolve(TRUE_SYM), "true")
+    assert_eq!(symbols.resolve(TRUE_SYM), "true");
+
+    let hello_world = symbols.intern_modified(hello, "world");
+    let hello_world2 = symbols.intern_modified(hello, "world");
+    let hello_world3 = symbols.intern("helloworld");
+    assert_eq!(hello_world, hello_world2);
+    assert_eq!(hello_world, hello_world3);
+    assert_eq!(symbols.resolve(hello_world), "helloworld");
 }
 
 #[derive(Clone)]
