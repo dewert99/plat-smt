@@ -458,8 +458,8 @@ impl<
         let children = self.resolve_children(exp_children.clone(), acts);
         let (res, added) = self.sorted_fn(f.into(), children, sort, ctx, acts);
         if added {
-            self.q.check_call(f, exp_children, res);
-            if !matches!(ctx, ExprContext::AssertEq(_)) {
+            let call_added = self.q.check_call(f, exp_children, res);
+            if !call_added && !matches!(ctx, ExprContext::AssertEq(_)) {
                 self.q.check_new_exp(res);
             }
         }

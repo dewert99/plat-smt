@@ -1,0 +1,1 @@
+(declare-datatypes ((BoolList 0)) (((empty) (cons (first Bool) (rest BoolList)))))

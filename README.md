@@ -18,6 +18,8 @@ Explore the [Live demo](https://dewert99.github.io/plat-smt/) via a browser.
 - [x] `as`
 - [x] `declare-sort`
 - [x] `declare-function`
+- [x] `declare-datatype`, `declare-datatypes`, `match` (non-recursive)
+- [x] `declare-codatatype`, `declare-codatatypes`
 - [x] `assert`
 - [x] `check-sat`
 - [x] `check-sat-assuming`

@@ -581,7 +581,7 @@ impl<'a, L: Logic> QuantifierBuilder<'a, L> {
             .add_instruction(&self.ctx, instruction);
     }
 
-    pub fn bind(self, syms: impl Iterator<Item = Symbol> + Clone) {
+    pub fn bind(self, syms: impl Iterator<Item = Symbol> + Clone, block: bool) {
         #[cfg(debug_assertions)]
         syms.clone().for_each(|x| {
             let intern = self.solver.intern();
@@ -605,9 +605,11 @@ impl<'a, L: Logic> QuantifierBuilder<'a, L> {
             DebugIter(syms.clone().map(|x| x.with_intern(self.solver.intern())))
         );
 
-        self.solver
-            .quantifier_applier()
-            .bind_instructions(&self.ctx, syms.map(Either::Left));
+        self.solver.quantifier_applier().bind_instructions(
+            &self.ctx,
+            syms.map(Either::Left),
+            block,
+        );
     }
 
     pub fn bind_to_sort(self, sort: Sort) {
@@ -616,9 +618,11 @@ impl<'a, L: Logic> QuantifierBuilder<'a, L> {
             "Adding quantifier to sort {}:{self:?}",
             sort.with_intern(self.solver.intern())
         );
-        self.solver
-            .quantifier_applier()
-            .bind_instructions(&self.ctx, [Either::Right(sort)].into_iter());
+        self.solver.quantifier_applier().bind_instructions(
+            &self.ctx,
+            [Either::Right(sort)].into_iter(),
+            false,
+        );
     }
 }
 
