@@ -201,15 +201,6 @@ impl TableauAlloc {
         self.coefficients.push(coefficient);
     }
 
-    fn push_sum(&mut self, sum: Sum) -> Rational32 {
-        let offset = sum.offset;
-        for &(var, coefficients) in &sum.elts {
-            self.push(var, coefficients)
-        }
-        self.buf = sum.elts;
-        offset
-    }
-
     fn push_var_def(&mut self, var: NumVar) {
         let range = self.get_range(var);
         self.vars.extend_from_within(range.clone());
@@ -230,10 +221,14 @@ impl TableauAlloc {
         fix_var: impl Fn(NumVar) -> Option<Rational32>,
         mut offset: Rational32,
         start: usize,
-    ) -> (Rational32, Vec<BufElt>) {
+    ) -> (Rational32, Vec<BufElt>, Option<BufElt>) {
         let mut curr = start;
         let mut last = start;
+        let mut best_single = None;
         while curr < self.vars.len() {
+            if start == last && curr + 1 == self.vars.len() {
+                best_single = Some((self.vars[curr], self.coefficients[curr]));
+            }
             trace!(
                 "{:?}{:?} {:?}{:?} {offset:?}",
                 &self.coefficients[start..last],
@@ -269,7 +264,7 @@ impl TableauAlloc {
         );
         self.vars.truncate(start);
         self.coefficients.truncate(start);
-        (offset, buf)
+        (offset, buf, best_single)
     }
 
     fn clear(&mut self) {
@@ -289,17 +284,81 @@ struct Tableau {
 }
 
 impl Tableau {
-    fn resolve(
-        &mut self,
-        sum: Sum,
-        fix_var: impl Fn(NumVar) -> Option<Rational32>,
-    ) -> (Rational32, Vec<BufElt>) {
-        debug!("Resolving {:?} ...", sum);
-        let start = self.alloc.vars.len();
-        let offset = self.alloc.push_sum(sum);
-        let res = self.alloc.resolve_inner(fix_var, offset, start);
-        debug!("... to {:?}", res);
-        res
+    fn resolve(&mut self, mut sum: Sum, fix_var: impl Fn(NumVar) -> Option<Rational32>) -> Sum {
+        debug!("Resolving {sum:?} ...");
+        let mut curr = 0;
+        while curr < sum.elts.len() {
+            let (var, coefficient) = sum.elts[curr];
+            if let Some(res) = fix_var(var) {
+                sum.elts[curr] = (NumVar::ONE, Rational32::ZERO);
+                sum.offset += res * coefficient;
+            } else {
+                let (vars, coefficients) = self.alloc.get(var);
+                sum.elts.extend(
+                    vars.iter()
+                        .copied()
+                        .zip(coefficients.iter().map(|&x| x * coefficient)),
+                );
+                curr += 1;
+            }
+        }
+        let base_len = sum.elts.len();
+        if base_len == 0 {
+            return sum;
+        }
+        sum.elts.extend_from_within(..);
+        let (base, dedup) = sum.elts.split_at_mut(base_len);
+        dedup.sort_unstable();
+        let mut dups = 0;
+        let mut last_dup = false;
+        for curr in 1..dedup.len() {
+            if dedup[curr].0 == dedup[curr - 1].0 {
+                if !last_dup {
+                    dedup[dups].0 = dedup[curr].0;
+                    dedup[dups].1 = Rational32::new(2);
+                    dups += 1;
+                } else {
+                    dedup[dups].1 += Rational32::ONE;
+                }
+                last_dup = true;
+            } else {
+                last_dup = false;
+            }
+        }
+        let mut dedup = &dedup[..dups];
+        if dedup.get(0) == Some(&(NumVar::ONE, Rational32::ZERO)) {
+            dedup = &dedup[1..];
+        }
+        let mut end = base.len();
+        for curr in (0..end).into_iter().rev() {
+            let var = base[curr].0;
+            let next_end = end - self.alloc.get_range(var).len();
+            let range = next_end..end;
+            end = next_end;
+            let max_var = NumVar(NonZeroU32::MAX);
+            let get_count = |var| {
+                dedup
+                    .binary_search_by(|x| x.0.cmp(&var))
+                    .ok()
+                    .map_or(Rational32::ONE, |x| dedup[x].1)
+            };
+            let top_count = get_count(var);
+            let can_clear = range.clone().into_iter().all(|i| {
+                let var = base[i].0;
+                var == max_var || get_count(var) <= top_count
+            });
+            if can_clear {
+                for i in range {
+                    base[i] = (NumVar::ONE, Rational32::ZERO)
+                }
+            } else {
+                base[curr] = (max_var, Rational32::ZERO)
+            }
+        }
+        let base_len = base.len();
+        sum.elts.truncate(base_len);
+        debug!("... to {sum:?}");
+        sum
     }
 
     fn resolve_var(&mut self, var: NumVar) -> Vec<BufElt> {
@@ -436,7 +495,10 @@ impl ModeledTableau {
         if elts.elts.is_empty() {
             return NumExp::from_rational(elts.offset);
         }
-        let (offset, mut defs) = self.defs.resolve(elts, |x| {
+        let Sum {
+            elts: mut defs,
+            offset,
+        } = self.defs.resolve(elts, |x| {
             if let Bounds {
                 upper: Some(upper),
                 lower: Some(lower),
