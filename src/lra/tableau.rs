@@ -600,7 +600,12 @@ impl ModeledTableau {
 
     /// Finds a pivot and pivots if possilble returning true, otherwise it returns false
     /// Restores var_def to the buf in either case
-    fn pivot(&mut self, var: NumVar, mut var_def: Vec<BufElt>, offset: EpsilonRational) -> bool {
+    fn pivot(
+        &mut self,
+        var: NumVar,
+        mut var_def: Vec<BufElt>,
+        mut offset: EpsilonRational,
+    ) -> bool {
         debug!(
             "Looking for a pivot for {var:?} from {var_def:?} since it was offset by {offset:?}"
         );
@@ -610,11 +615,20 @@ impl ModeledTableau {
             let swap_offset = offset / *coefficient;
             if !swap_bounds.at_bound(swap_val, swap_offset) {
                 let (sv, sc) = (*swap_var, *coefficient);
-                *swap_var = var;
-                *coefficient = -Rational32::ONE;
-                self.defs.assign_var(sv, var_def, -sc.recip());
-                debug!("Pivoted {sv:?} := {:?}", self.defs.alloc.get(sv));
-                return true;
+                if let Some(nearest) = swap_bounds.nearest_bound(swap_val + swap_offset) {
+                    self.update(sv, nearest);
+                    let swap_effect = (nearest - swap_val) * sc;
+                    offset = offset - swap_effect;
+                    let var_val = self.values.get(var);
+                    self.update(var, var_val + swap_effect);
+                    debug!("remaining offset is {offset:?}");
+                } else {
+                    *swap_var = var;
+                    *coefficient = -Rational32::ONE;
+                    self.defs.assign_var(sv, var_def, -sc.recip());
+                    debug!("Pivoted {sv:?} := {:?}", self.defs.alloc.get(sv));
+                    return true;
+                }
             }
         }
         var_def.push((var, -Rational32::ONE));
