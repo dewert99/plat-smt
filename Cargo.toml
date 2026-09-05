@@ -21,11 +21,14 @@ no-std-compat = { version = "0.4.1" , features = ["alloc"]}
 internal-iterator = "0.2.3"
 bytemuck = { version = "1.14.0", default-features = false, features = ["must_cast", "extern_crate_alloc"] }
 dary_heap = { version = "0.3.9", optional = true }
+crypto-bigint = { version = "0.7.5", optional = true }
+recycle_vec = "1.1.2"
+flatmultimap = { git = "https://github.com/dewert99/flatmultimap", version = "0.1.0" }
 
 [features]
 default = ["log/release_max_level_warn", "euf", "lra", "simple_quantifiers"]
 euf = ["plat-egg"]
-lra= ["dary_heap", "lazy-rational"]
+lra= ["dary_heap", "lazy-rational", "crypto-bigint"]
 simple_quantifiers = ["euf"]
 interpolant = []
 # Add more equalities mid-search, used for testing

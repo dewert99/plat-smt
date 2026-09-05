@@ -7,7 +7,7 @@ use crate::parser_fragment::{ParserFragment, exact_args, index_iter, mandatory_a
 use crate::recorder::{ClauseKind, Recorder};
 use crate::reuse_mem::ReuseMem;
 use crate::solver::SolverCollapse;
-use crate::theory::{Incremental, TheoryArgRaw, TheoryArgT, TheoryWrapper};
+use crate::theory::{Incremental, NeverTheoryArg, TheoryArgRaw, TheoryArgT, TheoryWrapper};
 use crate::util::extend_result;
 use crate::{AddSexpError, BLit, BoolExp, Disjunction, ExpLike, SubExp, SuperExp};
 use alloc::vec::Vec;
@@ -393,6 +393,35 @@ impl<'a, M, R: Recorder> SatTheoryArgT for TheoryArgRaw<'a, SatTheoryArg<'a>, M,
 
     fn for_explain(&mut self) -> Self::Explain<'_> {
         self.map(|sat| sat.explain_arg())
+    }
+}
+
+impl<M, R: Recorder, E> SatTheoryArgT for NeverTheoryArg<M, R, E> {
+    type Explain<'b>
+        = Self
+    where
+        Self: 'b;
+
+    fn sat_mut(&mut self) -> (SatTheoryArg<'_>, &mut Self::R) {
+        self.diverge()
+    }
+
+    fn sat(&self) -> &SatTheoryArg<'_> {
+        self.diverge()
+    }
+
+    fn in_model(&self) -> bool {
+        self.diverge()
+    }
+
+    fn for_explain(&mut self) -> Self::Explain<'_> {
+        self.diverge()
+    }
+}
+
+impl<M, R: Recorder, E> SatExplainTheoryArgT for NeverTheoryArg<M, R, E> {
+    fn clause_builder(&mut self) -> &mut Vec<Lit> {
+        self.diverge()
     }
 }
 pub struct TseitenMarker;

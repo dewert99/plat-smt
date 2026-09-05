@@ -4,7 +4,9 @@ use crate::intern::{InternInfo, Symbol};
 use crate::recorder::{ClauseKind, DefExp, InterpolateArg, Recorder};
 use crate::rexp::AsRexp;
 use crate::tseitin::SatTheoryArgT;
+use core::convert::Infallible;
 use core::fmt::{Debug, Formatter};
+use core::marker::PhantomData;
 use log::debug;
 use no_std_compat::prelude::v1::*;
 use perfect_derive::perfect_derive;
@@ -279,6 +281,48 @@ impl<'a, S: Reborrow, M, R> Reborrow for TheoryArgRaw<'a, S, M, R> {
 
     fn reborrow(&mut self) -> Self::Target<'_> {
         self.map(|x| x.reborrow())
+    }
+}
+
+pub struct NeverTheoryArg<M, R, E>(PhantomData<(M, R, E)>, Infallible);
+
+impl<M, R, E> NeverTheoryArg<M, R, E> {
+    #[inline(always)]
+    pub fn diverge(&self) -> ! {
+        match self.1 {}
+    }
+}
+
+impl<M, R: Recorder, E> TheoryArgT for NeverTheoryArg<M, R, E> {
+    type M = M;
+    type R = R;
+
+    fn base_marker(&self) -> Option<&Self::M> {
+        self.diverge()
+    }
+
+    fn last_marker(&self) -> Option<&Self::M> {
+        self.diverge()
+    }
+
+    fn intern(&self) -> &InternInfo {
+        self.diverge()
+    }
+
+    fn intern_mut(&mut self) -> &mut InternInfo {
+        self.diverge()
+    }
+
+    fn junction_buf_mut(&mut self) -> &mut Vec<Lit> {
+        self.diverge()
+    }
+
+    fn recorder_mut(&mut self) -> (&mut InternInfo, &mut Self::R) {
+        self.diverge()
+    }
+
+    fn prop_marker(&self) -> u8 {
+        self.diverge()
     }
 }
 

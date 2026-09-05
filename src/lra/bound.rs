@@ -4,7 +4,7 @@ use core::ops::{Add, Div, Mul, Sub};
 use lazy_rational::Rational32;
 
 #[derive(Copy, Clone, Ord, PartialOrd, Eq, PartialEq, Default)]
-pub(super) struct EpsilonRational {
+pub struct EpsilonRational {
     pub(super) base: Rational32,
     pub(super) epsilon: Rational32,
 }
@@ -154,5 +154,17 @@ impl Bounds {
             && self
                 .upper
                 .is_none_or(|upper| upper.with_epsilon_def(epsilon_def) >= val)
+    }
+
+    pub(super) fn try_to_const(&self) -> Option<Rational32> {
+        if let (Some(ubound), Some(lbound)) = (self.upper, self.lower)
+            && ubound.base == lbound.base
+        {
+            debug_assert_eq!(ubound.epsilon, Rational32::ZERO);
+            debug_assert_eq!(lbound.epsilon, Rational32::ZERO);
+            Some(ubound.base)
+        } else {
+            None
+        }
     }
 }

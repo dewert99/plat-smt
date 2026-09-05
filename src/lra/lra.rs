@@ -2,7 +2,9 @@ use crate::collapse::CollapseOut;
 use crate::full_theory::{FullTheory, FunctionAssignmentT, PrepareModelKind, empty_fn_info};
 use crate::intern::{ADD_SYM, DIV_SYM, GE_SYM, GT_SYM, MUL_SYM, REAL_SORT, SUB_SYM, Symbol};
 use crate::lra::bound::EpsilonRational;
-use crate::lra::tableau::{BoundDir, ModeledTableau, NumExp, NumVar, Sum, ineq};
+use crate::lra::tableau::{
+    BoundDir, EqHelper, EqHelperBase, ModeledTableau, NumExp, NumVar, Sum, ineq,
+};
 use crate::parser::SmtlibLogic;
 use crate::recorder::Recorder;
 use crate::rexp::{AsRexp, Rexp, rexp_debug};
@@ -151,16 +153,19 @@ impl Debug for Bound {
 }
 
 #[derive(Default, Clone)]
-pub struct Lra {
+pub struct Lra<Eq = ()> {
     bounds: BTreeMap<LowerBound, Var>,
     var_map: DefaultVec<Option<LowerBound>, Var>,
-    tableau: ModeledTableau,
+    tableau: ModeledTableau<Eq>,
     bounds_def_history: Vec<Var>,
     pub(super) epsilon_def: Option<Rational32>,
 }
 
-impl Lra {
-    pub(super) fn bind_sum<'a>(&mut self, sum: Sum, acts: &mut impl TheoryArgT) -> NumExp {
+impl<Eq: EqHelperBase> Lra<Eq> {
+    pub(super) fn bind_sum<'a, T: TheoryArgT>(&mut self, sum: Sum, acts: &mut T) -> NumExp
+    where
+        Eq: EqHelper<T>,
+    {
         self.tableau.sum(sum, acts)
     }
     pub(super) fn bind_lower_bound(
@@ -228,8 +233,11 @@ impl Lra {
         }
     }
 
-    pub fn fresh_exp(&mut self) -> NumExp {
-        NumExp::from_var(self.tableau.fresh_var())
+    pub fn fresh_exp<T>(&mut self) -> NumExp
+    where
+        Eq: EqHelper<T>,
+    {
+        NumExp::from_var(self.tableau.fresh_var::<T>())
     }
 
     pub fn reuse_sum(&mut self) -> Sum {
@@ -297,7 +305,7 @@ pub struct PushInfo {
     bounds_def: u32,
 }
 
-impl Incremental for Lra {
+impl<Eq: EqHelperBase> Incremental for Lra<Eq> {
     type LevelMarker = PushInfo;
 
     fn create_level(&self) -> Self::LevelMarker {
@@ -329,7 +337,7 @@ impl Incremental for Lra {
     }
 }
 
-impl<'a, A: SatTheoryArgT, P> Theory<A, A::Explain<'a>, P> for Lra {
+impl<'a, A: SatTheoryArgT, P, Eq: EqHelper<A>> Theory<A, A::Explain<'a>, P> for Lra<Eq> {
     fn learn(&mut self, lit: Lit, acts: &mut A) -> Result<(), ()> {
         let bound = self.var_map.get(lit.var());
         if let Some(LowerBound { var, bound, strict }) = bound {
@@ -341,7 +349,7 @@ impl<'a, A: SatTheoryArgT, P> Theory<A, A::Explain<'a>, P> for Lra {
             };
             debug!("LRA learn {lit:?}: {var:?} {} {bound:?}", ineq(dir, strict));
             self.tableau
-                .add_bound(var, bound, dir, strict, |var, new, dir| {
+                .add_bound(var, bound, dir, strict, acts, |var, new, dir, acts| {
                     propagate(&self.bounds, acts, var, new, dir)
                 })?;
         }
@@ -358,7 +366,7 @@ impl<'a, A: SatTheoryArgT, P> Theory<A, A::Explain<'a>, P> for Lra {
     }
 
     fn pre_decision_check(&mut self, acts: &mut A) -> Result<(), ()> {
-        match self.tableau.check() {
+        match self.tableau.check(acts) {
             Ok(_) => Ok(()),
             Err(iter) => {
                 let mut explain = acts.for_explain();
@@ -405,7 +413,7 @@ impl<'a, A: SatTheoryArgT, P> Theory<A, A::Explain<'a>, P> for Lra {
     }
 }
 
-impl<R: Recorder> FullTheory<R> for Lra {
+impl<R: Recorder> FullTheory<R> for Lra<()> {
     type Exp = NumExp;
 
     type FnSort = Infallible;
