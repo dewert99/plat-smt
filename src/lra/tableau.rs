@@ -3,7 +3,7 @@ use crate::lra::bound::{Bounds, EpsilonRational};
 use crate::lra::ordering::NumVarOrdering;
 use crate::rexp::{Namespace, NamespaceVar};
 use crate::theory::TheoryArgT;
-use crate::util::{format_args2, DebugIter};
+use crate::util::{DebugIter, format_args2};
 use alloc::vec::Vec;
 use core::fmt::Debug;
 use core::ops::{Add, AddAssign, Mul, Neg, Range, Sub, SubAssign};
@@ -578,6 +578,7 @@ impl ModeledTableau {
             }
             next = buf.pop();
         }
+        self.defs.alloc.buf = buf;
     }
 
     fn pivot_update(&mut self, var: NumVar, val: EpsilonRational) -> Result<(), EpsilonRational> {
