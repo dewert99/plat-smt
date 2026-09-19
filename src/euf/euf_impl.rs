@@ -1,8 +1,9 @@
 use super::egraph::{Children, EQ_OP, Op, SymbolLang, children};
-use super::euf::{BoolClass, EClass, Euf, Exp, PushInfo, litvec};
+use super::euf::{EClass, Euf, Exp, PushInfo, litvec};
 use super::explain::Justification;
-use crate::collapse::{BaseMarker, Collapse, CollapseOut, ExprContext};
+use crate::collapse::{BaseMarker, Collapse, CollapseOut, ExprContext, LeftMarker};
 use crate::core_ops::{DefaultIte, DistinctElts, DistinctPf, Eq, EqPf, ItePf, RawDistinct};
+use crate::euf::euf_th::BoolClass;
 use crate::euf::quantifier_applier::QuantifierChecker;
 use crate::exp::Fresh;
 use crate::full_theory::{
@@ -152,7 +153,7 @@ impl<Q: Incremental> Euf<Q> {
         children: Children,
         target_sort: Sort,
         ctx: ExprContext<Exp>,
-        acts: &mut impl SatTheoryArgT<M: TupleExtract<P, PushInfo<Q>>>,
+        acts: &mut impl SatTheoryArgT<M: TupleExtract<P, PushInfo>>,
     ) -> (Exp, bool) {
         if acts.in_model() {
             return self.model_sorted_fn(f, children, target_sort);
@@ -175,7 +176,7 @@ impl<Q: Incremental> Euf<Q> {
                     litvec![l]
                 };
 
-                EClass::Bool(BoolClass::Unknown(lits))
+                EClass::Th(BoolClass::Unknown(lits))
             } else {
                 EClass::Uninterpreted(target_sort)
             }
@@ -206,7 +207,7 @@ impl<Q: Incremental> Euf<Q> {
         id1: Id,
         id2: Id,
         ctx: ExprContext<BoolExp>,
-        acts: &mut impl SatTheoryArgT<M: TupleExtract<P, PushInfo<Q>>>,
+        acts: &mut impl SatTheoryArgT<M: TupleExtract<P, PushInfo>>,
     ) -> (bool, BoolExp) {
         let cid1 = self.find(id1);
         let cid2 = self.find(id2);
@@ -228,7 +229,7 @@ impl<Q: Incremental> Euf<Q> {
         &mut self,
         e1: Exp,
         e2: Exp,
-        acts: &mut impl SatTheoryArgT<M: TupleExtract<P, PushInfo<Q>>>,
+        acts: &mut impl SatTheoryArgT<M: TupleExtract<P, PushInfo>>,
     ) -> () {
         match (e1, e2) {
             (Exp::Left(b1), Exp::Left(b2)) => match (b1.to_lit(), b2.to_lit()) {
@@ -260,7 +261,7 @@ impl<Q: Incremental> Euf<Q> {
 
     fn unify_lits<P>(
         &mut self,
-        acts: &mut impl SatTheoryArgT<M: TupleExtract<P, PushInfo<Q>>>,
+        acts: &mut impl SatTheoryArgT<M: TupleExtract<P, PushInfo>>,
         b1: Lit,
         b2: Lit,
     ) {
@@ -316,7 +317,7 @@ impl<
     Q: Incremental,
     M,
     I: DistinctElts<Exp = Exp>,
-    A: SatTheoryArgT<M: TupleExtract<M, PushInfo<Q>>>,
+    A: SatTheoryArgT<M: TupleExtract<M, PushInfo>>,
 > Collapse<RawDistinct<I>, A, BaseMarker<M>> for Euf<Q>
 {
     fn collapse(
@@ -389,7 +390,7 @@ impl<
     }
 }
 
-impl<'a, M, Q: Incremental, A: SatTheoryArgT<M: TupleExtract<M, PushInfo<Q>>>>
+impl<'a, M, Q: Incremental, A: SatTheoryArgT<M: TupleExtract<M, PushInfo>>>
     Collapse<Eq<Exp>, A, BaseMarker<M>> for Euf<Q>
 {
     fn collapse(
@@ -446,7 +447,7 @@ impl<
     M2,
     Q: Incremental + QuantifierChecker<Exp, M1>,
     I: Iterator<Item = Exp> + Clone,
-    A: SatTheoryArgT<M: TupleExtract<M2, PushInfo<Q>>>,
+    A: SatTheoryArgT<M: TupleExtract<M2, PushInfo>>,
 > Collapse<UFn<I>, A, BaseMarker<(M1, M2)>> for Euf<Q>
 {
     fn collapse(
@@ -567,7 +568,7 @@ impl<'a, M, Sub, Super: SuperExp<Sub, M> + Copy> Iterator for UFnIter<'a, M, Sub
     type Item = Sub;
 
     fn next(&mut self) -> Option<Self::Item> {
-        self.0.next().map(|x| x.downcast().unwrap())
+        self.0.next().map(|x| Sub::from_downcast(*x).unwrap())
     }
 }
 
@@ -576,11 +577,11 @@ pub struct EgraphPf<I>(I);
 
 impl<
     R: Recorder,
-    E: SuperExp<Exp, MS> + Copy,
+    E: SuperExp<Exp, MS> + ExpLike + Copy,
     Q: Incremental,
     S: TupleExtract<MS, Euf<Q>>
         + FullTheory<R>
-        + Incremental<LevelMarker: TupleExtract<MS, PushInfo<Q>>>,
+        + Incremental<LevelMarker: TupleExtract<LeftMarker<LeftMarker<MS>>, PushInfo>>,
     M,
     MS,
     I: ParserFragment<E, FnSortSolver<S, R>, M>,
@@ -625,8 +626,8 @@ impl<
         if let Some(existing_id) = euf.egraph.lookup(&mut enode) {
             let res: Exp = match &*euf.egraph[existing_id] {
                 EClass::Uninterpreted(s) => UExp::new(euf.egraph.find(existing_id), *s).upcast(),
-                EClass::Bool(BoolClass::Const(b)) => BoolExp::from_bool(*b).upcast(),
-                EClass::Bool(BoolClass::Unknown(l)) => BoolExp::unknown(l[0]).upcast(),
+                EClass::Th(BoolClass::Const(b)) => BoolExp::from_bool(*b).upcast(),
+                EClass::Th(BoolClass::Unknown(l)) => BoolExp::unknown(l[0]).upcast(),
                 _ => unreachable!(),
             };
             return Ok(E::from_upcast(res));
@@ -639,7 +640,7 @@ impl<
 
         let res = self.0.handle_non_terminal(f, children, solver, ctx);
 
-        if let Ok(Some(res)) = res.as_ref().map(|x| x.downcast()) {
+        if let Ok(Some(res)) = res.as_ref().map(|x| Exp::from_downcast(*x)) {
             solver.solver.open(
                 |euf, acts| {
                     let euf: &mut Euf<Q> = euf.tuple_extract_mut();

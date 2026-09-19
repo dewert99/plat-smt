@@ -6,7 +6,7 @@ mod explain;
 
 mod approx_bitset;
 mod egraph;
-pub mod euf_arg;
+pub mod euf_th;
 pub mod quantifier_applier;
 
 pub use euf::{Euf, Exp};

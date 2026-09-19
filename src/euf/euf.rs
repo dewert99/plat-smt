@@ -1,11 +1,13 @@
-use super::egraph::{Children, EGraph, EQ_OP, Op, PushInfo as EGPushInfo, SymbolLang, children};
+use super::egraph::{
+    Children, EClassT, EGraph, EQ_OP, Op, PushInfo as EGPushInfo, SymbolLang, children,
+};
 use super::explain::{EqIds, Justification, check_node_is_eq};
 use crate::exp::{BoolExp, EitherExp};
 use crate::intern::{
     BOOL_SORT, DisplayInterned, EQ_SYM, FALSE_SYM, InternInfo, LET_SYM, Sort, TRUE_SYM,
 };
 use crate::theory::{Incremental, Theory, TupleExtract};
-use crate::util::{Bind, DebugIter, DisplayFn, HashMap, minmax};
+use crate::util::{DisplayFn, HashMap, minmax};
 use crate::{SubExp, Symbol};
 use core::fmt::Display;
 use default_vec2::ConstDefault;
@@ -16,17 +18,19 @@ use plat_egg::Id;
 use plat_egg::raw::Language;
 use platsat::{LMap, Lit, lbool};
 use std::fmt::{Debug, Formatter};
-use std::mem;
 use std::ops::Range;
 
-pub type Exp = EitherExp<BoolExp, UExp>;
+pub type Exp<Th = BoolExp> = EitherExp<Th, UExp>;
 
 pub(super) type LitVec = smallvec::SmallVec<[Lit; 4]>;
-use crate::collapse::ExprContext;
+use crate::collapse::{ExprContext, LeftMarker};
+use crate::empty_theory::EmptyTheory;
+use crate::euf::euf_th::{BoolClass, FullEufTh, MergeInfo};
 use crate::full_theory::FunctionAssignmentT;
 use crate::recorder::{DefExp, InterpolateArg};
 use crate::tseitin::{SatExplainTheoryArgT, SatTheoryArgT};
 pub(super) use smallvec::smallvec as litvec;
+use std::iter;
 
 /// A possible [`Id`] for a [`Lit`]
 #[derive(Copy, Clone, Eq, PartialEq)]
@@ -96,86 +100,63 @@ impl ConstDefault for LitId {
     const DEFAULT: &'static Self = &LitId::NONE;
 }
 
-#[derive(Debug, Clone, PartialEq)]
-pub(super) enum BoolClass {
-    Const(bool),
-    Unknown(LitVec),
-}
-
-impl BoolClass {
-    fn to_exp(&self) -> BoolExp {
-        match self {
-            BoolClass::Const(b) => BoolExp::from_bool(*b),
-            BoolClass::Unknown(v) => BoolExp::unknown(v[0]),
-        }
-    }
-}
-
-#[derive(Debug, Clone, PartialEq)]
-pub(super) enum EClass {
+#[perfect_derive(Debug, Clone, PartialEq)]
+pub(super) enum EClass<Th: FullEufTh = EmptyTheory> {
     Uninterpreted(Sort),
-    Bool(BoolClass),
+    Th(Th::EClass),
     /// EClass that propagates whenever it is merged
     /// Not used for top level expressions, but used to implement `distinct`.
     Singleton(BoolExp),
 }
 
-impl EClass {
-    fn to_exp(&self, id: Id) -> Exp {
+impl<Th: FullEufTh> EClassT for EClass<Th> {
+    type MergeInfo = <Th::EClass as EClassT>::MergeInfo;
+
+    fn allows_fresh_equalities(&self) -> bool {
         match self {
-            EClass::Bool(b) => b.to_exp().upcast(),
+            EClass::Th(th) => th.allows_fresh_equalities(),
+            _ => true,
+        }
+    }
+
+    fn split(&mut self, info: impl Iterator<Item = Self::MergeInfo>) -> Self {
+        match self {
+            EClass::Uninterpreted(x) => EClass::Uninterpreted(*x),
+            EClass::Th(class) => EClass::Th(class.split(info)),
+            EClass::Singleton(x) => EClass::Singleton(*x),
+        }
+    }
+}
+
+impl<Th: FullEufTh> EClass<Th> {
+    fn to_exp(&self, id: Id, th: &Th) -> Exp<Th::Exp> {
+        match self {
+            EClass::Th(class) => th.eclass_to_exp(class),
             EClass::Uninterpreted(s) => UExp::new(id, *s).upcast(),
             EClass::Singleton(_) => unreachable!(),
         }
     }
 
-    fn to_display_exp<'a>(&'a self, id: Id, intern: &'a InternInfo) -> impl Display + 'a {
+    fn to_display_exp<'a>(
+        &'a self,
+        id: Id,
+        th: &'a Th,
+        intern: &'a InternInfo,
+    ) -> impl Display + 'a {
         DisplayFn(move |f| match self {
             &EClass::Uninterpreted(sort) => DisplayInterned::fmt(&UExp { id, sort }, intern, f),
-            EClass::Bool(BoolClass::Const(b)) => Display::fmt(b, f),
-            EClass::Bool(BoolClass::Unknown(l)) if l.len() > 0 => {
-                Display::fmt(&BoolExp::unknown(l[0]), f)
-            }
-            EClass::Bool(BoolClass::Unknown(_)) => f.write_str("(as _ Bool)"),
+            EClass::Th(class) => th.display_eclass(class, f, intern),
             EClass::Singleton(b) => write!(f, "(Singleton {b:?})"),
         })
     }
 }
 
-impl BoolClass {
-    fn split(&mut self, info: MergeInfo) -> BoolClass {
-        match (&mut *self, info) {
-            (BoolClass::Const(_), MergeInfo::Both(b)) => BoolClass::Const(b),
-            (BoolClass::Const(_), MergeInfo::Left(lits)) => BoolClass::Unknown(lits),
-            (BoolClass::Const(b), MergeInfo::Right(lits)) => {
-                let res = BoolClass::Const(*b);
-                *self = BoolClass::Unknown(lits);
-                res
-            }
-            (BoolClass::Unknown(lits), MergeInfo::Neither(rlits)) => {
-                lits.truncate(lits.len() - rlits.len());
-                BoolClass::Unknown(rlits)
-            }
-            x => unreachable!("{x:?}"),
-        }
-    }
-}
-
-#[derive(Debug, Clone)]
-enum MergeInfo {
-    Both(bool),
-    Left(LitVec),
-    Right(LitVec),
-    Neither(LitVec),
-}
-
 #[perfect_derive(Debug, Clone)]
-pub struct PushInfo<Q: Incremental> {
+pub struct PushInfo {
     egraph: EGPushInfo,
     lit_log_len: u32,
     eq_id_log_len: u32,
     requests_handled: u32,
-    q: Q::LevelMarker,
 }
 
 pub(super) fn id_for_bool(b: bool) -> Id {
@@ -205,10 +186,10 @@ impl LitInfo {
     }
 }
 
-#[derive(Debug, Default, Clone)]
-pub struct Euf<Q = ()> {
-    pub(super) egraph: EGraph<EClass>,
-    bool_class_history: Vec<MergeInfo>,
+#[perfect_derive(Debug, Default, Clone)]
+pub struct Euf<Q = (), Th: FullEufTh = EmptyTheory> {
+    pub(super) egraph: EGraph<EClass<Th>>,
+    bool_class_history: Vec<<Th::EClass as EClassT>::MergeInfo>,
     pub(super) lit: LitInfo,
     pub(super) distinct_gensym: u32,
     eq_ids: EqIds,
@@ -216,25 +197,30 @@ pub struct Euf<Q = ()> {
     requests_handled: u32,
     function_info: FunctionInfo,
     pub(super) q: Q,
+    pub(super) th: Th,
 }
 
 type Result = core::result::Result<(), ()>;
 type CResult = core::result::Result<(), Option<(Id, Id)>>;
 
-impl<Q: Incremental> Incremental for Euf<Q> {
-    type LevelMarker = PushInfo<Q>;
+impl<Q: Incremental, Th: FullEufTh> Incremental for Euf<Q, Th> {
+    type LevelMarker = ((PushInfo, Q::LevelMarker), Th::LevelMarker);
 
-    fn create_level(&self) -> PushInfo<Q> {
-        PushInfo {
+    fn create_level(&self) -> ((PushInfo, Q::LevelMarker), Th::LevelMarker) {
+        let base = PushInfo {
             egraph: self.egraph.push(),
             lit_log_len: self.lit.log.len() as u32,
             eq_id_log_len: self.eq_id_log.len() as u32,
             requests_handled: self.requests_handled,
-            q: self.q.create_level(),
-        }
+        };
+        ((base, self.q.create_level()), self.th.create_level())
     }
 
-    fn pop_to_level(&mut self, info: PushInfo<Q>, clear_lits: bool) {
+    fn pop_to_level(
+        &mut self,
+        ((info, q), th): ((PushInfo, Q::LevelMarker), Th::LevelMarker),
+        clear_lits: bool,
+    ) {
         debug!("Requests handled = {}", info.requests_handled);
         for lit in self.lit.log.drain(info.lit_log_len as usize..) {
             self.lit.ids[lit] = LitId::NONE;
@@ -264,14 +250,11 @@ impl<Q: Incremental> Incremental for Euf<Q> {
             }
         }
 
-        self.egraph.pop(info.egraph, |class| match class {
-            EClass::Uninterpreted(x) => EClass::Uninterpreted(*x),
-            EClass::Bool(class) => {
-                EClass::Bool(class.split(self.bool_class_history.pop().unwrap()))
-            }
-            EClass::Singleton(x) => EClass::Singleton(*x),
+        self.egraph.pop(info.egraph, |class| {
+            class.split(iter::from_fn(|| self.bool_class_history.pop()))
         });
-        self.q.pop_to_level(info.q, clear_lits);
+        self.q.pop_to_level(q, clear_lits);
+        self.th.pop_to_level(th, clear_lits);
         trace!("\n{:?}", self.egraph.dump_uncanonical());
         trace!("\n{:?}", self.egraph.dump_classes())
     }
@@ -287,7 +270,7 @@ impl<Q: Incremental> Incremental for Euf<Q> {
     }
 }
 
-impl<'a, Q: Incremental, A: SatTheoryArgT<M: TupleExtract<P, PushInfo<Q>>>, P>
+impl<'a, Q: Incremental, A: SatTheoryArgT<M: TupleExtract<LeftMarker<LeftMarker<P>>, PushInfo>>, P>
     Theory<A, A::Explain<'a>, P> for Euf<Q>
 {
     fn init(&mut self, acts: &mut A) {
@@ -298,7 +281,7 @@ impl<'a, Q: Incremental, A: SatTheoryArgT<M: TupleExtract<P, PushInfo<Q>>>, P>
         });
         for (b, s) in [false, true].into_iter().zip([FALSE_SYM, TRUE_SYM]) {
             let id = self.egraph.add(Op::from(s), Children::new(), |_, _| {
-                EClass::Bool(BoolClass::Const(b))
+                EClass::Th(BoolClass::Const(b))
             });
             debug_assert_eq!(id, id_for_bool(b));
             acts.log_def_exp(UExp::new(id, BOOL_SORT), BoolExp::from_bool(b));
@@ -306,15 +289,15 @@ impl<'a, Q: Incremental, A: SatTheoryArgT<M: TupleExtract<P, PushInfo<Q>>>, P>
         let t_eq_f = self.egraph.add(
             EQ_OP,
             children![id_for_bool(false), id_for_bool(true)],
-            |_, _| EClass::Bool(BoolClass::Const(false)),
+            |_, _| EClass::Th(BoolClass::Const(false)),
         );
         self.egraph.union(
             t_eq_f,
             self.id_for_bool(false),
             Justification::NOOP,
             |d1, d2| {
-                debug_assert!(matches!(d1, EClass::Bool(BoolClass::Const(false))));
-                debug_assert!(matches!(d2, EClass::Bool(BoolClass::Const(false))));
+                debug_assert!(matches!(d1, EClass::Th(BoolClass::Const(false))));
+                debug_assert!(matches!(d2, EClass::Th(BoolClass::Const(false))));
             },
         )
     }
@@ -445,72 +428,43 @@ impl<'a, Q: Incremental, A: SatTheoryArgT<M: TupleExtract<P, PushInfo<Q>>>, P>
             .explanation_interpolant(id1, id2, interpolate_arg(acts))
     }
 }
-struct MergeContext<'a, A> {
-    acts: &'a mut A,
-    history: &'a mut Vec<MergeInfo>,
+
+fn merge_fn<'a, Th: FullEufTh>(
+    acts: &'a mut impl SatTheoryArgT,
+    history: &'a mut Vec<<Th::EClass as EClassT>::MergeInfo>,
     lit: &'a mut LitInfo,
     conflict: &'a mut Option<[Id; 2]>,
-}
-
-impl<'a, 'b, A: SatTheoryArgT> MergeContext<'a, A> {
-    fn propagate(&mut self, lits: &[Lit], b: bool) {
-        let lits = lits.iter().map(|l| *l ^ !b);
-        debug!("EUF propagates {:?}", DebugIter(lits.clone()));
-        for lit in lits {
-            self.acts.propagate(lit);
+    th: &'a mut Th,
+    id1: Id,
+    id2: Id,
+) -> impl FnMut(&mut EClass<Th>, EClass<Th>) + 'a {
+    move |lclass, rclass| match (lclass, rclass) {
+        (EClass::Uninterpreted(sort), EClass::Uninterpreted(sort2)) if *sort == sort2 => {}
+        (EClass::Th(lth), EClass::Th(rth)) => {
+            let (iter, conf) = th.merge_classes(lth, rth, acts);
+            history.extend(iter);
+            *conflict = conf;
         }
-    }
-    fn merge_bools(&mut self, lbool: &mut BoolClass, rbool: BoolClass) {
-        let info = match (&mut *lbool, rbool) {
-            (BoolClass::Const(b1), BoolClass::Const(b2)) => {
-                if *b1 != b2 {
-                    *self.conflict = Some([id_for_bool(false), id_for_bool(true)])
-                }
-                MergeInfo::Both(b2)
-            }
-            (BoolClass::Const(b), BoolClass::Unknown(lits)) => {
-                self.propagate(&lits, *b);
-                MergeInfo::Left(lits)
-            }
-            (BoolClass::Unknown(lits), BoolClass::Const(b)) => {
-                self.propagate(lits, b);
-                let res = MergeInfo::Right(mem::take(lits));
-                *lbool = BoolClass::Const(b);
-                res
-            }
-            (BoolClass::Unknown(lits1), BoolClass::Unknown(lits2)) => {
-                lits1.extend_from_slice(&lits2);
-                MergeInfo::Neither(lits2)
-            }
-        };
-        self.history.push(info);
-    }
-
-    fn merge_fn(mut self, id1: Id, id2: Id) -> impl FnMut(&mut EClass, EClass) + Bind<&'a A> {
-        move |lclass, rclass| match (lclass, rclass) {
-            (EClass::Uninterpreted(sort), EClass::Uninterpreted(sort2)) if *sort == sort2 => {}
-            (EClass::Bool(lbool), EClass::Bool(rbool)) => self.merge_bools(lbool, rbool),
-            (EClass::Singleton(b1), EClass::Singleton(b2)) => {
-                debug_assert_eq!(*b1, b2);
-                match b1.to_lit() {
-                    Err(false) => *self.conflict = Some([id1, id2]),
-                    Err(true) => {}
-                    Ok(l) => {
-                        if self.acts.value_lit(l) != lbool::TRUE {
-                            self.acts.propagate(l);
-                            // hack only used for
-                            self.lit.add_id_to_lit(id1, l, false);
-                            self.lit.add_id_to_lit(id2, !l, false);
-                        }
+        (EClass::Singleton(b1), EClass::Singleton(b2)) => {
+            debug_assert_eq!(*b1, b2);
+            match b1.to_lit() {
+                Err(false) => *conflict = Some([id1, id2]),
+                Err(true) => {}
+                Ok(l) => {
+                    if acts.value_lit(l) != lbool::TRUE {
+                        acts.propagate(l);
+                        // hack only used for
+                        lit.add_id_to_lit(id1, l, false);
+                        lit.add_id_to_lit(id2, !l, false);
                     }
                 }
             }
-            (l, r) => unreachable!(
-                "merging eclasses with different sorts {} {}",
-                l.to_display_exp(id1, self.acts.intern()),
-                r.to_display_exp(id2, self.acts.intern())
-            ),
         }
+        (l, r) => unreachable!(
+            "merging eclasses with different sorts {} {}",
+            l.to_display_exp(id1, th, acts.intern()),
+            r.to_display_exp(id2, th, acts.intern())
+        ),
     }
 }
 impl<Q: Incremental> Euf<Q> {
@@ -545,7 +499,7 @@ impl<Q: Incremental> Euf<Q> {
                 let mut added = false;
                 let eq_self = self.egraph.add(EQ_OP, children![id, id], |_, _| {
                     added = true;
-                    EClass::Bool(BoolClass::Const(true))
+                    EClass::Th(BoolClass::Const(true))
                 });
                 if added {
                     acts.log_def_exp(UExp::new(eq_self, BOOL_SORT), BoolExp::TRUE);
@@ -580,7 +534,7 @@ impl<Q: Incremental> Euf<Q> {
                 None => {
                     let sym = acts.intern_mut().symbols.gen_sym("bool");
                     let id = self.egraph.add(sym.into(), Children::new(), |_, _| {
-                        EClass::Bool(BoolClass::Unknown(litvec![]))
+                        EClass::Th(BoolClass::Unknown(litvec![]))
                     });
                     self.lit.add_id_to_lit(id, lit, weak);
                     acts.log_def_exp(UExp::new(id, BOOL_SORT), BoolExp::unknown(lit));
@@ -608,7 +562,7 @@ impl<Q: Incremental> Euf<Q> {
         &mut self,
         exp: Exp,
         id: Id,
-        acts: &mut impl SatTheoryArgT<M: TupleExtract<P, PushInfo<Q>>>,
+        acts: &mut impl SatTheoryArgT<M: TupleExtract<P, PushInfo>>,
     ) {
         debug!("Union exp {exp:?}, @v{id:?}");
         let exp_id = match exp {
@@ -616,15 +570,15 @@ impl<Q: Incremental> Euf<Q> {
                 Err(b) => id_for_bool(b),
                 Ok(lit) => {
                     match &mut *self.egraph[id] {
-                        EClass::Bool(BoolClass::Unknown(l)) => {
+                        EClass::Th(BoolClass::Unknown(l)) => {
                             if let Some(lit_id) = self.lit.ids[lit].expand_weak() {
                                 // unifying with a lit that already has an id
                                 // strengthen lit since it now represents a function
                                 self.lit.strengthen_id_for_lit(lit_id, lit);
-                                if *self.egraph[lit_id]
-                                    == EClass::Bool(BoolClass::Unknown(litvec![]))
+                                if let EClass::Th(BoolClass::Unknown(empt)) = &*self.egraph[lit_id]
+                                    && empt.is_empty()
                                 {
-                                    let EClass::Bool(BoolClass::Unknown(l)) = &mut *self.egraph[id]
+                                    let EClass::Th(BoolClass::Unknown(l)) = &mut *self.egraph[id]
                                     else {
                                         unreachable!()
                                     };
@@ -668,7 +622,7 @@ impl<Q: Incremental> Euf<Q> {
                                 return;
                             }
                         }
-                        EClass::Bool(BoolClass::Const(b)) => {
+                        EClass::Th(BoolClass::Const(b)) => {
                             acts.assert(BoolExp::unknown(lit ^ !*b));
                             return;
                         }
@@ -727,7 +681,7 @@ impl<Q: Incremental> Euf<Q> {
     }
 
     pub(super) fn id_to_exp(&self, id: Id) -> Exp {
-        self.egraph[id].to_exp(id)
+        self.egraph[id].to_exp(id, &self.th)
     }
 
     fn id_to_display_exp<'a, 'b>(
@@ -735,10 +689,10 @@ impl<Q: Incremental> Euf<Q> {
         id: Id,
         acts: &'a impl SatTheoryArgT,
     ) -> impl Display + 'a {
-        self.egraph[id].to_display_exp(id, acts.intern())
+        self.egraph[id].to_display_exp(id, &self.th, acts.intern())
     }
 
-    pub(super) fn add_uncanonical<P, A: SatTheoryArgT<M: TupleExtract<P, PushInfo<Q>>>>(
+    pub(super) fn add_uncanonical<P, A: SatTheoryArgT<M: TupleExtract<P, PushInfo>>>(
         &mut self,
         op: Op,
         children: Children,
@@ -746,19 +700,21 @@ impl<Q: Incremental> Euf<Q> {
         acts: &mut A,
     ) -> (Id, Result) {
         let mut conflict = None;
-        let ctx = MergeContext {
-            acts,
-            history: &mut self.bool_class_history,
-            lit: &mut self.lit,
-            conflict: &mut conflict,
-        };
         // this won't be used since the new class won't be EClass::Singleton
         let dummy_id = Id::MAX;
         let id = self.egraph.add_uncanonical(
             op,
             children,
-            |_| EClass::Bool(BoolClass::Unknown(litvec![lit])),
-            ctx.merge_fn(dummy_id, dummy_id),
+            |_| EClass::Th(BoolClass::Unknown(litvec![lit])),
+            merge_fn(
+                acts,
+                &mut self.bool_class_history,
+                &mut self.lit,
+                &mut conflict,
+                &mut self.th,
+                dummy_id,
+                dummy_id,
+            ),
         );
         if !acts.is_ok() {
             return (id, Err(()));
@@ -778,7 +734,7 @@ impl<Q: Incremental> Euf<Q> {
         id1: Id,
         id2: Id,
         is_final: bool,
-        arg: &mut impl SatExplainTheoryArgT<M: TupleExtract<P, PushInfo<Q>>>,
+        arg: &mut impl SatExplainTheoryArgT<M: TupleExtract<P, PushInfo>>,
     ) -> bool {
         let [base_unions, last_unions] = if is_final {
             [0, 0] // don't use shortcut explanations for `explain_propagation_final`
@@ -800,7 +756,7 @@ impl<Q: Incremental> Euf<Q> {
 
     fn conflict<P>(
         &mut self,
-        acts: &mut impl SatTheoryArgT<M: TupleExtract<P, PushInfo<Q>>>,
+        acts: &mut impl SatTheoryArgT<M: TupleExtract<P, PushInfo>>,
         id1: Id,
         id2: Id,
     ) {
@@ -816,7 +772,7 @@ impl<Q: Incremental> Euf<Q> {
 
     pub(super) fn rebuild<P>(
         &mut self,
-        acts: &mut impl SatTheoryArgT<M: TupleExtract<P, PushInfo<Q>>>,
+        acts: &mut impl SatTheoryArgT<M: TupleExtract<P, PushInfo>>,
     ) -> CResult {
         debug!("Rebuilding EGraph");
         EGraph::try_rebuild(
@@ -841,13 +797,20 @@ impl<Q: Incremental> Euf<Q> {
             self.id_to_display_exp(id2, acts)
         );
         let mut conflict = None;
-        let ctx = MergeContext {
-            acts,
-            history: &mut self.bool_class_history,
-            lit: &mut self.lit,
-            conflict: &mut conflict,
-        };
-        self.egraph.union(id1, id2, just, ctx.merge_fn(id1, id2));
+        self.egraph.union(
+            id1,
+            id2,
+            just,
+            merge_fn(
+                acts,
+                &mut self.bool_class_history,
+                &mut self.lit,
+                &mut conflict,
+                &mut self.th,
+                id1,
+                id2,
+            ),
+        );
         if !acts.is_ok() {
             return Err(None);
         }
@@ -860,7 +823,7 @@ impl<Q: Incremental> Euf<Q> {
 
     pub(super) fn union<'a, P>(
         &mut self,
-        acts: &mut impl SatTheoryArgT<M: TupleExtract<P, PushInfo<Q>>>,
+        acts: &mut impl SatTheoryArgT<M: TupleExtract<P, PushInfo>>,
         id1: Id,
         id2: Id,
         just: Justification,
@@ -876,7 +839,7 @@ impl<Q: Incremental> Euf<Q> {
         let just = Justification::from_lit(lit);
         let tlit = lit.apply_sign(true);
         if let Some(id) = self.lit.ids[tlit].expand() {
-            if !matches!(&*self.egraph[id], EClass::Bool(_)) {
+            if !matches!(&*self.egraph[id], EClass::Th(_)) {
                 // this is just a reminder of how to explain why a distinct node is false
                 return Ok(());
             }
@@ -911,7 +874,7 @@ impl<Q: Incremental> Euf<Q> {
     fn generate_conflict_ids_for_interpolant<
         'a,
         P,
-        A: SatTheoryArgT<M: TupleExtract<P, PushInfo<Q>>>,
+        A: SatTheoryArgT<M: TupleExtract<P, PushInfo>>,
     >(
         &mut self,
         acts: &mut A,

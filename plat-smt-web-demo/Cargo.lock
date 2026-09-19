@@ -100,7 +100,7 @@ checksum = "a41c9ac7821a2b7f70c709eb7474e6a7ac591a628956409e2e9d523558504fcd"
 [[package]]
 name = "flatmultimap"
 version = "0.1.0"
-source = "git+https://github.com/dewert99/flatmultimap#e1b22faf564b3577d7e64aba0fde1287effac738"
+source = "git+https://github.com/dewert99/flatmultimap#8d92ed143b667f40e7066007f3c687b65057ea36"
 dependencies = [
  "hashbrown 0.14.5",
 ]

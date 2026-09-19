@@ -933,10 +933,10 @@ pub trait EqHelper<T>: EqHelperBase {
 impl EqHelperBase for () {}
 impl<T> EqHelper<T> for () {}
 
-#[cfg(feature = "euf")]
+#[cfg(feature = "uflra")]
 mod tracker {
     use super::*;
-    use crate::euf::euf_arg::EufTheoryArgT;
+    use crate::euf::euf_th::EufTheoryArgT;
     use crate::lra::prime_field::{FieldElt, HashElt, num_var_to_field_elt, rational_to_field_elt};
     use crate::recorder::LoggingRecorder;
     use crate::theory::NeverTheoryArg;

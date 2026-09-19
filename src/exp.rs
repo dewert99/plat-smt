@@ -59,7 +59,7 @@ impl<M, Sub, Super: SuperExp<Sub, M>> SubExp<Super, M> for Sub {
     }
 }
 
-impl<T: ExpLike> SuperExp<T, BaseMarker> for T {
+impl<T> SuperExp<T, BaseMarker> for T {
     fn downcast(self) -> Option<T> {
         Some(self)
     }

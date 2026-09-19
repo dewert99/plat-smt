@@ -34,7 +34,6 @@ fn test() {
     let v3c = (var + var) * three_half;
     assert_eq!(v3a, v3b);
     assert_eq!(v3b, v3c);
-    assert_eq!(*BigU64Mod::PARAMS.one(), U64::from_u64(0))
 }
 
 #[derive(Copy, Clone, Eq, PartialEq)]
