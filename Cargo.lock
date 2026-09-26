@@ -12,6 +12,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "ambassador"
+version = "0.5.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "cd3d4da7fddbc6567cbd7b5c30364f91313701b1857ab5b925eb3acf06162eed"
+dependencies = [
+ "itertools",
+ "proc-macro2",
+ "quote",
+ "syn 2.0.118",
+]
+
+[[package]]
 name = "anes"
 version = "0.1.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -600,6 +612,7 @@ dependencies = [
 name = "plat-smt"
 version = "0.1.0"
 dependencies = [
+ "ambassador",
  "bytemuck",
  "codspeed-criterion-compat",
  "crypto-bigint",

@@ -40,6 +40,10 @@ impl<X: StaticSort> HasSort for X {
 pub trait SuperExp<Sub, M> {
     fn downcast(self) -> Option<Sub>;
 
+    fn downcast_ref(&self) -> Option<&Sub>;
+
+    fn downcast_mut(&mut self) -> Option<&mut Sub>;
+
     fn from_upcast(s: Sub) -> Self;
 }
 
@@ -47,6 +51,10 @@ pub trait SubExp<Super, M>: Sized {
     fn upcast(self) -> Super;
 
     fn from_downcast(s: Super) -> Option<Self>;
+
+    fn from_downcast_ref(s: &Super) -> Option<&Self>;
+
+    fn from_downcast_mut(s: &mut Super) -> Option<&mut Self>;
 }
 
 impl<M, Sub, Super: SuperExp<Sub, M>> SubExp<Super, M> for Sub {
@@ -57,10 +65,26 @@ impl<M, Sub, Super: SuperExp<Sub, M>> SubExp<Super, M> for Sub {
     fn from_downcast(s: Super) -> Option<Self> {
         s.downcast()
     }
+
+    fn from_downcast_ref(s: &Super) -> Option<&Self> {
+        s.downcast_ref()
+    }
+
+    fn from_downcast_mut(s: &mut Super) -> Option<&mut Self> {
+        s.downcast_mut()
+    }
 }
 
 impl<T> SuperExp<T, BaseMarker> for T {
     fn downcast(self) -> Option<T> {
+        Some(self)
+    }
+
+    fn downcast_ref(&self) -> Option<&Self> {
+        Some(self)
+    }
+
+    fn downcast_mut(&mut self) -> Option<&mut Self> {
         Some(self)
     }
 
@@ -84,6 +108,20 @@ impl<E1: SuperExp<Sub, M>, E2, Sub, M> SuperExp<Sub, LeftMarker<M>> for EitherEx
         }
     }
 
+    fn downcast_ref(&self) -> Option<&Sub> {
+        match self {
+            EitherExp::Left(l) => l.downcast_ref(),
+            _ => None,
+        }
+    }
+
+    fn downcast_mut(&mut self) -> Option<&mut Sub> {
+        match self {
+            EitherExp::Left(l) => l.downcast_mut(),
+            _ => None,
+        }
+    }
+
     fn from_upcast(s: Sub) -> Self {
         EitherExp::Left(E1::from_upcast(s))
     }
@@ -93,6 +131,20 @@ impl<E2: SuperExp<Sub, M>, E1, Sub, M> SuperExp<Sub, RightMarker<M>> for EitherE
     fn downcast(self) -> Option<Sub> {
         match self {
             EitherExp::Right(r) => r.downcast(),
+            _ => None,
+        }
+    }
+
+    fn downcast_ref(&self) -> Option<&Sub> {
+        match self {
+            EitherExp::Right(r) => r.downcast_ref(),
+            _ => None,
+        }
+    }
+
+    fn downcast_mut(&mut self) -> Option<&mut Sub> {
+        match self {
+            EitherExp::Right(r) => r.downcast_mut(),
             _ => None,
         }
     }

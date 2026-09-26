@@ -4,6 +4,7 @@ use crate::intern::{InternInfo, Symbol};
 use crate::recorder::{ClauseKind, DefExp, InterpolateArg, Recorder};
 use crate::rexp::AsRexp;
 use crate::tseitin::SatTheoryArgT;
+use ambassador::delegatable_trait;
 use core::convert::Infallible;
 use core::fmt::{Debug, Formatter};
 use core::marker::PhantomData;
@@ -144,6 +145,7 @@ impl<'a, S, M, R> TheoryArgRaw<'a, S, M, R> {
 pub type TheoryArg<'a, M, R> = TheoryArgRaw<'a, SatTheoryArg<'a>, M, R>;
 pub type ExplainTheoryArg<'a, M, R> = TheoryArgRaw<'a, &'a mut SatExplainTheoryArg, M, R>;
 
+#[delegatable_trait]
 pub trait TheoryArgT {
     type M;
 

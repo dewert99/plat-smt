@@ -151,8 +151,8 @@ impl<const IS_AND: bool> Junction<IS_AND> {
 #[cfg(test)]
 mod test {
     use super::*;
-    use crate::junction::{Conjunction, Disjunction, Junction};
     use crate::BoolExp;
+    use crate::junction::{Conjunction, Disjunction, Junction};
 
     fn build<const IS_AND: bool>(i: impl Copy + IntoIterator<Item = BoolExp>) -> Junction<IS_AND> {
         let v1: Junction<IS_AND> = Junction::from_iter(i);

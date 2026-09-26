@@ -3,7 +3,7 @@ use super::euf::{EClass, Euf, Exp, PushInfo, litvec};
 use super::explain::Justification;
 use crate::collapse::{BaseMarker, Collapse, CollapseOut, ExprContext, LeftMarker};
 use crate::core_ops::{DefaultIte, DistinctElts, DistinctPf, Eq, EqPf, ItePf, RawDistinct};
-use crate::euf::euf_th::BoolClass;
+use crate::euf::euf_th::{BoolClass, EufTh};
 use crate::euf::quantifier_applier::QuantifierChecker;
 use crate::exp::Fresh;
 use crate::full_theory::{
@@ -18,7 +18,7 @@ use crate::recorder::{Recorder, dep_checker};
 use crate::rexp::{AsRexp, Namespace, NamespaceVar, Rexp, rexp_debug};
 use crate::solver::{SolverCollapse, SolverWithBound};
 use crate::theory::{Incremental, TupleExtract};
-use crate::tseitin::{BoolOpPf, SatExplainTheoryArgT, SatTheoryArgT};
+use crate::tseitin::{BoolOpPf, SatTheoryArgR};
 use crate::util::{HashMap, pairwise_sym};
 use crate::{AddSexpError, BoolExp, Conjunction, ExpLike, HasSort, Solver, Sort, SubExp, SuperExp};
 use core::fmt::Formatter;
@@ -153,7 +153,7 @@ impl<Q: Incremental> Euf<Q> {
         children: Children,
         target_sort: Sort,
         ctx: ExprContext<Exp>,
-        acts: &mut impl SatTheoryArgT<M: TupleExtract<P, PushInfo>>,
+        acts: &mut impl SatTheoryArgR<M: TupleExtract<P, PushInfo>>,
     ) -> (Exp, bool) {
         if acts.in_model() {
             return self.model_sorted_fn(f, children, target_sort);
@@ -207,7 +207,7 @@ impl<Q: Incremental> Euf<Q> {
         id1: Id,
         id2: Id,
         ctx: ExprContext<BoolExp>,
-        acts: &mut impl SatTheoryArgT<M: TupleExtract<P, PushInfo>>,
+        acts: &mut impl SatTheoryArgR<M: TupleExtract<P, PushInfo>>,
     ) -> (bool, BoolExp) {
         let cid1 = self.find(id1);
         let cid2 = self.find(id2);
@@ -229,51 +229,17 @@ impl<Q: Incremental> Euf<Q> {
         &mut self,
         e1: Exp,
         e2: Exp,
-        acts: &mut impl SatTheoryArgT<M: TupleExtract<P, PushInfo>>,
+        acts: &mut impl SatTheoryArgR<M: TupleExtract<P, PushInfo>>,
     ) -> () {
         match (e1, e2) {
-            (Exp::Left(b1), Exp::Left(b2)) => match (b1.to_lit(), b2.to_lit()) {
-                (Err(pol), Ok(l)) | (Ok(l), Err(pol)) => {
-                    acts.assert(BoolExp::unknown(l ^ !pol));
-                }
-                (Err(b1), Err(b2)) => {
-                    if b1 != b2 {
-                        acts.for_explain().clause_builder().clear();
-                        acts.raise_conflict_using_builder(false)
-                    }
-                }
-                (Ok(b1), Ok(b2)) => {
-                    acts.xor(
-                        BoolExp::unknown(b1),
-                        BoolExp::unknown(b2),
-                        ExprContext::AssertEq(BoolExp::FALSE),
-                    );
-                    self.unify_lits(acts, b1, b2);
-                    self.unify_lits(acts, !b1, !b2);
-                }
-            },
+            (Exp::Left(e1), Exp::Left(e2)) => {
+                let (th, mut acts) = self.lift_th(acts);
+                th.assert_exp_eq(&mut acts, e1, e2);
+            }
             (Exp::Right(u1), Exp::Right(u2)) => {
                 self.union(acts, u1.id, u2.id, Justification::NOOP);
             }
             _ => unreachable!(),
-        }
-    }
-
-    fn unify_lits<P>(
-        &mut self,
-        acts: &mut impl SatTheoryArgT<M: TupleExtract<P, PushInfo>>,
-        b1: Lit,
-        b2: Lit,
-    ) {
-        if let Some(id1) = self.check_id_for_lit(b1) {
-            if let Some(id2) = self.check_id_for_lit(b2) {
-                self.union(acts, id1, id2, Justification::NOOP);
-            } else {
-                self.lit.add_id_to_lit(id1, b2, true)
-            }
-        } else {
-            let id = self.id_for_lit(b2, acts, true);
-            self.lit.add_id_to_lit(id, b1, true);
         }
     }
 }
@@ -317,7 +283,7 @@ impl<
     Q: Incremental,
     M,
     I: DistinctElts<Exp = Exp>,
-    A: SatTheoryArgT<M: TupleExtract<M, PushInfo>>,
+    A: SatTheoryArgR<M: TupleExtract<M, PushInfo>>,
 > Collapse<RawDistinct<I>, A, BaseMarker<M>> for Euf<Q>
 {
     fn collapse(
@@ -390,7 +356,7 @@ impl<
     }
 }
 
-impl<'a, M, Q: Incremental, A: SatTheoryArgT<M: TupleExtract<M, PushInfo>>>
+impl<'a, M, Q: Incremental, A: SatTheoryArgR<M: TupleExtract<M, PushInfo>>>
     Collapse<Eq<Exp>, A, BaseMarker<M>> for Euf<Q>
 {
     fn collapse(
@@ -447,7 +413,7 @@ impl<
     M2,
     Q: Incremental + QuantifierChecker<Exp, M1>,
     I: Iterator<Item = Exp> + Clone,
-    A: SatTheoryArgT<M: TupleExtract<M2, PushInfo>>,
+    A: SatTheoryArgR<M: TupleExtract<M2, PushInfo>>,
 > Collapse<UFn<I>, A, BaseMarker<(M1, M2)>> for Euf<Q>
 {
     fn collapse(

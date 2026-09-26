@@ -3,6 +3,18 @@
 version = 4
 
 [[package]]
+name = "ambassador"
+version = "0.5.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "cd3d4da7fddbc6567cbd7b5c30364f91313701b1857ab5b925eb3acf06162eed"
+dependencies = [
+ "itertools",
+ "proc-macro2",
+ "quote",
+ "syn 2.0.115",
+]
+
+[[package]]
 name = "autocfg"
 version = "1.5.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -98,6 +110,12 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "a41c9ac7821a2b7f70c709eb7474e6a7ac591a628956409e2e9d523558504fcd"
 
 [[package]]
+name = "either"
+version = "1.18.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "252afb9ae5eaa683babdc6a068b3f5726eb19e05070c731f9b2a23a7c3e8ed34"
+
+[[package]]
 name = "flatmultimap"
 version = "0.1.0"
 source = "git+https://github.com/dewert99/flatmultimap#8d92ed143b667f40e7066007f3c687b65057ea36"
@@ -132,6 +150,15 @@ name = "internal-iterator"
 version = "0.2.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "969ee3fc68ec2e88eb21434ce4d9b7e1600d1ce92ff974560a6c4a304f5124b9"
+
+[[package]]
+name = "itertools"
+version = "0.10.5"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "b0fd2260e829bddf4cb6ea802289de2f86d6a7a690192fbe91b3f46e0f2c8473"
+dependencies = [
+ "either",
+]
 
 [[package]]
 name = "lazy-rational"
@@ -207,6 +234,7 @@ dependencies = [
 name = "plat-smt"
 version = "0.1.0"
 dependencies = [
+ "ambassador",
  "bytemuck",
  "crypto-bigint",
  "dary_heap",

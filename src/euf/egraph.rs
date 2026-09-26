@@ -228,12 +228,7 @@ impl<D> Deref for EGraph<D> {
 }
 
 impl<C: EClassT> EGraph<C> {
-    pub fn add(
-        &mut self,
-        op: Op,
-        children: Children,
-        mut mk_data: impl FnMut(Id, &[Id]) -> C,
-    ) -> Id {
+    pub fn add(&mut self, op: Op, children: Children, mk_data: impl FnOnce(Id, &[Id]) -> C) -> Id {
         let id = RawEGraph::raw_add(
             self,
             |x| &mut x.inner,

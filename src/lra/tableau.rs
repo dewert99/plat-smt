@@ -458,10 +458,7 @@ pub(super) trait ConflictIter:
 impl<I: Iterator<Item = (NumVar, Rational32, bool, BoundDir)> + Clone> ConflictIter for I {}
 
 impl<Eq: EqHelperBase> ModeledTableau<Eq> {
-    pub fn fresh_var<T>(&mut self) -> NumVar
-    where
-        Eq: EqHelper<T>,
-    {
+    pub fn fresh_var(&mut self) -> NumVar {
         self.last_var.0 = self.last_var.0.checked_add(1).unwrap();
         self.eq_helper.create_free(self.last_var);
         Eq::assert_inv(self);
@@ -474,9 +471,9 @@ impl<Eq: EqHelperBase> ModeledTableau<Eq> {
             .map(|x| NumVar(x))
     }
 
-    pub fn sum<T: TheoryArgT>(&mut self, elts: Sum, acts: &mut T) -> NumExp
+    pub fn sum<M, T: TheoryArgT>(&mut self, elts: Sum, acts: &mut T) -> NumExp
     where
-        Eq: EqHelper<T>,
+        Eq: EqHelper<M, T>,
     {
         if elts.elts.is_empty() {
             return NumExp::from_rational(elts.offset);
@@ -536,7 +533,7 @@ impl<Eq: EqHelperBase> ModeledTableau<Eq> {
         }
     }
 
-    pub(super) fn add_bound<T>(
+    pub(super) fn add_bound<M, T>(
         &mut self,
         var: NumVar,
         bound: Rational32,
@@ -546,7 +543,7 @@ impl<Eq: EqHelperBase> ModeledTableau<Eq> {
         prop: impl FnOnce(NumVar, EpsilonRational, BoundDir, &mut T) -> Result<(), ()>,
     ) -> Result<(), ()>
     where
-        Eq: EqHelper<T>,
+        Eq: EqHelper<M, T>,
     {
         let epsilon = match (dir, strict) {
             (_, false) => Rational32::ZERO,
@@ -637,9 +634,9 @@ impl<Eq: EqHelperBase> ModeledTableau<Eq> {
         self.defs.alloc.buf = buf;
     }
 
-    fn pivot_no_update<T>(&mut self, var: NumVar, t: &mut T)
+    fn pivot_no_update<M, T>(&mut self, var: NumVar, t: &mut T)
     where
-        Eq: EqHelper<T>,
+        Eq: EqHelper<M, T>,
     {
         debug!("Pivoting {var:?} without update");
         let mut var_def = self.defs.resolve_var(var);
@@ -662,14 +659,14 @@ impl<Eq: EqHelperBase> ModeledTableau<Eq> {
         self.defs.reuse_buf(var_def);
     }
 
-    fn pivot_update<T>(
+    fn pivot_update<M, T>(
         &mut self,
         var: NumVar,
         val: EpsilonRational,
         t: &mut T,
     ) -> Result<(), EpsilonRational>
     where
-        Eq: EqHelper<T>,
+        Eq: EqHelper<M, T>,
     {
         debug!("Pivot updating {var:?} to {val:?}");
         let mut var_def = self.defs.resolve_var(var);
@@ -691,7 +688,7 @@ impl<Eq: EqHelperBase> ModeledTableau<Eq> {
 
     /// Finds a pivot and pivots if possilble returning true, otherwise it returns false
     /// Restores var_def to the buf in either case
-    fn pivot<T>(
+    fn pivot<M, T>(
         &mut self,
         var: NumVar,
         mut var_def: Vec<BufElt>,
@@ -699,7 +696,7 @@ impl<Eq: EqHelperBase> ModeledTableau<Eq> {
         t: &mut T,
     ) -> bool
     where
-        Eq: EqHelper<T>,
+        Eq: EqHelper<M, T>,
     {
         debug!(
             "Looking for a pivot for {var:?} from {var_def:?} since it was offset by {offset:?}"
@@ -743,9 +740,12 @@ impl<Eq: EqHelperBase> ModeledTableau<Eq> {
             })
     }
 
-    pub(super) fn check<T>(&mut self, t: &mut T) -> Result<(), impl ConflictIter + use<'_, Eq, T>>
+    pub(super) fn check<M, T>(
+        &mut self,
+        t: &mut T,
+    ) -> Result<(), impl ConflictIter + use<'_, Eq, T, M>>
     where
-        Eq: EqHelper<T>,
+        Eq: EqHelper<M, T>,
     {
         while let Some(var) = self.out_of_bounds.heap_pop() {
             debug!(
@@ -908,7 +908,7 @@ pub trait EqHelperBase: Clone + Default + 'static {
 type BoundsVec = DefaultVec<Bounds, NumVar>;
 #[allow(unused_variables)]
 #[allow(private_interfaces)]
-pub trait EqHelper<T>: EqHelperBase {
+pub trait EqHelper<M, T>: EqHelperBase {
     fn update_bounds(
         &mut self,
         var: NumVar,
@@ -931,7 +931,7 @@ pub trait EqHelper<T>: EqHelperBase {
 }
 
 impl EqHelperBase for () {}
-impl<T> EqHelper<T> for () {}
+impl<M, T> EqHelper<M, T> for () {}
 
 #[cfg(feature = "uflra")]
 mod tracker {
@@ -964,7 +964,7 @@ mod tracker {
         }
     }
 
-    type Never = NeverTheoryArg<(), LoggingRecorder, (NumExp, ())>;
+    type Never = NeverTheoryArg<(), LoggingRecorder, ()>;
 
     #[allow(private_interfaces)]
     impl EqHelperBase for EqTracker {
@@ -988,7 +988,7 @@ mod tracker {
                 }
                 debug_assert_eq!(self.hashes.get(var), rational_to_field_elt(bound));
                 let new_val = num_var_to_field_elt(var);
-                self.update::<Never>(var, new_val, defs, None);
+                self.update::<(), Never>(var, new_val, defs, None);
             }
         }
 
@@ -999,7 +999,7 @@ mod tracker {
             bounds: &BoundsVec,
         ) {
             let revert_to = self.field_elt_for_var(v, (start, end), &bounds, &defs);
-            self.update::<Never>(v, revert_to, defs, None);
+            self.update::<(), Never>(v, revert_to, defs, None);
         }
 
         fn assert_inv(this: &ModeledTableau<Self>) {
@@ -1023,7 +1023,7 @@ mod tracker {
     }
 
     #[allow(private_interfaces)]
-    impl<T: EufTheoryArgT<Exp = NumExp>> EqHelper<T> for EqTracker {
+    impl<M, T: EufTheoryArgT<M, NumExp>> EqHelper<M, T> for EqTracker {
         fn update_bounds(
             &mut self,
             var: NumVar,
@@ -1069,7 +1069,7 @@ mod tracker {
     }
 
     impl EqTracker {
-        fn update<T: EufTheoryArgT<Exp = NumExp>>(
+        fn update<M, T: EufTheoryArgT<M, NumExp>>(
             &mut self,
             var: NumVar,
             val: FieldElt,
@@ -1103,7 +1103,7 @@ mod tracker {
                             let res = self.map.get_try_for_each(&new, |&id2| {
                                 let n = euf.resolve(id).unwrap();
                                 let n2 = euf.resolve(id2).unwrap();
-                                if defs.deep_eq(n, n2, |x| bounds.get(x).try_to_const()) {
+                                if defs.deep_eq(*n, *n2, |x| bounds.get(x).try_to_const()) {
                                     euf.union(id, id2);
                                     Err(())
                                 } else {

@@ -24,7 +24,7 @@ impl<Eq> SpecExp<NumSpec, BaseMarker> for Lra<Eq> {
     type SpecExp = NumExp;
 }
 
-impl<Arg: SatTheoryArgT, Eq: EqHelper<Arg>> Collapse<NumExp, Arg, BaseMarker> for Lra<Eq> {
+impl<Arg: SatTheoryArgT, Eq: EqHelperBase> Collapse<NumExp, Arg, BaseMarker> for Lra<Eq> {
     fn collapse(&mut self, t: NumExp, _arg: &mut Arg, _: ExprContext<NumExp>) -> NumExp {
         if let Some(epsilon_def) = self.epsilon_def {
             let EpsilonRational { base, epsilon } = self.get_value(t);
@@ -39,7 +39,7 @@ impl<Arg: SatTheoryArgT, Eq: EqHelper<Arg>> Collapse<NumExp, Arg, BaseMarker> fo
     }
 }
 
-impl<'a, Arg, Eq: EqHelper<Arg>> Collapse<Fresh<NumExp>, Arg, BaseMarker> for Lra<Eq> {
+impl<'a, Arg, Eq: EqHelperBase> Collapse<Fresh<NumExp>, Arg, BaseMarker> for Lra<Eq> {
     fn collapse(&mut self, _: Fresh<NumExp>, _: &mut Arg, _: ExprContext<NumExp>) -> NumExp {
         self.fresh_exp()
     }
@@ -93,7 +93,7 @@ impl CollapseOut for Inequality {
     type Out = BoolExp;
 }
 
-impl<A: SatTheoryArgT, Eq: EqHelper<A>> Collapse<Inequality, A, BaseMarker> for Lra<Eq> {
+impl<A: SatTheoryArgT, M, Eq: EqHelper<M, A>> Collapse<Inequality, A, BaseMarker<M>> for Lra<Eq> {
     fn collapse(&mut self, ineq: Inequality, acts: &mut A, _ctx: ExprContext<BoolExp>) -> BoolExp {
         if let Some(x) = ineq.lower.try_into_rational_for_opt() {
             self.bind_lower_bound(ineq.upper, x, ineq.strict, acts)
@@ -117,14 +117,13 @@ pub struct InequalityPf<const S: bool, const L: bool>;
 impl<
     M1,
     M2,
-    M3,
     Exp: ExpLike + SuperExp<BoolExp, M1> + SuperExp<NumExp, M2>,
-    Slv: SolverCollapse<Inequality, M3>
+    Slv: SolverCollapse<Inequality, M2>
         + SolverCollapse<Conjunction, TseitenMarker>
         + ReuseMem<Conjunction>,
     const S: bool,
     const L: bool,
-> ParserFragment<Exp, Slv, (M1, M2, M3)> for InequalityPf<S, L>
+> ParserFragment<Exp, Slv, (M1, M2)> for InequalityPf<S, L>
 {
     fn supports(&self, s: Symbol) -> bool {
         s == match (L, S) {
@@ -175,7 +174,9 @@ pub type LePf = InequalityPf<true, false>;
 pub type GtPf = InequalityPf<false, true>;
 pub type GePf = InequalityPf<false, false>;
 
-impl<A: SatTheoryArgT, EqH: EqHelper<A>> Collapse<Eq<NumExp>, A, BaseMarker> for Lra<EqH> {
+impl<A: SatTheoryArgT, EqH: EqHelper<BaseMarker, A>> Collapse<Eq<NumExp>, A, BaseMarker>
+    for Lra<EqH>
+{
     fn collapse(&mut self, eq: Eq<NumExp>, acts: &mut A, ctx: ExprContext<BoolExp>) -> BoolExp {
         let le = self.collapse(Inequality::le(eq.0, eq.1), acts, ExprContext::Exact);
         let ge = self.collapse(Inequality::ge(eq.0, eq.1), acts, ExprContext::Exact);
@@ -199,7 +200,7 @@ impl<Eq: EqHelperBase> ReuseMem<Sum, BaseMarker> for Lra<Eq> {
 impl CollapseOut for Sum {
     type Out = NumExp;
 }
-impl<'a, A: TheoryArgT, Eq: EqHelper<A>> Collapse<Sum, A, BaseMarker> for Lra<Eq> {
+impl<'a, A: TheoryArgT, Eq: EqHelper<M, A>, M> Collapse<Sum, A, BaseMarker<M>> for Lra<Eq> {
     fn collapse(&mut self, sum: Sum, acts: &mut A, _ctx: ExprContext<NumExp>) -> NumExp {
         self.bind_sum(sum, acts)
     }

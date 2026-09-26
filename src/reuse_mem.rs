@@ -1,8 +1,8 @@
+use crate::Solver;
 use crate::collapse::{BaseMarker, LeftMarker, RightMarker};
 use crate::full_theory::FullTheory;
 use crate::junction::Junction;
 use crate::solver::SolverWithBound;
-use crate::Solver;
 
 pub trait ReuseMem<T, M = BaseMarker> {
     fn reuse_mem(&mut self) -> T;

@@ -162,9 +162,9 @@ pub struct Lra<Eq = ()> {
 }
 
 impl<Eq: EqHelperBase> Lra<Eq> {
-    pub(super) fn bind_sum<'a, T: TheoryArgT>(&mut self, sum: Sum, acts: &mut T) -> NumExp
+    pub(super) fn bind_sum<'a, M, T: TheoryArgT>(&mut self, sum: Sum, acts: &mut T) -> NumExp
     where
-        Eq: EqHelper<T>,
+        Eq: EqHelper<M, T>,
     {
         self.tableau.sum(sum, acts)
     }
@@ -233,11 +233,8 @@ impl<Eq: EqHelperBase> Lra<Eq> {
         }
     }
 
-    pub fn fresh_exp<T>(&mut self) -> NumExp
-    where
-        Eq: EqHelper<T>,
-    {
-        NumExp::from_var(self.tableau.fresh_var::<T>())
+    pub fn fresh_exp(&mut self) -> NumExp {
+        NumExp::from_var(self.tableau.fresh_var())
     }
 
     pub fn reuse_sum(&mut self) -> Sum {
@@ -337,7 +334,7 @@ impl<Eq: EqHelperBase> Incremental for Lra<Eq> {
     }
 }
 
-impl<'a, A: SatTheoryArgT, P, Eq: EqHelper<A>> Theory<A, A::Explain<'a>, P> for Lra<Eq> {
+impl<'a, A: SatTheoryArgT, M, Eq: EqHelper<M, A>> Theory<A, A::Explain<'a>, M> for Lra<Eq> {
     fn learn(&mut self, lit: Lit, acts: &mut A) -> Result<(), ()> {
         let bound = self.var_map.get(lit.var());
         if let Some(LowerBound { var, bound, strict }) = bound {
@@ -359,7 +356,7 @@ impl<'a, A: SatTheoryArgT, P, Eq: EqHelper<A>> Theory<A, A::Explain<'a>, P> for 
     fn learn_all(&mut self, mut prev_model_len: usize, acts: &mut A) -> Result<(), ()> {
         let other_prop_len = acts.model().len();
         while prev_model_len < other_prop_len {
-            Theory::<_, _>::learn(self, acts.model()[prev_model_len], acts)?;
+            Theory::<_, _, M>::learn(self, acts.model()[prev_model_len], acts)?;
             prev_model_len += 1;
         }
         Ok(())

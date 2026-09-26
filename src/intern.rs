@@ -419,11 +419,26 @@ pub trait DisplayInterned {
         WithIntern(self, i)
     }
 
+    fn ref_with_intern<'i>(&self, i: &'i InternInfo) -> WithIntern<'i, Ref<'_, Self>>
+    where
+        Self: Sized,
+    {
+        WithIntern(Ref(self), i)
+    }
+
     fn to_string(self, i: &InternInfo) -> String
     where
         Self: Sized,
     {
         format!("{}", self.with_intern(i))
+    }
+}
+
+pub struct Ref<'a, X>(&'a X);
+
+impl<'a, X: DisplayInterned> DisplayInterned for Ref<'a, X> {
+    fn fmt(&self, i: &InternInfo, f: &mut Formatter<'_>) -> core::fmt::Result {
+        self.0.fmt(i, f)
     }
 }
 

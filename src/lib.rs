@@ -18,7 +18,6 @@ pub mod intern;
 pub mod junction;
 pub mod outer_solver;
 pub mod parser;
-mod reborrow;
 mod solver;
 mod theory;
 mod tseitin;
@@ -44,7 +43,7 @@ pub use junction::{Conjunction, Disjunction};
 pub use outer_solver::OuterSolver;
 pub use parser::{incremental_parser::IncrementalParser, parser::interp_smt2};
 pub use parser_fragment::AddSexpError;
-pub use solver::{Approx, BLit, SolveResult, Solver, SolverCollapse};
+pub use solver::{Approx, SolveResult, Solver, SolverCollapse};
 
 pub mod default {
     use crate::full_theory::FullTheory;

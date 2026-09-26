@@ -10,8 +10,8 @@ use crate::{BoolExp, ExpLike, Solver};
 use alloc::borrow::Cow;
 use core::fmt::Write;
 use log::{debug, info};
-use platsat::theory::ClauseRef;
 use platsat::Lit;
+use platsat::theory::ClauseRef;
 
 #[derive(Debug)]
 pub enum ClauseKind {

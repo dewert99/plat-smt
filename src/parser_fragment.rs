@@ -2,8 +2,8 @@ use crate::collapse::ExprContext;
 use crate::intern::Symbol;
 use crate::parser::SexpTerminal;
 use crate::{BoolExp, ExpLike, Sort, StaticSort, SubExp, SuperExp};
-use alloc::borrow::Cow;
 use AddSexpError::*;
+use alloc::borrow::Cow;
 
 #[derive(Debug)]
 pub enum AddSexpError {
@@ -38,12 +38,12 @@ pub(crate) struct IndexExp<Exp>(pub(crate) (usize, Exp));
 
 impl<Exp: ExpLike> IndexExp<Exp> {
     pub(crate) fn exp(self) -> Exp {
-        self.0 .1
+        self.0.1
     }
 
     pub(crate) fn sort_mismatch(self, expected: Sort) -> AddSexpError {
         SortMismatch {
-            arg_n: self.0 .0,
+            arg_n: self.0.0,
             actual: self.exp().sort(),
             expected,
         }

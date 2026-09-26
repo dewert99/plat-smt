@@ -1,3 +1,4 @@
+use crate::Symbol;
 use crate::collapse::{Collapse, CollapseOut, ExprContext, SpecExp};
 use crate::core_ops::Eq;
 use crate::exp::*;
@@ -9,7 +10,6 @@ use crate::recorder::Recorder;
 use crate::theory::{TheoryArg, TheoryWrapper};
 use crate::tseitin::SatTheoryArgT;
 use crate::util::{DefaultHashBuilder, Either};
-use crate::Symbol;
 use alloc::borrow::Cow;
 use core::fmt::Write;
 use hashbrown::HashMap;
@@ -18,7 +18,7 @@ use log::{debug, trace};
 use no_std_compat::prelude::v1::*;
 use perfect_derive::perfect_derive;
 use platsat::theory::ClauseRef;
-use platsat::{lbool, Callbacks, Lit, SolverInterface, SolverOpts};
+use platsat::{Callbacks, Lit, SolverInterface, SolverOpts, lbool};
 use std::fmt::Debug;
 use std::iter;
 
@@ -65,8 +65,6 @@ impl<Th: FullTheory<R> + Default, R: Recorder> Default for Solver<Th, R> {
         res
     }
 }
-
-pub type BLit = Lit;
 
 #[derive(Debug, Copy, Clone)]
 /// Result of calling [`Solver::check_sat_assuming`]

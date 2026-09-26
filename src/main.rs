@@ -1,8 +1,8 @@
 #![forbid(unsafe_code)]
-use plat_smt::default::DefaultLogic;
 use plat_smt::FullBufRead;
+use plat_smt::default::DefaultLogic;
 use std::fs::File;
-use std::io::{empty, stderr, stdin, stdout, Read};
+use std::io::{Read, empty, stderr, stdin, stdout};
 
 enum Either<L, R> {
     Left(L),

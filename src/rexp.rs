@@ -1,4 +1,4 @@
-use crate::intern::{resolve_or_fail, Symbol};
+use crate::intern::{Symbol, resolve_or_fail};
 
 use crate::util::display_sexp;
 use core::fmt::{Debug, Display, Formatter};
