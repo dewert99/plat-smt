@@ -109,8 +109,30 @@ impl<T: CollapseOut, Arg, Marker, L, R: Collapse<T, Arg, Marker>>
 
 pub struct BaseMarker<T = ()>(T);
 
-pub struct LeftMarker<T>(T);
-pub struct RightMarker<T>(T);
+pub struct Left;
+
+pub struct Right;
+
+pub struct DirMarker<D, T>(D, T);
+
+pub type LeftMarker<T> = DirMarker<Left, T>;
+
+pub type RightMarker<T> = DirMarker<Right, T>;
+
+pub trait MarkerAppend {
+    type MarkerAppendRes<D>;
+}
+
+impl<T> MarkerAppend for BaseMarker<T> {
+    type MarkerAppendRes<D> = DirMarker<D, BaseMarker<T>>;
+}
+
+impl<D, T: MarkerAppend> MarkerAppend for DirMarker<D, T> {
+    type MarkerAppendRes<D2> = DirMarker<D, T::MarkerAppendRes<D2>>;
+}
+
+pub type AppendLeftMarker<T> = <T as MarkerAppend>::MarkerAppendRes<Left>;
+pub type AppendRightMarker<T> = <T as MarkerAppend>::MarkerAppendRes<Right>;
 
 pub trait SpecExp<T, M> {
     type SpecExp;

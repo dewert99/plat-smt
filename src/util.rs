@@ -1,5 +1,6 @@
 use core::convert::Infallible;
 use core::fmt::{Debug, Display, Formatter, Write};
+use core::marker::PhantomData;
 use core::ops::ControlFlow;
 use internal_iterator::InternalIterator;
 use no_std_compat::prelude::v1::*;
@@ -200,3 +201,19 @@ macro_rules! dbg {
 use crate::core_ops::DistinctElts;
 #[allow(unused)]
 pub(crate) use dbg;
+
+pub struct InfallibleIter<T>(Infallible, PhantomData<T>);
+
+impl<T> InfallibleIter<T> {
+    pub fn new(i: Infallible) -> Self {
+        Self(i, PhantomData)
+    }
+}
+
+impl<T> Iterator for InfallibleIter<T> {
+    type Item = T;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        match self.0 {}
+    }
+}

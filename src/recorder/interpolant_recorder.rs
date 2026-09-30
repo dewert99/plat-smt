@@ -1,15 +1,15 @@
 use crate::full_theory::FullTheory;
-use crate::intern::{InternInfo, RecInfoArg, Symbol, AND_SYM, EQ_SYM, NOT_SYM, OR_SYM};
+use crate::intern::{AND_SYM, EQ_SYM, InternInfo, NOT_SYM, OR_SYM, RecInfoArg, Symbol};
 use crate::recorder::definition_recorder::{
     DefExp, DefinitionRecorder, FALSE_DEF_EXP, TRUE_DEF_EXP,
 };
 use crate::recorder::dep_checker::{DepChecker, DepCheckerAction};
 use crate::recorder::slice_vec::SliceVec;
-use crate::recorder::{dep_checker, ClauseKind, Recorder};
+use crate::recorder::{ClauseKind, Recorder, dep_checker};
 use crate::rexp::{AsRexp, NamespaceVar};
 use crate::solver::{LevelMarker as SolverMarker, UnsatCoreConjunction, UnsatCoreInfo};
 use crate::theory::Incremental;
-use crate::util::{display_sexp, minmax, DebugIter, DisplayFn, HashMap};
+use crate::util::{DebugIter, DisplayFn, HashMap, display_sexp, minmax};
 use crate::{BoolExp, Conjunction, ExpLike, Solver};
 use alloc::borrow::Cow;
 use alloc::format;
@@ -22,7 +22,7 @@ use default_vec2::StaticFlagVec;
 use log::{debug, info, trace, warn};
 use platsat::alloc::ExpandedRef;
 use platsat::theory::ClauseRef;
-use platsat::{lbool, Lit, SolverInterface, TheoryArg};
+use platsat::{Lit, SolverInterface, TheoryArg, lbool};
 use std::mem;
 
 pub(super) const NEITHER: u32 = 0b00;
@@ -561,11 +561,7 @@ impl Recorder for InterpolantRecorder {
             .try_for_each(|child| {
                 child.try_for_each_nv(|nv| {
                     is_ab &= self.ab_defs.get(self.defs.resolve_nv(nv));
-                    if is_ab == NEITHER {
-                        Err(())
-                    } else {
-                        Ok(())
-                    }
+                    if is_ab == NEITHER { Err(()) } else { Ok(()) }
                 })
             })
             .is_ok();

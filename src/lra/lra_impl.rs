@@ -1,18 +1,18 @@
+use crate::AddSexpError::CustomSexpErr;
 use crate::collapse::{BaseMarker, Collapse, CollapseOut, ExprContext, SpecExp};
 use crate::core_ops::{DefaultDistinct, DefaultEq, DefaultIte, Eq, Ite};
 use crate::exp::Fresh;
-use crate::intern::{Symbol, ADD_SYM, DIV_SYM, GE_SYM, GT_SYM, LE_SYM, LT_SYM, MUL_SYM, SUB_SYM};
+use crate::intern::{ADD_SYM, DIV_SYM, GE_SYM, GT_SYM, LE_SYM, LT_SYM, MUL_SYM, SUB_SYM, Symbol};
 use crate::lra::bound::EpsilonRational;
 use crate::lra::lra::Lra;
-use crate::lra::tableau::{NumExp, Sum};
+use crate::lra::tableau::{EqHelper, EqHelperBase, NumExp, Sum};
 use crate::parser::{Decimal, SexpTerminal};
-use crate::parser_fragment::{index_iter, mandatory_args, ParserFragment, PfResult};
+use crate::parser_fragment::{ParserFragment, PfResult, index_iter, mandatory_args};
 use crate::reuse_mem::{Lift, ReuseMem};
 use crate::solver::SolverCollapse;
 use crate::theory::TheoryArgT;
-use crate::tseitin::{andor_sub_ctx, SatTheoryArgT, TseitenMarker};
+use crate::tseitin::{SatTheoryArgT, TseitenMarker, andor_sub_ctx};
 use crate::util::extend_result;
-use crate::AddSexpError::CustomSexpErr;
 use crate::{AddSexpError, BoolExp, Conjunction, ExpLike, SubExp, SuperExp};
 use alloc::borrow::Cow;
 use core::num::TryFromIntError;
@@ -20,11 +20,11 @@ use lazy_rational::Rational32;
 
 pub struct NumSpec;
 
-impl SpecExp<NumSpec, BaseMarker> for Lra {
+impl<Eq> SpecExp<NumSpec, BaseMarker> for Lra<Eq> {
     type SpecExp = NumExp;
 }
 
-impl<Arg: SatTheoryArgT> Collapse<NumExp, Arg, BaseMarker> for Lra {
+impl<Arg: SatTheoryArgT, Eq: EqHelperBase> Collapse<NumExp, Arg, BaseMarker> for Lra<Eq> {
     fn collapse(&mut self, t: NumExp, _arg: &mut Arg, _: ExprContext<NumExp>) -> NumExp {
         if let Some(epsilon_def) = self.epsilon_def {
             let EpsilonRational { base, epsilon } = self.get_value(t);
@@ -39,7 +39,7 @@ impl<Arg: SatTheoryArgT> Collapse<NumExp, Arg, BaseMarker> for Lra {
     }
 }
 
-impl<'a, Arg> Collapse<Fresh<NumExp>, Arg, BaseMarker> for Lra {
+impl<'a, Arg, Eq: EqHelperBase> Collapse<Fresh<NumExp>, Arg, BaseMarker> for Lra<Eq> {
     fn collapse(&mut self, _: Fresh<NumExp>, _: &mut Arg, _: ExprContext<NumExp>) -> NumExp {
         self.fresh_exp()
     }
@@ -93,7 +93,7 @@ impl CollapseOut for Inequality {
     type Out = BoolExp;
 }
 
-impl<A: SatTheoryArgT> Collapse<Inequality, A, BaseMarker> for Lra {
+impl<A: SatTheoryArgT, M, Eq: EqHelper<M, A>> Collapse<Inequality, A, BaseMarker<M>> for Lra<Eq> {
     fn collapse(&mut self, ineq: Inequality, acts: &mut A, _ctx: ExprContext<BoolExp>) -> BoolExp {
         if let Some(x) = ineq.lower.try_into_rational_for_opt() {
             self.bind_lower_bound(ineq.upper, x, ineq.strict, acts)
@@ -115,16 +115,15 @@ impl<A: SatTheoryArgT> Collapse<Inequality, A, BaseMarker> for Lra {
 pub struct InequalityPf<const S: bool, const L: bool>;
 
 impl<
-        M1,
-        M2,
-        M3,
-        Exp: ExpLike + SuperExp<BoolExp, M1> + SuperExp<NumExp, M2>,
-        Slv: SolverCollapse<Inequality, M3>
-            + SolverCollapse<Conjunction, TseitenMarker>
-            + ReuseMem<Conjunction>,
-        const S: bool,
-        const L: bool,
-    > ParserFragment<Exp, Slv, (M1, M2, M3)> for InequalityPf<S, L>
+    M1,
+    M2,
+    Exp: ExpLike + SuperExp<BoolExp, M1> + SuperExp<NumExp, M2>,
+    Slv: SolverCollapse<Inequality, M2>
+        + SolverCollapse<Conjunction, TseitenMarker>
+        + ReuseMem<Conjunction>,
+    const S: bool,
+    const L: bool,
+> ParserFragment<Exp, Slv, (M1, M2)> for InequalityPf<S, L>
 {
     fn supports(&self, s: Symbol) -> bool {
         s == match (L, S) {
@@ -175,7 +174,9 @@ pub type LePf = InequalityPf<true, false>;
 pub type GtPf = InequalityPf<false, true>;
 pub type GePf = InequalityPf<false, false>;
 
-impl<A: SatTheoryArgT> Collapse<Eq<NumExp>, A, BaseMarker> for Lra {
+impl<A: SatTheoryArgT, EqH: EqHelper<BaseMarker, A>> Collapse<Eq<NumExp>, A, BaseMarker>
+    for Lra<EqH>
+{
     fn collapse(&mut self, eq: Eq<NumExp>, acts: &mut A, ctx: ExprContext<BoolExp>) -> BoolExp {
         let le = self.collapse(Inequality::le(eq.0, eq.1), acts, ExprContext::Exact);
         let ge = self.collapse(Inequality::ge(eq.0, eq.1), acts, ExprContext::Exact);
@@ -188,9 +189,9 @@ impl<A: SatTheoryArgT> Collapse<Eq<NumExp>, A, BaseMarker> for Lra {
     }
 }
 
-impl DefaultEq for Lra {}
+impl DefaultEq for Lra<()> {}
 
-impl ReuseMem<Sum, BaseMarker> for Lra {
+impl<Eq: EqHelperBase> ReuseMem<Sum, BaseMarker> for Lra<Eq> {
     fn reuse_mem(&mut self) -> Sum {
         self.reuse_sum()
     }
@@ -199,7 +200,7 @@ impl ReuseMem<Sum, BaseMarker> for Lra {
 impl CollapseOut for Sum {
     type Out = NumExp;
 }
-impl<'a, A: TheoryArgT> Collapse<Sum, A, BaseMarker> for Lra {
+impl<'a, A: TheoryArgT, Eq: EqHelper<M, A>, M> Collapse<Sum, A, BaseMarker<M>> for Lra<Eq> {
     fn collapse(&mut self, sum: Sum, acts: &mut A, _ctx: ExprContext<NumExp>) -> NumExp {
         self.bind_sum(sum, acts)
     }
@@ -212,11 +213,8 @@ impl<'a, A: TheoryArgT> Collapse<Sum, A, BaseMarker> for Lra {
 #[derive(Default)]
 pub struct AddPf;
 
-impl<
-        M,
-        Exp: ExpLike + SuperExp<NumExp, M>,
-        Slv: SolverCollapse<Sum, M> + ReuseMem<Sum, Lift<M>>,
-    > ParserFragment<Exp, Slv, M> for AddPf
+impl<M, Exp: ExpLike + SuperExp<NumExp, M>, Slv: SolverCollapse<Sum, M> + ReuseMem<Sum, Lift<M>>>
+    ParserFragment<Exp, Slv, M> for AddPf
 {
     fn supports(&self, s: Symbol) -> bool {
         s == ADD_SYM
@@ -240,11 +238,8 @@ impl<
 #[derive(Default)]
 pub struct SubPf;
 
-impl<
-        M,
-        Exp: ExpLike + SuperExp<NumExp, M>,
-        Slv: SolverCollapse<Sum, M> + ReuseMem<Sum, Lift<M>>,
-    > ParserFragment<Exp, Slv, M> for SubPf
+impl<M, Exp: ExpLike + SuperExp<NumExp, M>, Slv: SolverCollapse<Sum, M> + ReuseMem<Sum, Lift<M>>>
+    ParserFragment<Exp, Slv, M> for SubPf
 {
     fn supports(&self, s: Symbol) -> bool {
         s == SUB_SYM
@@ -360,13 +355,13 @@ where
     }
 }
 
-impl DefaultIte<NumExp> for Lra {
+impl<Eq> DefaultIte<NumExp> for Lra<Eq> {
     fn post_ite(&mut self, _: Ite<NumExp>, res: &mut NumExp) {
         *res = res.weaken()
     }
 }
 
-impl DefaultDistinct for Lra {}
+impl DefaultDistinct for Lra<()> {}
 
 #[derive(Default)]
 pub struct WeakProdPf;

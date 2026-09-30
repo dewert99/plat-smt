@@ -2,10 +2,10 @@ use crate::Symbol;
 use core::num::NonZeroU32;
 use core::ops::IndexMut;
 use no_std_compat::prelude::v1::*;
+use plat_egg::Id;
 use plat_egg::raw::reflect_const::PathCompress;
 pub use plat_egg::raw::semi_persistent1::PushInfo;
-use plat_egg::raw::{semi_persistent1::UndoLog, EGraphResidual, Language, RawEClass, RawEGraph};
-use plat_egg::Id;
+use plat_egg::raw::{EGraphResidual, Language, RawEClass, RawEGraph, semi_persistent1::UndoLog};
 use platsat::Lit;
 use smallvec::SmallVec;
 use std::cmp::Ordering;
@@ -18,10 +18,18 @@ use super::explain::{EqIds, Explain, Justification};
 
 const N: usize = 4;
 pub type Children = SmallVec<[Id; N]>;
-use super::euf::EClass;
 use crate::intern::EQ_SYM;
 use crate::recorder::{DefExp, InterpolateArg};
 pub use smallvec::smallvec as children;
+
+pub trait EClassT: Debug + Clone {
+    type MergeInfo: Clone;
+    fn allows_fresh_equalities(&self) -> bool {
+        true
+    }
+
+    fn split(&mut self, info: impl Iterator<Item = Self::MergeInfo>) -> Self;
+}
 
 const SYMMETRY_SHIFT: u32 = u32::BITS - 1;
 const SYMMETRY_MASK: u32 = 1 << SYMMETRY_SHIFT;
@@ -219,13 +227,8 @@ impl<D> Deref for EGraph<D> {
     }
 }
 
-impl EGraph<EClass> {
-    pub fn add(
-        &mut self,
-        op: Op,
-        children: Children,
-        mut mk_data: impl FnMut(Id, &[Id]) -> EClass,
-    ) -> Id {
+impl<C: EClassT> EGraph<C> {
+    pub fn add(&mut self, op: Op, children: Children, mk_data: impl FnOnce(Id, &[Id]) -> C) -> Id {
         let id = RawEGraph::raw_add(
             self,
             |x| &mut x.inner,
@@ -247,8 +250,8 @@ impl EGraph<EClass> {
         &mut self,
         op: Op,
         children: Children,
-        mk_data: impl FnMut(Id) -> EClass,
-        mut merge: impl FnMut(&mut EClass, EClass),
+        mk_data: impl FnMut(Id) -> C,
+        mut merge: impl FnMut(&mut C, C),
     ) -> Id {
         RawEGraph::raw_add_for_sym(
             &mut (self, mk_data),
@@ -272,12 +275,12 @@ impl EGraph<EClass> {
         )
     }
 
-    pub fn union(
+    pub(super) fn union(
         &mut self,
         id1: Id,
         id2: Id,
         justification: Justification,
-        mut merge: impl FnMut(&mut EClass, EClass),
+        mut merge: impl FnMut(&mut C, C),
     ) {
         self.inner.raw_union(id1, id2, |info| {
             merge(info.data1, info.data2);
@@ -290,7 +293,7 @@ impl EGraph<EClass> {
         })
     }
 
-    pub fn try_rebuild<S, E>(
+    pub(super) fn try_rebuild<S, E>(
         outer: &mut S,
         get_self: impl Fn(&mut S) -> &mut Self,
         union: impl FnMut(&mut S, Justification, Id, Id) -> Result<(), E>,
@@ -308,7 +311,7 @@ impl EGraph<EClass> {
         self.inner.push1()
     }
 
-    pub fn pop(&mut self, info: PushInfo, mut split: impl FnMut(&mut EClass) -> EClass) {
+    pub fn pop(&mut self, info: PushInfo, mut split: impl FnMut(&mut C) -> C) {
         self.explain
             .pop(info.number_of_uncanonical_nodes(), info.number_of_unions());
         self.inner.raw_pop1(info, |data, _, _| split(data))
@@ -320,7 +323,7 @@ impl EGraph<EClass> {
     }
 
     /// Returns whether the explanation used congruence
-    pub fn explain_equivalence(
+    pub(super) fn explain_equivalence(
         &mut self,
         id1: Id,
         id2: Id,

@@ -4,12 +4,14 @@ use crate::lra::ordering::NumVarOrdering;
 use crate::rexp::{Namespace, NamespaceVar};
 use crate::theory::TheoryArgT;
 use crate::util::{DebugIter, format_args2};
+use alloc::collections::BTreeMap;
 use alloc::vec::Vec;
 use core::fmt::Debug;
 use core::ops::{Add, AddAssign, Mul, Neg, Range, Sub, SubAssign};
 use default_vec2::DefaultVec;
 use lazy_rational::Rational32;
 use log::{debug, trace};
+use recycle_vec::VecExt;
 use smallvec::SmallVec;
 use std::mem;
 use std::num::NonZeroU32;
@@ -231,6 +233,24 @@ impl TableauAlloc {
         mut offset: Rational32,
         start: usize,
     ) -> (Rational32, Vec<BufElt>) {
+        let last = self.resolve_within(fix_var, &mut offset, start);
+        let mut buf = self.take_buf();
+        buf.extend(
+            self.vars[start..last]
+                .iter()
+                .copied()
+                .zip(self.coefficients[start..last].iter().copied()),
+        );
+        self.truncate(start);
+        (offset, buf)
+    }
+
+    fn resolve_within(
+        &mut self,
+        fix_var: impl Fn(NumVar) -> Option<Rational32>,
+        offset: &mut Rational32,
+        start: usize,
+    ) -> usize {
         let mut curr = start;
         let mut last = start;
         while curr < self.vars.len() {
@@ -244,7 +264,7 @@ impl TableauAlloc {
             let var = self.vars[curr];
             let (start, end) = self.defs.get(var);
             if let Some(x) = fix_var(var) {
-                offset += x * self.coefficients[curr];
+                *offset += x * self.coefficients[curr];
             } else if start == end {
                 debug_assert_eq!(start, 0);
                 self.vars.swap(curr, last);
@@ -260,16 +280,12 @@ impl TableauAlloc {
             }
             curr += 1;
         }
-        let mut buf = self.take_buf();
-        buf.extend(
-            self.vars[start..last]
-                .iter()
-                .copied()
-                .zip(self.coefficients[start..last].iter().copied()),
-        );
-        self.vars.truncate(start);
-        self.coefficients.truncate(start);
-        (offset, buf)
+        last
+    }
+
+    fn truncate(&mut self, n: usize) {
+        self.vars.truncate(n);
+        self.coefficients.truncate(n);
     }
 
     fn clear(&mut self) {
@@ -309,8 +325,30 @@ impl Tableau {
         self.alloc.resolve_inner(|_| None, offset, start).1
     }
 
+    fn deep_eq(
+        &mut self,
+        v1: NumExp,
+        v2: NumExp,
+        fix_var: impl Fn(NumVar) -> Option<Rational32> + Copy,
+    ) -> bool {
+        let start1 = self.alloc.vars.len();
+        let mut offset1 = v1.add;
+        self.alloc.push(v1.var.unwrap(), v1.mul);
+        let r1 = start1..self.alloc.resolve_within(fix_var, &mut offset1, start1);
+        let start2 = self.alloc.vars.len();
+        let mut offset2 = v2.add;
+        self.alloc.push(v2.var.unwrap(), v2.mul);
+        let r2 = start2..self.alloc.resolve_within(fix_var, &mut offset2, start2);
+        let res = offset1 == offset2
+            && self.alloc.vars[r1.clone()] == self.alloc.vars[r2.clone()]
+            && self.alloc.coefficients[r1] == self.alloc.coefficients[r2];
+        self.alloc.truncate(start1);
+        res
+    }
+
     fn unassign_var(&mut self, v: NumVar) {
         let (start, end) = self.alloc.defs.get(v);
+        debug_assert_ne!((start, end), (0, 0));
         self.def_log.push((v, start, end));
         for (i, &var) in self.alloc.get_vars(v).iter().enumerate() {
             self.usages.get_mut(var).retain(|&mut (v2, i2)| {
@@ -346,23 +384,20 @@ impl Tableau {
         self.def_log.len() as u32
     }
 
-    fn pop_to(&mut self, push_info: u32) {
-        let push_info = push_info as usize;
-        for (v, start, end) in self.def_log.drain(push_info..).rev() {
-            for (i, &var) in self.alloc.get_vars(v).iter().enumerate() {
-                self.usages.get_mut(var).retain(|&mut (v2, i2)| {
-                    if v2 == v {
-                        debug_assert_eq!(i as u32, i2);
-                        false
-                    } else {
-                        true
-                    }
-                })
-            }
-            self.alloc.set_var(v, start, end);
-            for (i, &var) in self.alloc.get_vars(v).iter().enumerate() {
-                self.usages.get_mut(var).push((v, i as u32))
-            }
+    fn pop_once(&mut self, (v, start, end): (NumVar, u32, u32)) {
+        for (i, &var) in self.alloc.get_vars(v).iter().enumerate() {
+            self.usages.get_mut(var).retain(|&mut (v2, i2)| {
+                if v2 == v {
+                    debug_assert_eq!(i as u32, i2);
+                    false
+                } else {
+                    true
+                }
+            })
+        }
+        self.alloc.set_var(v, start, end);
+        for (i, &var) in self.alloc.get_vars(v).iter().enumerate() {
+            self.usages.get_mut(var).push((v, i as u32))
         }
     }
 
@@ -384,7 +419,7 @@ pub enum BoundDir {
 }
 
 #[derive(Clone)]
-pub struct ModeledTableau {
+pub struct ModeledTableau<Eq = tracker::EqTracker> {
     defs: Tableau,
     bounds: DefaultVec<Bounds, NumVar>,
     values: DefaultVec<EpsilonRational, NumVar>,
@@ -392,9 +427,10 @@ pub struct ModeledTableau {
     /// Stores all NumVars `v` such that `self.values.get(v)` is not in `self.bounds.get(v)`
     out_of_bounds: NumVarOrdering,
     last_var: NumVar,
+    eq_helper: Eq,
 }
 
-impl Default for ModeledTableau {
+impl<Eq: Default> Default for ModeledTableau<Eq> {
     fn default() -> Self {
         let mut res = ModeledTableau {
             defs: Tableau::default(),
@@ -403,6 +439,7 @@ impl Default for ModeledTableau {
             bounds_history: Vec::new(),
             out_of_bounds: Default::default(),
             last_var: NumVar::ONE,
+            eq_helper: Eq::default(),
         };
         *res.bounds.get_mut(NumVar::ONE) = Bounds {
             lower: Some(Rational32::ONE.into()),
@@ -420,9 +457,11 @@ pub(super) trait ConflictIter:
 
 impl<I: Iterator<Item = (NumVar, Rational32, bool, BoundDir)> + Clone> ConflictIter for I {}
 
-impl ModeledTableau {
+impl<Eq: EqHelperBase> ModeledTableau<Eq> {
     pub fn fresh_var(&mut self) -> NumVar {
         self.last_var.0 = self.last_var.0.checked_add(1).unwrap();
+        self.eq_helper.create_free(self.last_var);
+        Eq::assert_inv(self);
         self.last_var
     }
 
@@ -432,22 +471,16 @@ impl ModeledTableau {
             .map(|x| NumVar(x))
     }
 
-    pub fn sum(&mut self, elts: Sum, acts: &mut impl TheoryArgT) -> NumExp {
+    pub fn sum<M, T: TheoryArgT>(&mut self, elts: Sum, acts: &mut T) -> NumExp
+    where
+        Eq: EqHelper<M, T>,
+    {
         if elts.elts.is_empty() {
             return NumExp::from_rational(elts.offset);
         }
-        let (offset, mut defs) = self.defs.resolve(elts, |x| {
-            if let Bounds {
-                upper: Some(upper),
-                lower: Some(lower),
-            } = self.bounds.get(x)
-            {
-                if upper.base == lower.base && upper.epsilon.is_zero() && lower.epsilon.is_zero() {
-                    return Some(upper.base);
-                }
-            }
-            None
-        });
+        let (offset, mut defs) = self
+            .defs
+            .resolve(elts, |x| self.bounds.get(x).try_to_const());
 
         dedup_defs(&mut defs);
 
@@ -482,6 +515,7 @@ impl ModeledTableau {
                     }
                 ));
                 let (vars, coefficients) = self.defs.alloc.get(fresh);
+                self.eq_helper.create_bound(fresh, vars, coefficients);
                 let mut value: EpsilonRational = EpsilonRational::default();
                 for (&var, &coefficient) in vars.iter().zip(coefficients) {
                     let add = self.values.get(var) * coefficient;
@@ -489,6 +523,7 @@ impl ModeledTableau {
                 }
                 *self.values.get_mut(fresh) = value;
                 debug!("{fresh:?} starts with value {value:?}");
+                Eq::assert_inv(self);
                 NumExp {
                     var: Some(fresh),
                     mul: Rational32::ONE,
@@ -498,14 +533,18 @@ impl ModeledTableau {
         }
     }
 
-    pub fn add_bound(
+    pub(super) fn add_bound<M, T>(
         &mut self,
         var: NumVar,
         bound: Rational32,
         dir: BoundDir,
         strict: bool,
-        prop: impl FnOnce(NumVar, EpsilonRational, BoundDir) -> Result<(), ()>,
-    ) -> Result<(), ()> {
+        t: &mut T,
+        prop: impl FnOnce(NumVar, EpsilonRational, BoundDir, &mut T) -> Result<(), ()>,
+    ) -> Result<(), ()>
+    where
+        Eq: EqHelper<M, T>,
+    {
         let epsilon = match (dir, strict) {
             (_, false) => Rational32::ZERO,
             (BoundDir::Lower, true) => Rational32::ONE,
@@ -516,32 +555,46 @@ impl ModeledTableau {
             epsilon,
         };
         let existing = self.bounds.get_mut(var);
-        let value = self.values.get_mut(var);
+        let value = self.values.get(var);
         match dir {
             BoundDir::Lower => {
                 if existing.lower.is_none_or(|existing| existing < bound) {
-                    prop(var, bound, BoundDir::Lower)?;
+                    prop(var, bound, BoundDir::Lower, t)?;
                     self.bounds_history.push((var, *existing));
                     existing.lower = Some(bound);
                     debug!(
                         "Bounds are now {:?}* <= {var:?} = {value:?} <= {:?}",
                         existing.lower, existing.upper
                     );
-                    if *value < bound {
+                    self.eq_helper.update_bounds(
+                        var,
+                        *existing,
+                        &mut self.defs,
+                        &mut self.out_of_bounds,
+                        (&self.bounds, t),
+                    );
+                    if value < bound {
                         self.try_update(var, bound);
                     }
                 }
             }
             BoundDir::Upper => {
                 if existing.upper.is_none_or(|existing| existing > bound) {
-                    prop(var, bound, BoundDir::Upper)?;
+                    prop(var, bound, BoundDir::Upper, t)?;
                     self.bounds_history.push((var, *existing));
                     existing.upper = Some(bound);
                     debug!(
                         "Bounds are now {:?} <= {var:?} = {value:?} <= {:?}*",
                         existing.lower, existing.upper
                     );
-                    if *value > bound {
+                    self.eq_helper.update_bounds(
+                        var,
+                        *existing,
+                        &mut self.defs,
+                        &mut self.out_of_bounds,
+                        (&mut self.bounds, t),
+                    );
+                    if value > bound {
                         self.try_update(var, bound);
                     }
                 }
@@ -552,7 +605,7 @@ impl ModeledTableau {
 
     fn try_update(&mut self, var: NumVar, val: EpsilonRational) {
         if self.defs.is_free(var) {
-            self.update(var, val);
+            self.update(var, val)
         } else {
             self.out_of_bounds.heap_push(var)
         }
@@ -581,27 +634,70 @@ impl ModeledTableau {
         self.defs.alloc.buf = buf;
     }
 
-    fn pivot_update(&mut self, var: NumVar, val: EpsilonRational) -> Result<(), EpsilonRational> {
+    fn pivot_no_update<M, T>(&mut self, var: NumVar, t: &mut T)
+    where
+        Eq: EqHelper<M, T>,
+    {
+        debug!("Pivoting {var:?} without update");
+        let mut var_def = self.defs.resolve_var(var);
+        dedup_defs(&mut var_def);
+        for (swap_var, coefficient) in &mut var_def {
+            let swap_bounds = self.bounds.get(*swap_var);
+            if swap_bounds.try_to_const().is_none() {
+                self.defs.unassign_var(var);
+                let (sv, sc) = (*swap_var, *coefficient);
+                *swap_var = var;
+                *coefficient = -Rational32::ONE;
+                let neg_recip = -sc.recip();
+                self.eq_helper
+                    .pivot(var, sv, neg_recip, &mut self.defs, &self.bounds, t);
+                self.defs.assign_var(sv, var_def, neg_recip);
+                debug!("Pivoted {sv:?} := {:?}", self.defs.alloc.get(sv));
+                return;
+            }
+        }
+        self.defs.reuse_buf(var_def);
+    }
+
+    fn pivot_update<M, T>(
+        &mut self,
+        var: NumVar,
+        val: EpsilonRational,
+        t: &mut T,
+    ) -> Result<(), EpsilonRational>
+    where
+        Eq: EqHelper<M, T>,
+    {
         debug!("Pivot updating {var:?} to {val:?}");
         let mut var_def = self.defs.resolve_var(var);
         dedup_defs(&mut var_def);
         self.defs.unassign_var(var);
         let value = self.values.get_mut(var);
         let offset = val - *value;
-        let success = self.pivot(var, var_def, offset);
+        let success = self.pivot(var, var_def, offset, t);
         if success {
             self.update(var, val);
             Ok(())
         } else {
             // reassign var
-            self.defs.pop_to(self.defs.push_info() - 1);
+            let last = self.defs.def_log.pop().unwrap();
+            self.defs.pop_once(last);
             Err(offset)
         }
     }
 
     /// Finds a pivot and pivots if possilble returning true, otherwise it returns false
     /// Restores var_def to the buf in either case
-    fn pivot(&mut self, var: NumVar, mut var_def: Vec<BufElt>, offset: EpsilonRational) -> bool {
+    fn pivot<M, T>(
+        &mut self,
+        var: NumVar,
+        mut var_def: Vec<BufElt>,
+        offset: EpsilonRational,
+        t: &mut T,
+    ) -> bool
+    where
+        Eq: EqHelper<M, T>,
+    {
         debug!(
             "Looking for a pivot for {var:?} from {var_def:?} since it was offset by {offset:?}"
         );
@@ -613,7 +709,10 @@ impl ModeledTableau {
                 let (sv, sc) = (*swap_var, *coefficient);
                 *swap_var = var;
                 *coefficient = -Rational32::ONE;
-                self.defs.assign_var(sv, var_def, -sc.recip());
+                let neg_recip = -sc.recip();
+                self.eq_helper
+                    .pivot(var, sv, neg_recip, &mut self.defs, &self.bounds, t);
+                self.defs.assign_var(sv, var_def, neg_recip);
                 debug!("Pivoted {sv:?} := {:?}", self.defs.alloc.get(sv));
                 return true;
             }
@@ -623,7 +722,7 @@ impl ModeledTableau {
         false
     }
 
-    fn iter_bounds(&self, offset: EpsilonRational) -> impl ConflictIter + use<'_> {
+    fn iter_bounds(&self, offset: EpsilonRational) -> impl ConflictIter + use<'_, Eq> {
         let offset = if offset.base.is_zero() {
             offset.epsilon
         } else {
@@ -641,7 +740,13 @@ impl ModeledTableau {
             })
     }
 
-    pub fn check(&mut self) -> Result<(), impl ConflictIter + use<'_>> {
+    pub(super) fn check<M, T>(
+        &mut self,
+        t: &mut T,
+    ) -> Result<(), impl ConflictIter + use<'_, Eq, T, M>>
+    where
+        Eq: EqHelper<M, T>,
+    {
         while let Some(var) = self.out_of_bounds.heap_pop() {
             debug!(
                 "Checking {:?} <= {var:?} = {:?} <= {:?}",
@@ -649,9 +754,10 @@ impl ModeledTableau {
                 self.values.get(var),
                 self.bounds.get(var).upper
             );
-            if let Some(val) = self.bounds.get(var).nearest_bound(self.values.get(var)) {
+            let bounds = self.bounds.get(var);
+            if let Some(val) = bounds.nearest_bound(self.values.get(var)) {
                 debug_assert!(!self.defs.is_free(var));
-                let res = self.pivot_update(var, val);
+                let res = self.pivot_update(var, val, t);
                 if let Err(err) = res {
                     self.out_of_bounds.heap_push(var);
                     let err = self.iter_bounds(err);
@@ -664,8 +770,11 @@ impl ModeledTableau {
                     );
                     return Err(err);
                 }
+            } else if self.eq_helper.should_pivot(bounds) {
+                self.pivot_no_update(var, t);
             }
         }
+        Eq::assert_inv(self);
         Ok(())
     }
 
@@ -674,13 +783,26 @@ impl ModeledTableau {
     }
 
     pub fn pop_bounds_to(&mut self, bounds_len: u32) {
-        for (var, bounds) in self.bounds_history.drain(bounds_len as usize..).rev() {
-            *self.bounds.get_mut(var) = bounds
+        for (var, bounds) in self.bounds_history[bounds_len as usize..]
+            .iter()
+            .copied()
+            .rev()
+        {
+            let b = self.bounds.get_mut(var);
+            self.eq_helper.un_update_bounds(var, *b, &mut self.defs);
+            *b = bounds;
         }
+        self.bounds_history.truncate(bounds_len as usize);
     }
 
     pub fn pop_defs_to(&mut self, defs_info: u32) {
-        self.defs.pop_to(defs_info);
+        while self.defs.def_log.len() > defs_info as usize {
+            let x = self.defs.def_log.pop().unwrap();
+            self.eq_helper
+                .handle_defs_pop(x, &mut self.defs, &self.bounds);
+            self.defs.pop_once(x);
+            Eq::assert_inv(self);
+        }
     }
 
     pub fn clear(&mut self) {
@@ -760,5 +882,286 @@ pub(super) fn ineq(dir: BoundDir, strict: bool) -> &'static str {
         (BoundDir::Upper, false) => "<=",
         (BoundDir::Lower, true) => ">",
         (BoundDir::Lower, false) => ">=",
+    }
+}
+
+#[allow(unused_variables)]
+#[allow(private_interfaces)]
+pub trait EqHelperBase: Clone + Default + 'static {
+    fn create_bound(&mut self, bound: NumVar, vars: &[NumVar], coefficients: &[Rational32]) {}
+
+    fn create_free(&mut self, free: NumVar) {}
+    fn should_pivot(&mut self, bounds: Bounds) -> bool {
+        false
+    }
+    fn un_update_bounds(&mut self, var: NumVar, bounds: Bounds, defs: &mut Tableau) {}
+
+    fn handle_defs_pop(
+        &mut self,
+        info: (NumVar, u32, u32),
+        defs: &mut Tableau,
+        bounds: &DefaultVec<Bounds, NumVar>,
+    ) {
+    }
+    fn assert_inv(this: &ModeledTableau<Self>) {}
+}
+type BoundsVec = DefaultVec<Bounds, NumVar>;
+#[allow(unused_variables)]
+#[allow(private_interfaces)]
+pub trait EqHelper<M, T>: EqHelperBase {
+    fn update_bounds(
+        &mut self,
+        var: NumVar,
+        bounds: Bounds,
+        defs: &mut Tableau,
+        oob: &mut NumVarOrdering,
+        t: (&BoundsVec, &mut T),
+    ) {
+    }
+    fn pivot(
+        &mut self,
+        freeing: NumVar,
+        binding: NumVar,
+        neg_recip: Rational32,
+        defs: &mut Tableau,
+        bounds: &DefaultVec<Bounds, NumVar>,
+        t: &mut T,
+    ) {
+    }
+}
+
+impl EqHelperBase for () {}
+impl<M, T> EqHelper<M, T> for () {}
+
+#[cfg(feature = "uflra")]
+mod tracker {
+    use super::*;
+    use crate::euf::euf_th::EufTheoryArgT;
+    use crate::lra::prime_field::{FieldElt, HashElt, num_var_to_field_elt, rational_to_field_elt};
+    use crate::recorder::LoggingRecorder;
+    use crate::theory::NeverTheoryArg;
+    use crate::util::DefaultHashBuilder;
+    use flatmultimap::FlatMultimap;
+    use log::warn;
+    use plat_egg::Id;
+
+    #[derive(Clone)]
+    pub struct EqTracker {
+        hashes: DefaultVec<FieldElt, NumVar>,
+        uses: BTreeMap<(NumVar, Id), (FieldElt, FieldElt)>,
+        map: FlatMultimap<HashElt, Id, DefaultHashBuilder>,
+    }
+
+    impl Default for EqTracker {
+        fn default() -> Self {
+            let mut hashes = DefaultVec::default();
+            *hashes.get_mut(NumVar::ONE) = FieldElt::ONE;
+            EqTracker {
+                hashes,
+                uses: Default::default(),
+                map: Default::default(),
+            }
+        }
+    }
+
+    type Never = NeverTheoryArg<(), LoggingRecorder, ()>;
+
+    #[allow(private_interfaces)]
+    impl EqHelperBase for EqTracker {
+        fn create_bound(&mut self, bound: NumVar, vars: &[NumVar], coefficients: &[Rational32]) {
+            let value = self.field_elt_for_bound(vars, coefficients);
+            *self.hashes.get_mut(bound) = value
+        }
+
+        fn create_free(&mut self, free: NumVar) {
+            *self.hashes.get_mut(free) = num_var_to_field_elt(free)
+        }
+
+        fn should_pivot(&mut self, bounds: Bounds) -> bool {
+            bounds.try_to_const().is_some()
+        }
+
+        fn un_update_bounds(&mut self, var: NumVar, bounds: Bounds, defs: &mut Tableau) {
+            if let Some(bound) = bounds.try_to_const() {
+                if !defs.is_free(var) {
+                    return; // TODO vars that must have a specific value should always be free so panic here
+                }
+                debug_assert_eq!(self.hashes.get(var), rational_to_field_elt(bound));
+                let new_val = num_var_to_field_elt(var);
+                self.update::<(), Never>(var, new_val, defs, None);
+            }
+        }
+
+        fn handle_defs_pop(
+            &mut self,
+            (v, start, end): (NumVar, u32, u32),
+            defs: &mut Tableau,
+            bounds: &BoundsVec,
+        ) {
+            let revert_to = self.field_elt_for_var(v, (start, end), &bounds, &defs);
+            self.update::<(), Never>(v, revert_to, defs, None);
+        }
+
+        fn assert_inv(this: &ModeledTableau<Self>) {
+            for var in (NumVar::ONE.0..(this.last_var.0.checked_add(1).unwrap()))
+                .into_iter()
+                .map(NumVar)
+            {
+                let hash = this.eq_helper.hashes.get(var);
+                let b = this.bounds.get(var);
+                if let Some(b) = b.try_to_const() {
+                    assert_eq!(hash, rational_to_field_elt(b), "failed {var:?}");
+                } else if this.defs.is_free(var) {
+                    assert_eq!(hash, num_var_to_field_elt(var), "failed {var:?}");
+                } else {
+                    let (vars, coefficients) = this.defs.alloc.get(var);
+                    let expected = this.eq_helper.field_elt_for_bound(vars, coefficients);
+                    assert_eq!(hash, expected, "failed {var:?}")
+                }
+            }
+        }
+    }
+
+    #[allow(private_interfaces)]
+    impl<M, T: EufTheoryArgT<M, NumExp>> EqHelper<M, T> for EqTracker {
+        fn update_bounds(
+            &mut self,
+            var: NumVar,
+            bounds: Bounds,
+            defs: &mut Tableau,
+            oob: &mut NumVarOrdering,
+            t: (&BoundsVec, &mut T),
+        ) {
+            if let Some(bound) = bounds.try_to_const() {
+                if !defs.is_free(var) {
+                    oob.heap_push(var);
+                } else {
+                    debug_assert_eq!(self.hashes.get(var), num_var_to_field_elt(var));
+                    let new_val = rational_to_field_elt(bound);
+                    self.update(var, new_val, defs, Some(t));
+                }
+            }
+        }
+
+        fn pivot(
+            &mut self,
+            freeing: NumVar,
+            binding: NumVar,
+            neg_recip: Rational32,
+            defs: &mut Tableau,
+            bounds: &BoundsVec,
+            t: &mut T,
+        ) {
+            let old_binding_elt = self.hashes.get(binding);
+            debug_assert_eq!(old_binding_elt, num_var_to_field_elt(binding));
+            let old_freeing_elt = self.hashes.get(freeing);
+            let new_freeing_elt = if let Some(bound) = bounds.get(freeing).try_to_const() {
+                rational_to_field_elt(bound)
+            } else {
+                num_var_to_field_elt(freeing)
+            };
+            let new_binding_elt = (old_freeing_elt - new_freeing_elt)
+                * rational_to_field_elt(neg_recip)
+                + old_binding_elt;
+            self.update(freeing, new_freeing_elt, defs, Some((bounds, t)));
+            self.update(binding, new_binding_elt, defs, Some((bounds, t)));
+        }
+    }
+
+    impl EqTracker {
+        fn update<M, T: EufTheoryArgT<M, NumExp>>(
+            &mut self,
+            var: NumVar,
+            val: FieldElt,
+            defs: &mut Tableau,
+            mut dir: Option<(&BoundsVec, &mut T)>,
+        ) {
+            {
+                #[repr(packed(4))]
+                struct BufElt(NumVar, FieldElt);
+
+                debug!("Updating {var:?}'s eq hash to {val:?}");
+                let value = self.hashes.get_mut(var);
+                let offset = val - *value;
+                let mut buf = VecExt::recycle(defs.alloc.take_buf());
+                let mut next = Some(BufElt(var, offset));
+                while let Some(BufElt(var, offset)) = next {
+                    let v_value = self.hashes.get_mut(var);
+                    let old_value = *v_value;
+                    *v_value = old_value + offset;
+                    debug!("Updating {var:?} to {v_value:?} = {old_value:?} + {offset:?}");
+                    for (&(_, id), &(mul, add)) in
+                        self.uses.range((var, Id::default())..(var, Id::MAX))
+                    {
+                        let old = HashElt(old_value * mul + add);
+                        let new = HashElt(*v_value * mul + add);
+                        let removed = self.map.set_remove(&old, &id);
+                        if let Some((bounds, ref mut euf)) = dir {
+                            if removed.is_none() {
+                                continue;
+                            }
+                            let res = self.map.get_try_for_each(&new, |&id2| {
+                                let n = euf.resolve(id).unwrap();
+                                let n2 = euf.resolve(id2).unwrap();
+                                if defs.deep_eq(*n, *n2, |x| bounds.get(x).try_to_const()) {
+                                    euf.union(id, id2);
+                                    Err(())
+                                } else {
+                                    warn!("Collision");
+                                    Ok(())
+                                }
+                            });
+                            if res.is_ok() {
+                                self.map.force_add(new, id);
+                            }
+                        } else {
+                            self.map.force_add(new, id)
+                        }
+                    }
+                    for &mut (v, n) in defs.usages.get_mut(var) {
+                        let v_offset: FieldElt = offset
+                            * rational_to_field_elt(defs.alloc.get_coefficients(v)[n as usize]);
+                        debug_assert_eq!(var, defs.alloc.get_vars(v)[n as usize]);
+                        buf.push(BufElt(v, v_offset))
+                    }
+                    next = buf.pop();
+                }
+                defs.alloc.buf = VecExt::recycle(buf);
+            }
+        }
+
+        fn field_elt_for_bound(&self, vars: &[NumVar], coefficients: &[Rational32]) -> FieldElt {
+            let mut value: FieldElt = FieldElt::ZERO;
+            for (&var, &coefficient) in vars.iter().zip(coefficients) {
+                let add = self.hashes.get(var) * rational_to_field_elt(coefficient);
+                value = value + add;
+            }
+            value
+        }
+
+        fn field_elt_for_var(
+            &self,
+            var: NumVar,
+            span: (u32, u32),
+            bounds: &DefaultVec<Bounds, NumVar>,
+            defs: &Tableau,
+        ) -> FieldElt {
+            if span == (0, 0) {
+                let b = bounds.get(var);
+                if let (Some(lb), Some(ub)) = (b.lower, b.upper)
+                    && lb == ub
+                {
+                    assert_eq!(lb.epsilon, Rational32::ZERO);
+                    rational_to_field_elt(lb.base)
+                } else {
+                    num_var_to_field_elt(var)
+                }
+            } else {
+                let range = span.0 as usize..span.1 as usize;
+                let vars = &defs.alloc.vars[range.clone()];
+                let coefficients = &defs.alloc.coefficients[range];
+                self.field_elt_for_bound(vars, coefficients)
+            }
+        }
     }
 }

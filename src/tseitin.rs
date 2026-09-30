@@ -7,10 +7,11 @@ use crate::parser_fragment::{ParserFragment, exact_args, index_iter, mandatory_a
 use crate::recorder::{ClauseKind, Recorder};
 use crate::reuse_mem::ReuseMem;
 use crate::solver::SolverCollapse;
-use crate::theory::{Incremental, TheoryArgRaw, TheoryArgT, TheoryWrapper};
+use crate::theory::{Incremental, NeverTheoryArg, TheoryArgRaw, TheoryArgT, TheoryWrapper};
 use crate::util::extend_result;
-use crate::{AddSexpError, BLit, BoolExp, Disjunction, ExpLike, SubExp, SuperExp};
+use crate::{AddSexpError, BoolExp, Disjunction, ExpLike, SubExp, SuperExp};
 use alloc::vec::Vec;
+use ambassador::delegatable_trait;
 use core::cmp::Ordering;
 use log::debug;
 use platsat::{Lit, lbool};
@@ -29,6 +30,7 @@ impl<Th: Incremental, R> TheoryWrapper<Th, R> {
     }
 }
 
+#[delegatable_trait]
 pub trait SatExplainTheoryArgT: TheoryArgT {
     fn clause_builder(&mut self) -> &mut Vec<Lit>;
 }
@@ -111,7 +113,7 @@ pub trait SatTheoryArgT: TheoryArgT {
     /// Optimizes `lits` by removing duplicates
     /// Returns `true` if lits are absorbing (eg `(and false)` `(or true)`)
     #[doc(hidden)]
-    fn optimize_junction(&mut self, lits: &mut Vec<BLit>, is_and: bool) -> bool {
+    fn optimize_junction(&mut self, lits: &mut Vec<Lit>, is_and: bool) -> bool {
         lits.sort_unstable();
 
         let mut last_lit = Lit::UNDEF;
@@ -136,10 +138,10 @@ pub trait SatTheoryArgT: TheoryArgT {
     #[doc(hidden)]
     fn bind_junction(
         &mut self,
-        lits: &mut Vec<BLit>,
+        lits: &mut Vec<Lit>,
         is_and: bool,
         ctx: ExprContext<BoolExp>,
-        target: BLit,
+        target: Lit,
     ) {
         for lit in &mut *lits {
             if ctx != ExprContext::Approx(is_and) {
@@ -166,7 +168,7 @@ pub trait SatTheoryArgT: TheoryArgT {
     #[doc(hidden)]
     fn andor_reuse(
         &mut self,
-        lits: &mut Vec<BLit>,
+        lits: &mut Vec<Lit>,
         is_and: bool,
         absorbing: bool,
         ctx: ExprContext<BoolExp>,
@@ -199,7 +201,7 @@ pub trait SatTheoryArgT: TheoryArgT {
     }
 
     #[doc(hidden)]
-    fn assert_junction_eq_inner(&mut self, lits: &mut Vec<BLit>, is_and: bool, target: BoolExp) {
+    fn assert_junction_eq_inner(&mut self, lits: &mut Vec<Lit>, is_and: bool, target: BoolExp) {
         match self.canonize(target).to_lit() {
             Ok(target) => {
                 let mut approx = ExprContext::Exact;
@@ -373,6 +375,24 @@ pub trait SatTheoryArgT: TheoryArgT {
     }
 }
 
+pub trait SatTheoryArgR: SatTheoryArgT {
+    type Target<'a>: SatTheoryArgR
+    where
+        Self: 'a;
+
+    fn reborrow(&mut self) -> Self::Target<'_>;
+}
+
+impl<'a, M, R: Recorder> SatTheoryArgR for TheoryArgRaw<'a, SatTheoryArg<'a>, M, R> {
+    type Target<'b>
+        = TheoryArgRaw<'b, SatTheoryArg<'b>, M, R>
+    where
+        Self: 'b;
+
+    fn reborrow(&mut self) -> Self::Target<'_> {
+        self.map(SatTheoryArg::reborrow)
+    }
+}
 impl<'a, M, R: Recorder> SatTheoryArgT for TheoryArgRaw<'a, SatTheoryArg<'a>, M, R> {
     type Explain<'b>
         = TheoryArgRaw<'b, &'b mut SatExplainTheoryArg, M, R>
@@ -393,6 +413,35 @@ impl<'a, M, R: Recorder> SatTheoryArgT for TheoryArgRaw<'a, SatTheoryArg<'a>, M,
 
     fn for_explain(&mut self) -> Self::Explain<'_> {
         self.map(|sat| sat.explain_arg())
+    }
+}
+
+impl<M, R: Recorder, E> SatTheoryArgT for NeverTheoryArg<M, R, E> {
+    type Explain<'b>
+        = Self
+    where
+        Self: 'b;
+
+    fn sat_mut(&mut self) -> (SatTheoryArg<'_>, &mut Self::R) {
+        self.diverge()
+    }
+
+    fn sat(&self) -> &SatTheoryArg<'_> {
+        self.diverge()
+    }
+
+    fn in_model(&self) -> bool {
+        self.diverge()
+    }
+
+    fn for_explain(&mut self) -> Self::Explain<'_> {
+        self.diverge()
+    }
+}
+
+impl<M, R: Recorder, E> SatExplainTheoryArgT for NeverTheoryArg<M, R, E> {
+    fn clause_builder(&mut self) -> &mut Vec<Lit> {
+        self.diverge()
     }
 }
 pub struct TseitenMarker;

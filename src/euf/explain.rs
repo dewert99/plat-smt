@@ -5,16 +5,15 @@ use platsat::Lit;
 use std::fmt::{Debug, Formatter};
 use std::ops::{Deref, DerefMut};
 
-use super::egraph::{SymbolLang, EQ_OP};
-use super::euf::EClass;
+use super::egraph::{EClassT, EQ_OP, SymbolLang};
 use crate::euf::approx_bitset::{ApproxBitSet, IdSet};
-use crate::util::{minmax, DefaultHashBuilder};
+use crate::util::{DefaultHashBuilder, minmax};
 use hashbrown::hash_map::Entry;
 use hashbrown::{HashMap, HashSet};
 use log::{debug, trace};
 use perfect_derive::perfect_derive;
 use plat_egg::raw::RawEGraph;
-use plat_egg::{raw::Language, Id};
+use plat_egg::{Id, raw::Language};
 use smallvec::SmallVec;
 
 // either a `Lit` that represents the equality
@@ -346,11 +345,8 @@ impl<'a> InterpCtx<'a> {
     }
 }
 
-impl<'x>
-    ExplainStateInner<
-        'x,
-        &'x RawEGraph<SymbolLang, EClass, plat_egg::raw::semi_persistent1::UndoLog>,
-    >
+impl<'x, C: EClassT>
+    ExplainStateInner<'x, &'x RawEGraph<SymbolLang, C, plat_egg::raw::semi_persistent1::UndoLog>>
 {
     // Requires `left` != `right`
     // `result.1` is true when the `old_root` from `result.0` corresponds to left
@@ -713,8 +709,8 @@ impl<'x>
     }
 }
 
-impl<'x>
-    ExplainState<'x, &'x RawEGraph<SymbolLang, EClass, plat_egg::raw::semi_persistent1::UndoLog>>
+impl<'x, C: EClassT>
+    ExplainState<'x, &'x RawEGraph<SymbolLang, C, plat_egg::raw::semi_persistent1::UndoLog>>
 {
     pub(crate) fn used_congruence(&self) -> bool {
         self.used_congruence
@@ -750,7 +746,7 @@ impl<'x>
 
                 let ids = minmax(left, right);
                 if assoc_union < self.last_unions
-                    && !matches!(self.raw.get_class(left).deref(), EClass::Bool(_))
+                    && self.raw.get_class(left).allows_fresh_equalities()
                 {
                     // avoid equalities between booleans
                     // this also prevents creating equalities about already created equalities,

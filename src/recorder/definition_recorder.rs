@@ -1,10 +1,10 @@
 use crate::intern::{
-    DisplayInterned, InternInfo, RecInfo, RecInfoArg, Symbol, FALSE_SYM, TRUE_SYM,
+    DisplayInterned, FALSE_SYM, InternInfo, RecInfo, RecInfoArg, Symbol, TRUE_SYM,
 };
 use crate::recorder::{ClauseKind, Recorder};
 use crate::rexp::{AsRexp, NamespaceVar, Rexp};
 use crate::theory::Incremental;
-use crate::util::{display_sexp, ArrayWrite, DisplayFn, HashMap};
+use crate::util::{ArrayWrite, DisplayFn, HashMap, display_sexp};
 use crate::{BoolExp, ExpLike};
 use alloc::vec::Vec;
 use core::cmp::max;
@@ -12,7 +12,7 @@ use core::fmt::Write;
 use core::fmt::{Display, Formatter};
 use core::num::{NonZeroU32, Saturating};
 use default_vec2::DefaultVec;
-use log::{debug, trace, Level};
+use log::{Level, debug, trace};
 use platsat::Lit;
 use smallvec::SmallVec;
 
