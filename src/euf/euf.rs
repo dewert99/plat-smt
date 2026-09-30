@@ -25,7 +25,8 @@ pub type Exp<Th = BoolExp> = EitherExp<Th, UExp>;
 pub(super) type LitVec = smallvec::SmallVec<[Lit; 4]>;
 use crate::collapse::LeftMarker;
 use crate::empty_theory::EmptyTheory;
-use crate::euf::euf_th::{BoolClass, EufTh, EufTheoryArg, FullEufTh, MergeInfo};
+use crate::euf::bool_euf_th::{BoolClass, MergeInfo};
+use crate::euf::euf_th::{EufThBase, EufTheoryArg, FullEufTh};
 use crate::full_theory::FunctionAssignmentT;
 use crate::recorder::{DefExp, InterpolateArg};
 use crate::tseitin::{SatExplainTheoryArgT, SatTheoryArgR, SatTheoryArgT};
@@ -101,7 +102,7 @@ impl ConstDefault for LitId {
 }
 
 #[perfect_derive(Debug, Clone, PartialEq)]
-pub(super) enum EClass<Th: EufTh = EmptyTheory> {
+pub(super) enum EClass<Th: EufThBase = EmptyTheory> {
     Uninterpreted(Sort),
     Th(Th::EClass),
     /// EClass that propagates whenever it is merged
@@ -109,7 +110,7 @@ pub(super) enum EClass<Th: EufTh = EmptyTheory> {
     Singleton(BoolExp),
 }
 
-impl<Th: EufTh> EClassT for EClass<Th> {
+impl<Th: EufThBase> EClassT for EClass<Th> {
     type MergeInfo = <Th::EClass as EClassT>::MergeInfo;
 
     fn allows_fresh_equalities(&self) -> bool {
@@ -128,7 +129,7 @@ impl<Th: EufTh> EClassT for EClass<Th> {
     }
 }
 
-impl<Th: EufTh> EClass<Th> {
+impl<Th: EufThBase> EClass<Th> {
     fn to_exp(&self, id: Id, th: &Th) -> Exp<Th::Exp> {
         match self {
             EClass::Th(class) => th.eclass_to_exp(class),
@@ -196,7 +197,7 @@ impl LitInfo {
 }
 
 #[perfect_derive(Debug, Default, Clone)]
-pub struct Euf<Q = (), Th: FullEufTh = EmptyTheory> {
+pub struct Euf<Q = (), Th: EufThBase = EmptyTheory> {
     pub(super) egraph: EGraph<EClass<Th>>,
     history: Vec<<Th::EClass as EClassT>::MergeInfo>,
     pub(super) lit: LitInfo,
@@ -212,8 +213,13 @@ pub struct Euf<Q = (), Th: FullEufTh = EmptyTheory> {
 type Result = core::result::Result<(), ()>;
 type CResult = core::result::Result<(), Option<(Id, Id)>>;
 
-impl<Q: Incremental, Th: FullEufTh> Incremental for Euf<Q, Th> {
-    type LevelMarker = ((PushInfo, Q::LevelMarker), Th::LevelMarker);
+pub(super) type EufLevelMarker<Q, Th> = (
+    (PushInfo, <Q as Incremental>::LevelMarker),
+    <Th as Incremental>::LevelMarker,
+);
+
+impl<Q: Incremental, Th: EufThBase> Incremental for Euf<Q, Th> {
+    type LevelMarker = EufLevelMarker<Q, Th>;
 
     fn create_level(&self) -> ((PushInfo, Q::LevelMarker), Th::LevelMarker) {
         let base = PushInfo {
@@ -282,7 +288,7 @@ impl<Q: Incremental, Th: FullEufTh> Incremental for Euf<Q, Th> {
 impl<
     'a,
     Q: Incremental,
-    Th: FullEufTh,
+    Th: FullEufTh<A>,
     A: SatTheoryArgR<M: TupleExtract<LeftMarker<LeftMarker<P>>, PushInfo>>,
     P,
 > Theory<A, A::Explain<'a>, P> for Euf<Q, Th>
@@ -436,7 +442,7 @@ impl<
     }
 }
 
-pub(crate) fn merge_fn<'a, Th: EufTh>(
+pub(crate) fn merge_fn<'a, Th: EufThBase>(
     acts: &'a mut impl SatTheoryArgT,
     history: &'a mut Vec<<Th::EClass as EClassT>::MergeInfo>,
     lit: &'a mut LitInfo,
@@ -474,11 +480,14 @@ pub(crate) fn merge_fn<'a, Th: EufTh>(
         ),
     }
 }
-impl<Q: Incremental, Th: FullEufTh> Euf<Q, Th> {
+impl<Q: Incremental, Th: EufThBase> Euf<Q, Th> {
     pub(crate) fn lift_th<'a, A: SatTheoryArgR>(
         &'a mut self,
         arg: &'a mut A,
-    ) -> (&'a mut Th, EufTheoryArg<'a, A::Target<'a>, Th>) {
+    ) -> (&'a mut Th, EufTheoryArg<'a, A::Target<'a>, Th>)
+    where
+        Th: FullEufTh<A>,
+    {
         (
             &mut self.th,
             EufTheoryArg {
@@ -492,13 +501,15 @@ impl<Q: Incremental, Th: FullEufTh> Euf<Q, Th> {
     pub(super) fn find(&self, id: Id) -> Id {
         self.egraph.find(id)
     }
-    pub(super) fn finish_eq_node(
+    pub(super) fn finish_eq_node<A: SatTheoryArgR>(
         &mut self,
         l: Lit,
         cid1: Id,
         cid2: Id,
-        acts: &mut impl SatTheoryArgR,
-    ) {
+        acts: &mut A,
+    ) where
+        Th: FullEufTh<A>,
+    {
         debug!(
             "{} is defined as (= {} {})",
             BoolExp::unknown(l),
@@ -512,7 +523,10 @@ impl<Q: Incremental, Th: FullEufTh> Euf<Q, Th> {
     }
 
     // union one of (= alt_id alt_id) or (= id id) with true
-    fn make_equality_true(&mut self, id: Id, alt_id: Id, acts: &mut impl SatTheoryArgR) {
+    fn make_equality_true<A: SatTheoryArgR>(&mut self, id: Id, alt_id: Id, acts: &mut A)
+    where
+        Th: FullEufTh<A>,
+    {
         let candidate = SymbolLang::new(EQ_OP, children![alt_id, alt_id]);
         let eq_self = match self.egraph.lookup(candidate) {
             Some(eq_self) => eq_self,
@@ -539,12 +553,15 @@ impl<Q: Incremental, Th: FullEufTh> Euf<Q, Th> {
         id_for_bool(b)
     }
 
-    pub(super) fn id_for_exp(
+    pub(super) fn id_for_exp<A: SatTheoryArgR>(
         &mut self,
         exp: Exp<Th::Exp>,
-        acts: &mut impl SatTheoryArgR,
+        acts: &mut A,
         weak: bool,
-    ) -> Id {
+    ) -> Id
+    where
+        Th: FullEufTh<A>,
+    {
         match exp {
             Exp::Left(exp) => {
                 let (th, mut acts) = self.lift_th(acts);
@@ -554,12 +571,14 @@ impl<Q: Incremental, Th: FullEufTh> Euf<Q, Th> {
         }
     }
 
-    pub(super) fn union_exp<P>(
+    pub(super) fn union_exp<P, A: SatTheoryArgR<M: TupleExtract<P, PushInfo>>>(
         &mut self,
         exp: Exp<Th::Exp>,
         id: Id,
-        acts: &mut impl SatTheoryArgR<M: TupleExtract<P, PushInfo>>,
-    ) {
+        acts: &mut A,
+    ) where
+        Th: FullEufTh<A>,
+    {
         debug!("Union exp {exp:?}, @v{id:?}");
         let exp_id = match exp {
             Exp::Left(b) => {
@@ -575,11 +594,14 @@ impl<Q: Incremental, Th: FullEufTh> Euf<Q, Th> {
         let _ = self.union(acts, id, exp_id, Justification::NOOP);
     }
 
-    pub(super) fn resolve_children(
+    pub(super) fn resolve_children<A: SatTheoryArgR>(
         &mut self,
         children: impl Iterator<Item = Exp<Th::Exp>>,
-        acts: &mut impl SatTheoryArgR,
-    ) -> Children {
+        acts: &mut A,
+    ) -> Children
+    where
+        Th: FullEufTh<A>,
+    {
         children.map(|x| self.id_for_exp(x, acts, false)).collect()
     }
 
@@ -638,7 +660,10 @@ impl<Q: Incremental, Th: FullEufTh> Euf<Q, Th> {
         children: Children,
         lit: Lit,
         acts: &mut A,
-    ) -> (Id, Result) {
+    ) -> (Id, Result)
+    where
+        Th: FullEufTh<A>,
+    {
         let mut conflict = None;
         // this won't be used since the new class won't be EClass::Singleton
         let dummy_id = Id::MAX;

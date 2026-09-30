@@ -6,13 +6,12 @@ use crate::parser_fragment::ParserFragment;
 use crate::recorder::Recorder;
 use crate::solver::SolverWithBound;
 use crate::theory::{ExplainTheoryArg, Incremental, Theory, TheoryArg};
-use crate::util::{Either, HashMap};
+use crate::util::{Either, HashMap, InfallibleIter};
 use crate::{AddSexpError, BoolExp, Fresh, OuterSolver, Solver, Sort, SuperExp};
 use alloc::boxed::Box;
 use core::convert::Infallible;
 use core::fmt;
 use core::fmt::Formatter;
-use core::marker::PhantomData;
 use platsat::{Lit, SolverInterface, lbool};
 use smallvec::SmallVec;
 use std::iter;
@@ -111,16 +110,6 @@ pub trait FullTheory<R>: Incremental
         solver
             .sat
             .solve_limited_preserving_trail_th(&mut solver.th, assumptions)
-    }
-}
-
-struct InfallibleIter<T>(Infallible, PhantomData<T>);
-
-impl<T> Iterator for InfallibleIter<T> {
-    type Item = T;
-
-    fn next(&mut self) -> Option<Self::Item> {
-        match self.0 {}
     }
 }
 

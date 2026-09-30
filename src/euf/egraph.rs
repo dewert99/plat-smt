@@ -22,8 +22,8 @@ use crate::intern::EQ_SYM;
 use crate::recorder::{DefExp, InterpolateArg};
 pub use smallvec::smallvec as children;
 
-pub trait EClassT: Debug {
-    type MergeInfo;
+pub trait EClassT: Debug + Clone {
+    type MergeInfo: Clone;
     fn allows_fresh_equalities(&self) -> bool {
         true
     }

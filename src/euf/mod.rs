@@ -5,6 +5,7 @@ mod euf_impl;
 mod explain;
 
 mod approx_bitset;
+mod bool_euf_th;
 mod egraph;
 pub mod euf_th;
 pub mod quantifier_applier;

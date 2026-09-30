@@ -1,9 +1,10 @@
 use super::egraph::{Children, EQ_OP, Op, SymbolLang, children};
-use super::euf::{EClass, Euf, Exp, PushInfo, litvec};
+use super::euf::{EClass, Euf, EufLevelMarker, Exp, PushInfo};
 use super::explain::Justification;
 use crate::collapse::{BaseMarker, Collapse, CollapseOut, ExprContext, LeftMarker};
 use crate::core_ops::{DefaultIte, DistinctElts, DistinctPf, Eq, EqPf, ItePf, RawDistinct};
-use crate::euf::euf_th::{BoolClass, EufTh};
+use crate::euf::bool_euf_th::BoolClass;
+use crate::euf::euf_th::{EufThBase, FullEufTh};
 use crate::euf::quantifier_applier::QuantifierChecker;
 use crate::exp::Fresh;
 use crate::full_theory::{
@@ -17,7 +18,7 @@ use crate::parser_fragment::{ParserFragment, PfResult, index_iter};
 use crate::recorder::{Recorder, dep_checker};
 use crate::rexp::{AsRexp, Namespace, NamespaceVar, Rexp, rexp_debug};
 use crate::solver::{SolverCollapse, SolverWithBound};
-use crate::theory::{Incremental, TupleExtract};
+use crate::theory::{Incremental, TheoryArg, TupleExtract};
 use crate::tseitin::{BoolOpPf, SatTheoryArgR};
 use crate::util::{HashMap, pairwise_sym};
 use crate::{AddSexpError, BoolExp, Conjunction, ExpLike, HasSort, Solver, Sort, SubExp, SuperExp};
@@ -104,20 +105,25 @@ impl ExpLike for UExp {
 
 pub struct EufQExtractor;
 
-impl<Q> QExtractor<Euf<Q>> for EufQExtractor {
+impl<Q, Th: EufThBase> QExtractor<Euf<Q, Th>> for EufQExtractor {
     type Target = Q;
 
-    fn extract(t: &mut Euf<Q>) -> &mut Self::Target {
+    fn extract(t: &mut Euf<Q, Th>) -> &mut Self::Target {
         &mut t.q
     }
 
-    fn extract_shr(t: &Euf<Q>) -> &Self::Target {
+    fn extract_shr(t: &Euf<Q, Th>) -> &Self::Target {
         &t.q
     }
 }
 
-impl<R: Recorder, Q: Incremental + Clone + 'static> FullTheory<R> for Euf<Q> {
-    type Exp = Exp;
+impl<
+    R: Recorder,
+    Q: Incremental + Clone + 'static,
+    Th: for<'a> FullEufTh<TheoryArg<'a, EufLevelMarker<Q, Th>, R>> + Clone + 'static,
+> FullTheory<R> for Euf<Q, Th>
+{
+    type Exp = Exp<Th::Exp>;
 
     type FnSort = FnSort;
 
@@ -137,8 +143,16 @@ impl<R: Recorder, Q: Incremental + Clone + 'static> FullTheory<R> for Euf<Q> {
     }
 }
 
-impl<Q: Incremental> Euf<Q> {
-    fn model_sorted_fn(&mut self, f: Op, children: Children, target_sort: Sort) -> (Exp, bool) {
+impl<Q: Incremental, Th: EufThBase> Euf<Q, Th> {
+    fn model_sorted_fn<A: SatTheoryArgR>(
+        &mut self,
+        f: Op,
+        children: Children,
+        target_sort: Sort,
+    ) -> (Exp<Th::Exp>, bool)
+    where
+        Th: FullEufTh<A>,
+    {
         let node = SymbolLang::new(f, children);
         if let Some(id) = self.egraph.lookup(node) {
             (self.id_to_exp(id), false)
@@ -147,14 +161,17 @@ impl<Q: Incremental> Euf<Q> {
         }
     }
 
-    fn sorted_fn<P>(
+    fn sorted_fn<A: SatTheoryArgR<M: TupleExtract<P, PushInfo>>, P>(
         &mut self,
         f: Op,
         children: Children,
         target_sort: Sort,
-        ctx: ExprContext<Exp>,
-        acts: &mut impl SatTheoryArgR<M: TupleExtract<P, PushInfo>>,
-    ) -> (Exp, bool) {
+        ctx: ExprContext<Exp<Th::Exp>>,
+        acts: &mut A,
+    ) -> (Exp<Th::Exp>, bool)
+    where
+        Th: FullEufTh<A>,
+    {
         if acts.in_model() {
             return self.model_sorted_fn(f, children, target_sort);
         }
@@ -166,17 +183,14 @@ impl<Q: Incremental> Euf<Q> {
                 children.iter().map(|id| UExp::new(*id, target_sort)),
             );
             added = true;
-            if target_sort == BOOL_SORT {
-                let lits = if let ExprContext::AssertEq(_) = ctx {
-                    litvec![]
-                } else {
-                    let l = Lit::new(acts.new_var_default(), true);
-                    self.lit.add_id_to_lit(id, l, false);
-                    acts.log_def_exp(BoolExp::unknown(l), UExp::new(id, BOOL_SORT));
-                    litvec![l]
-                };
-
-                EClass::Th(BoolClass::Unknown(lits))
+            if Th::Exp::can_have_sort(target_sort) {
+                EClass::Th(self.th.create_fresh_class_for_empty_theory(
+                    acts,
+                    target_sort,
+                    ctx.downcast(),
+                    id,
+                    |lit, id| self.lit.add_id_to_lit(id, lit, false),
+                ))
             } else {
                 EClass::Uninterpreted(target_sort)
             }
@@ -202,13 +216,16 @@ impl<Q: Incremental> Euf<Q> {
         (exp, added)
     }
 
-    pub(super) fn add_eq_node<P>(
+    pub(super) fn add_eq_node<P, A: SatTheoryArgR<M: TupleExtract<P, PushInfo>>>(
         &mut self,
         id1: Id,
         id2: Id,
         ctx: ExprContext<BoolExp>,
-        acts: &mut impl SatTheoryArgR<M: TupleExtract<P, PushInfo>>,
-    ) -> (bool, BoolExp) {
+        acts: &mut A,
+    ) -> (bool, BoolExp)
+    where
+        Th: FullEufTh<A>,
+    {
         let cid1 = self.find(id1);
         let cid2 = self.find(id2);
         if cid1 == cid2 {
@@ -225,12 +242,15 @@ impl<Q: Incremental> Euf<Q> {
         (added, exp)
     }
 
-    fn assert_eq<P>(
+    fn assert_eq<P, A: SatTheoryArgR<M: TupleExtract<P, PushInfo>>>(
         &mut self,
-        e1: Exp,
-        e2: Exp,
-        acts: &mut impl SatTheoryArgR<M: TupleExtract<P, PushInfo>>,
-    ) -> () {
+        e1: Exp<Th::Exp>,
+        e2: Exp<Th::Exp>,
+        acts: &mut A,
+    ) -> ()
+    where
+        Th: FullEufTh<A>,
+    {
         match (e1, e2) {
             (Exp::Left(e1), Exp::Left(e2)) => {
                 let (th, mut acts) = self.lift_th(acts);
@@ -244,7 +264,9 @@ impl<Q: Incremental> Euf<Q> {
     }
 }
 
-impl<'a, Arg, Q: QuantifierChecker<UExp, M>, M> Collapse<UExp, Arg, BaseMarker<M>> for Euf<Q> {
+impl<'a, Arg, Q: QuantifierChecker<UExp, M>, Th: EufThBase, M> Collapse<UExp, Arg, BaseMarker<M>>
+    for Euf<Q, Th>
+{
     fn collapse(&mut self, t: UExp, _: &mut Arg, _: ExprContext<UExp>) -> UExp {
         UExp::new(self.find(t.id), t.sort)
     }
@@ -254,10 +276,10 @@ impl<'a, Arg, Q: QuantifierChecker<UExp, M>, M> Collapse<UExp, Arg, BaseMarker<M
     }
 }
 
-impl<T, Q> DefaultIte<T> for Euf<Q> {}
+impl<T, Q, Th: EufThBase> DefaultIte<T> for Euf<Q, Th> {}
 
-impl<'a, Arg, M, Q: QuantifierChecker<UExp, M>> Collapse<Fresh<UExp>, Arg, BaseMarker<M>>
-    for Euf<Q>
+impl<'a, Arg, Th: EufThBase, M, Q: QuantifierChecker<UExp, M>>
+    Collapse<Fresh<UExp>, Arg, BaseMarker<M>> for Euf<Q, Th>
 {
     fn collapse(&mut self, fresh: Fresh<UExp>, _: &mut Arg, ctx: ExprContext<UExp>) -> UExp {
         let mut added = false;
@@ -282,9 +304,10 @@ impl<
     'b,
     Q: Incremental,
     M,
-    I: DistinctElts<Exp = Exp>,
+    I: DistinctElts<Exp = Exp<Th::Exp>>,
     A: SatTheoryArgR<M: TupleExtract<M, PushInfo>>,
-> Collapse<RawDistinct<I>, A, BaseMarker<M>> for Euf<Q>
+    Th: FullEufTh<A>,
+> Collapse<RawDistinct<I>, A, BaseMarker<M>> for Euf<Q, Th>
 {
     fn collapse(
         &mut self,
@@ -356,12 +379,12 @@ impl<
     }
 }
 
-impl<'a, M, Q: Incremental, A: SatTheoryArgR<M: TupleExtract<M, PushInfo>>>
-    Collapse<Eq<Exp>, A, BaseMarker<M>> for Euf<Q>
+impl<'a, M, Q: Incremental, A: SatTheoryArgR<M: TupleExtract<M, PushInfo>>, Th: FullEufTh<A>>
+    Collapse<Eq<Exp<Th::Exp>>, A, BaseMarker<M>> for Euf<Q, Th>
 {
     fn collapse(
         &mut self,
-        Eq(e1, e2): Eq<Exp>,
+        Eq(e1, e2): Eq<Exp<Th::Exp>>,
         acts: &mut A,
         ctx: ExprContext<BoolExp>,
     ) -> BoolExp {
@@ -388,7 +411,7 @@ impl<'a, M, Q: Incremental, A: SatTheoryArgR<M: TupleExtract<M, PushInfo>>>
         }
     }
 
-    fn placeholder(&self, _: &Eq<Exp>) -> BoolExp {
+    fn placeholder(&self, _: &Eq<Exp<Th::Exp>>) -> BoolExp {
         BoolExp::TRUE
     }
 }
@@ -411,17 +434,18 @@ where
 impl<
     M1,
     M2,
-    Q: Incremental + QuantifierChecker<Exp, M1>,
-    I: Iterator<Item = Exp> + Clone,
+    Q: Incremental + QuantifierChecker<Exp<Th::Exp>, M1>,
+    I: Iterator<Item = Exp<Th::Exp>> + Clone,
     A: SatTheoryArgR<M: TupleExtract<M2, PushInfo>>,
-> Collapse<UFn<I>, A, BaseMarker<(M1, M2)>> for Euf<Q>
+    Th: FullEufTh<A>,
+> Collapse<UFn<I>, A, BaseMarker<(M1, M2)>> for Euf<Q, Th>
 {
     fn collapse(
         &mut self,
         UFn(f, exp_children, sort): UFn<I>,
         acts: &mut A,
-        ctx: ExprContext<Exp>,
-    ) -> Exp {
+        ctx: ExprContext<Exp<Th::Exp>>,
+    ) -> Exp<Th::Exp> {
         let children = self.resolve_children(exp_children.clone(), acts);
         let (res, added) = self.sorted_fn(f.into(), children, sort, ctx, acts);
         if added {
@@ -433,7 +457,7 @@ impl<
         res
     }
 
-    fn placeholder(&self, &UFn(_, _, sort): &UFn<I>) -> Exp {
+    fn placeholder(&self, &UFn(_, _, sort): &UFn<I>) -> Exp<Th::Exp> {
         if sort == BOOL_SORT {
             BoolExp::TRUE.upcast()
         } else {
@@ -543,15 +567,16 @@ pub struct EgraphPf<I>(I);
 
 impl<
     R: Recorder,
-    E: SuperExp<Exp, MS> + ExpLike + Copy,
+    E: SuperExp<Exp<Th::Exp>, MS> + ExpLike + Copy,
     Q: Incremental,
-    S: TupleExtract<MS, Euf<Q>>
+    Th: for<'a> FullEufTh<TheoryArg<'a, S::LevelMarker, R>>,
+    S: TupleExtract<MS, Euf<Q, Th>>
         + FullTheory<R>
         + Incremental<LevelMarker: TupleExtract<LeftMarker<LeftMarker<MS>>, PushInfo>>,
     M,
     MS,
     I: ParserFragment<E, FnSortSolver<S, R>, M>,
-> ParserFragment<E, FnSortSolver<S, R>, (M, MS, Q)> for EgraphPf<I>
+> ParserFragment<E, FnSortSolver<S, R>, (M, MS, Q, Th)> for EgraphPf<I>
 {
     fn supports(&self, s: Symbol) -> bool {
         self.0.supports(s)
@@ -574,7 +599,7 @@ impl<
     ) -> Result<E, AddSexpError> {
         let Some(children_ids) = solver.solver.open(
             |s, acts| {
-                let euf: &mut Euf<Q> = s.tuple_extract_mut();
+                let euf: &mut Euf<Q, Th> = s.tuple_extract_mut();
                 children
                     .iter()
                     .map(|&x| Some(euf.id_for_exp(x.downcast()?, acts, true)))
@@ -587,15 +612,10 @@ impl<
 
         let mut enode = SymbolLang::new(f.into(), children_ids);
 
-        let euf: &Euf<Q> = solver.solver.th.deref().tuple_extract();
+        let euf: &Euf<Q, Th> = solver.solver.th.deref().tuple_extract();
 
         if let Some(existing_id) = euf.egraph.lookup(&mut enode) {
-            let res: Exp = match &*euf.egraph[existing_id] {
-                EClass::Uninterpreted(s) => UExp::new(euf.egraph.find(existing_id), *s).upcast(),
-                EClass::Th(BoolClass::Const(b)) => BoolExp::from_bool(*b).upcast(),
-                EClass::Th(BoolClass::Unknown(l)) => BoolExp::unknown(l[0]).upcast(),
-                _ => unreachable!(),
-            };
+            let res: Exp<Th::Exp> = euf.id_to_exp(existing_id);
             return Ok(E::from_upcast(res));
         }
 
@@ -609,7 +629,7 @@ impl<
         if let Ok(Some(res)) = res.as_ref().map(|x| Exp::from_downcast(*x)) {
             solver.solver.open(
                 |euf, acts| {
-                    let euf: &mut Euf<Q> = euf.tuple_extract_mut();
+                    let euf: &mut Euf<Q, Th> = euf.tuple_extract_mut();
                     euf.sorted_fn(
                         enode.op(),
                         enode.children_owned(),
